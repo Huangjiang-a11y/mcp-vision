@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.out/
+out/
+media/
+cache/
+*.mp4
+*.m4a
+*.wav
+*.pcm
+*.jpg
+*.png
+node_modules/
+.venv/
+
+# cache
+.mvv-cache/
