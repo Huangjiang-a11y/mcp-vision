@@ -39,7 +39,7 @@ os.unlink(raw)
 print("A 全帧逐帧识别:  %2d 帧 × %.3fs = %.2fs  (%d 次 OCR)" % (k, t_full/max(k,1), t_full, k))
 
 t0 = time.time()
-r = O.ocr_subtitles(MEDIA, 0, TOTAL, step=STEP, band=(0.72, 1.0), width=640, skip_th=3.0, engine=eng)
+r = O.ocr_subtitles(MEDIA, 0, TOTAL, step=STEP, band=(0.72, 1.0), width=640, skip_th=0.5, engine=eng)
 t_band = time.time() - t0
 print("C 字幕带+跳帧:   %2d 帧，其中 %d 帧跳过 → 只跑 %d 次 OCR = %.2fs" % (
     r["frames"], r["skipped"], r["ocr_runs"], t_band))

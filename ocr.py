@@ -369,8 +369,14 @@ def detect_subtitle_band(media, samples=4, start=0.0, end=None, width=480,
     return (round(y0_band, 4), round(y1_band, 4))
 
 
+def _text_sig(arr, th):
+    """字幕的视觉签名：高亮像素掩码。背景在动也不影响文字轮廓。"""
+    g = arr.astype(np.float32).mean(axis=2)
+    return g > float(th)
+
+
 def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
-                  width=960, skip_th=3.0, min_conf=0.0, engine=None):
+                  width=960, skip_th=0.5, text_th=220, min_conf=0.0, engine=None):
     """字幕带 OCR：ffmpeg 管道流出带帧（不落盘），字幕没变的帧跳过不识别。
 
     band: (y0_ratio, y1_ratio) 显式指定；"auto" 用 OCR 框坐标自动定位；None 等价 auto。
@@ -391,7 +397,12 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
                                     crop=(y0r, y1r)):
         H, W = arr.shape[0], arr.shape[1]
         if prev is not None and skip_th >= 0:
-            d = float(np.mean(np.abs(arr.astype(np.int16) - prev.astype(np.int16))))
+            ps = _text_sig(prev, text_th)
+            cs = _text_sig(arr, text_th)
+            if not ps.any() and not cs.any():
+                d = 0.0
+            else:
+                d = 100.0 * float(np.mean(cs != ps))
             if d < skip_th:
                 n_skip += 1
                 out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": True,
