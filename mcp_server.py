@@ -193,12 +193,12 @@ def tool_subtitles(a):
     start = float(a.get("start_seconds", 0))
     end = a.get("end_seconds")
     end = float(end) if end is not None else float(asset["duration"])
-    band = a.get("band") or [0.72, 1.0]
+    band = a.get("band", "auto")
     try:
         res = ocrmod.ocr_subtitles(
             media, start, end,
             step=float(a.get("step", 1.0)),
-            band=(float(band[0]), float(band[1])),
+            band=band if band == "auto" else (float(band[0]), float(band[1])),
             width=int(a.get("width") or 960),
             skip_th=float(a.get("skip_th", 3.0)),
             engine=ocrmod.get_engine())
@@ -214,7 +214,7 @@ def tool_subtitles(a):
                          "_to": e["seconds"], "text": txt})
     for sg in segs:
         sg["to"] = ocrmod._tc(sg.pop("_to"))
-    out = {"frames": res["frames"], "ocr_runs": res["ocr_runs"], "skipped": res["skipped"],
+    out = {"frames": res["frames"], "ocr_runs": res["ocr_runs"], "skipped": res["skipped"], "band": res.get("band"), "band_auto": res.get("band_auto"),
            "band_px": res["band_px"], "segment_count": len(segs), "segments": segs}
     return (json.dumps(out, ensure_ascii=False, indent=2)[:8000], [])
 
@@ -254,7 +254,7 @@ TOOLS = [
          "width": {"type": "integer"},
          "cols": {"type": "integer"},
          "step": {"type": "number", "description": "采样间隔秒，默认 1.0"},
-         "band": {"type": "array", "items": {"type": "number"}, "description": "字幕带高度比例，默认 [0.72,1.0]"},
+         "band": {"description": "字幕带高度比例，默认 'auto'（自动定位），也可指定如 [0.75, 0.95]"},
          "skip_th": {"type": "number", "description": "跳帧阈值，默认 3.0"},
          "rows": {"type": "integer"},
          "cwd": {"type": "string"}}}}]

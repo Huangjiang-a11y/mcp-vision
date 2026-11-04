@@ -238,53 +238,48 @@ def _probe_wh(path):
     return int(w), int(h)
 
 
-def ocr_subtitles(media, start=0.0, end=None, step=1.0, band=(0.70, 1.0),
-                  width=960, skip_th=3.0, min_conf=0.0, engine=None):
-    """字幕带 OCR：ffmpeg 管道流出带帧（不落盘），字幕没变的帧跳过不识别。
+def _probe_duration(path):
+    p = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "csv=p=0", str(path)], capture_output=True, text=True, timeout=60)
+    try:
+        return float(p.stdout.strip())
+    except ValueError:
+        return 0.0
 
-    band:    字幕带占画面高度的比例区间，默认下 30%
-    skip_th: 与上一帧的带内平均绝对差小于此值即判「没变」，复用上次结果
+
+def _stream_frames(media, start=0.0, end=None, step=1.0, width=960, crop=None):
+    """ffmpeg 管道流出帧，逐帧 yield (i, t, rgb ndarray)。不落盘。
+
+    crop: (y0_ratio, y1_ratio)，给了就只出带内；不给出全帧。
     """
-    if engine is None:
-        engine = get_engine()
     w0, h0 = _probe_wh(media)
-    y0 = int(h0 * band[0])
-    bh = max(8, int(h0 * band[1]) - y0)
+    if crop is None:
+        y0, bh = 0, h0
+    else:
+        y0 = max(0, int(h0 * crop[0]))
+        bh = max(8, int(h0 * crop[1]) - y0)
     W = max(16, min(int(width), w0))
     H = max(8, int(round(bh * W / w0)))
     H -= H % 2
     step = float(step) if step and step > 0 else 1.0
-    vf = "fps=%s,crop=%d:%d:0:%d,scale=%d:%d" % (1.0 / step, w0, bh, y0, W, H)
+    parts = ["fps=%s" % (1.0 / step)]
+    if crop is not None:
+        parts.append("crop=%d:%d:0:%d" % (w0, bh, y0))
+    parts.append("scale=%d:%d" % (W, H))
     cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
            "-ss", str(start), "-i", str(media)]
     if end is not None:
         cmd += ["-t", str(max(0.0, float(end) - float(start)))]
-    cmd += ["-vf", vf, "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
+    cmd += ["-vf", ",".join(parts), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
     frame_size = W * H * 3
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    out, prev, prev_res = [], None, None
-    n_ocr = n_skip = 0
     try:
         i = 0
         while True:
             buf = proc.stdout.read(frame_size)
             if not buf or len(buf) < frame_size:
                 break
-            arr = np.frombuffer(buf, dtype=np.uint8).reshape(H, W, 3)
-            t = start + i * step
-            if prev is not None and skip_th >= 0:
-                d = float(np.mean(np.abs(arr.astype(np.int16) - prev.astype(np.int16))))
-                if d < skip_th:
-                    n_skip += 1
-                    out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": True,
-                                "diff": round(d, 2), "lines": [r["text"] for r in prev_res]})
-                    i += 1
-                    continue
-            res = engine.ocr_image(arr, min_conf=min_conf)
-            n_ocr += 1
-            prev, prev_res = arr, res
-            out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": False,
-                        "lines": [r["text"] for r in res]})
+            yield i, start + i * step, np.frombuffer(buf, dtype=np.uint8).reshape(H, W, 3)
             i += 1
     finally:
         try:
@@ -296,5 +291,117 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band=(0.70, 1.0),
             proc.wait(timeout=10)
         except Exception:
             proc.kill()
+
+
+def detect_subtitle_band(media, samples=4, start=0.0, end=None, width=480,
+                         lower_from=0.45, pad=0.02, engine=None):
+    """利用少量采样点按 OCR 框坐标聚类，秒级自动锁定字幕带 (y0_ratio, y1_ratio)。
+
+    - samples 默认 4 点，用 ffmpeg -ss 单帧瞬时抓取
+    - 仅对画面下半截（> lower_from）做 OCR，避开大半画面
+    - 耗时通常在 1~2 秒左右
+    """
+    if engine is None:
+        engine = get_engine()
+    dur = _probe_duration(media)
+    if end is None:
+        end = dur
+    end = min(float(end), dur) if dur else float(end)
+    span = max(0.0, end - start)
+    if span <= 1.0:
+        return None
+
+    # 均匀挑选 samples 个探测时间点，稍微避开纯头尾
+    pts = [start + span * (i + 1) / (samples + 1) for i in range(samples)]
+    w0, h0 = _probe_wh(media)
+    W = min(width, w0)
+    H = int(round(h0 * W / w0))
+    H -= H % 2
+    crop_y = int(H * lower_from)
+
+    boxes = []
+    for t in pts:
+        cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+               "-ss", "%.3f" % t, "-i", str(media), "-frames:v", "1",
+               "-vf", "scale=%d:%d" % (W, H), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
+        p = subprocess.run(cmd, capture_output=True, timeout=15)
+        if p.returncode != 0 or len(p.stdout) < W * H * 3:
+            continue
+        arr = np.frombuffer(p.stdout[:W*H*3], dtype=np.uint8).reshape(H, W, 3)
+        # 只检下半截
+        lower = arr[crop_y:]
+        try:
+            res = engine.ocr_image(lower)
+        except Exception:
+            continue
+        for r in res:
+            y0 = (r["box"][1] + crop_y) / float(H)
+            y1 = (r["box"][3] + crop_y) / float(H)
+            if (y1 - y0) < 0.02:  # 太矮的噪点排除
+                continue
+            boxes.append((y0, y1))
+
+    if not boxes:
+        return None
+
+    # 按纵向重叠聚类
+    clusters = []
+    for y0, y1 in boxes:
+        hit = None
+        for c in clusters:
+            if y0 < c["y1"] and y1 > c["y0"]:
+                hit = c
+                break
+        if hit is None:
+            clusters.append({"y0": y0, "y1": y1, "count": 1})
+        else:
+            hit["y0"] = min(hit["y0"], y0)
+            hit["y1"] = max(hit["y1"], y1)
+            hit["count"] += 1
+
+    # 取出现次数最多的簇
+    best = max(clusters, key=lambda c: c["count"])
+    # 至少在 1 个采样点明确检出，且高宽比合理
+    y0_band = max(0.0, best["y0"] - pad)
+    y1_band = min(1.0, best["y1"] + pad)
+    if (y1_band - y0_band) < 0.03:
+        return None
+    return (round(y0_band, 4), round(y1_band, 4))
+
+
+def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
+                  width=960, skip_th=3.0, min_conf=0.0, engine=None):
+    """字幕带 OCR：ffmpeg 管道流出带帧（不落盘），字幕没变的帧跳过不识别。
+
+    band: (y0_ratio, y1_ratio) 显式指定；"auto" 用 OCR 框坐标自动定位；None 等价 auto。
+    skip_th: 与上一帧的带内平均绝对差小于此值即判「没变」，复用上次结果。
+    """
+    if engine is None:
+        engine = get_engine()
+    band_used = band
+    band_auto = None
+    if band in (None, "auto"):
+        band_auto = detect_subtitle_band(media, samples=4, start=start, end=end, engine=engine)
+        band_used = band_auto or (0.70, 1.0)
+    y0r, y1r = float(band_used[0]), float(band_used[1])
+    out, prev, prev_res = [], None, None
+    n_ocr = n_skip = 0
+    W = H = 0
+    for i, t, arr in _stream_frames(media, start, end, step=step, width=width,
+                                    crop=(y0r, y1r)):
+        H, W = arr.shape[0], arr.shape[1]
+        if prev is not None and skip_th >= 0:
+            d = float(np.mean(np.abs(arr.astype(np.int16) - prev.astype(np.int16))))
+            if d < skip_th:
+                n_skip += 1
+                out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": True,
+                            "diff": round(d, 2), "lines": [r["text"] for r in prev_res]})
+                continue
+        res = engine.ocr_image(arr, min_conf=min_conf)
+        n_ocr += 1
+        prev, prev_res = arr, res
+        out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": False,
+                    "lines": [r["text"] for r in res]})
     return {"frames": len(out), "ocr_runs": n_ocr, "skipped": n_skip,
-            "band_px": [W, H], "step": step, "results": out}
+            "band": [y0r, y1r], "band_auto": band_auto, "band_px": [W, H],
+            "step": float(step), "results": out}
