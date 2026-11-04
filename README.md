@@ -34,7 +34,22 @@ python3 mcp_server.py --http 8765
 `audio` / `transcribe` / `transcript` / `text` / `comments` / `danmaku` /
 `search` / `hot` / `status` / `clean` / `export`。
 
+## OCR
+
+PP-OCRv4（det + rec）在 **numpy + onnxruntime** 上从零实现，不依赖 OpenCV / Pillow / pyclipper / ImageMagick。
+读图用 ffmpeg 解 raw RGB；连通域、CTC 解码都是纯 Python。
+
+```sh
+pkg install python-onnxruntime
+python3 scripts/fetch-models.py      # 约 16MB；必要时设 https_proxy
+python3 ocr.py out/ocr_test.png      # 单图
+```
+
+- 加速器：优先 `XnnpackExecutionProvider`，可回落 `CPU`；Android 上另有 `NnapiExecutionProvider`
+- 调参：`DET_MAX_SIDE`（默认 720）、`DET_TH`（默认 0.2）、`MVV_ORT_THREADS`
+- 实测：880x320 三行中英混排，1.0s 识别完毕，置信度 0.94–0.98
+
 ## 状态
 
-v0.1 起步：probe / frames / sheet / audio / status / cache 先行；
-B 站文本生态、OCR、TransNetV2 镜头检测、多站登录态后续迭代。
+v0.1 已通：probe / frames / sheet / audio / ocr / status / clean。
+待做：transcribe（sherpa-onnx）、B 站元数据/评论/弹幕、TransNetV2 镜头检测、多站登录态。

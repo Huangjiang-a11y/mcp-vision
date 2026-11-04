@@ -124,6 +124,54 @@ def tool_audio(a):
     return (json.dumps(res, ensure_ascii=False, indent=2)[:8000], [])
 
 
+def tool_ocr(a):
+    cwd = a.get("cwd") or os.getcwd()
+    try:
+        import ocr as ocrmod
+    except Exception as e:
+        return ("OCR 不可用: %s（先 pkg install python-onnxruntime 并跑 scripts/fetch-models.py）" % e, [])
+    src = a.get("image") or a.get("path")
+    if src:
+        p = Path(src)
+        if not p.is_absolute():
+            p = (Path(cwd) / p).resolve()
+        if not p.exists():
+            return ("找不到图片: %s" % p, [])
+        try:
+            rgb = ocrmod.load_rgb(p)
+            o = ocrmod.PPOCR()
+            res = o.ocr_image(rgb)
+        except Exception as e:
+            return ("OCR 失败: %s" % e, [])
+        return (json.dumps({"image": str(p), "providers": o.providers, "count": len(res), "results": res},
+                           ensure_ascii=False, indent=2)[:8000], [])
+    asset = engine.load_latest(cwd)
+    if asset is None:
+        return ("先 open 一个视频，或给 image 参数", [])
+    media = asset["media_path"]
+    if a.get("timestamps"):
+        ts = [float(x) for x in a["timestamps"]]
+    else:
+        start = float(a.get("start_seconds", 0))
+        end = float(a.get("end_seconds", min(start + 30, asset["duration"])))
+        ts = engine.sample_times(start, end, max(1, int(a.get("frames", 5))))
+    try:
+        o = ocrmod.PPOCR()
+    except Exception as e:
+        return ("OCR 不可用: %s" % e, [])
+    frames = engine.extract_frames(media, ts, width=int(a.get("width") or 1280), duration=asset["duration"])
+    out = []
+    for f in frames:
+        try:
+            res = o.ocr_image(ocrmod.load_rgb(f["path"]))
+        except Exception:
+            res = []
+        out.append({"seconds": f["seconds"], "timestamp": f["timestamp"],
+                    "lines": [r["text"] for r in res]})
+    return (json.dumps({"frames": len(out), "providers": o.providers, "results": out},
+                       ensure_ascii=False, indent=2)[:8000], [])
+
+
 def tool_status(a):
     cwd = a.get("cwd") or os.getcwd()
     st = engine.status(cwd)
@@ -148,8 +196,9 @@ def tool_clean(a):
 TOOLS = [
     {"name": "video_vision", "description": "观看视频：抽帧/故事板/音频分析/状态。纯 Python，无 Node。",
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["open", "frames", "sheet", "audio", "status", "clean"]},
+         "action": {"type": "string", "enum": ["open", "frames", "sheet", "audio", "ocr", "status", "clean"]},
          "source": {"type": "string", "description": "视频路径或链接"},
+         "image": {"type": "string", "description": "要 OCR 的图片路径"},
          "video_id": {"type": "string"},
          "start_seconds": {"type": "number"},
          "end_seconds": {"type": "number"},
@@ -171,6 +220,8 @@ def dispatch(a):
         return tool_sheet(a)
     if act == "audio":
         return tool_audio(a)
+    if act == "ocr":
+        return tool_ocr(a)
     if act == "status":
         return tool_status(a)
     if act == "clean":
