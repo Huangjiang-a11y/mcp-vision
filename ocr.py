@@ -238,14 +238,13 @@ def _probe_wh(path):
     return int(w), int(h)
 
 
-def ocr_subtitles(media, start=0.0, end=None, step=0.5, band=(0.70, 1.0),
-                  width=960, skip_th=3.0, min_conf=0.0, engine=None, tmp_dir=None):
-    """字幕带 OCR：一次 ffmpeg 出全部带帧；字幕没变的帧跳过不识别。
+def ocr_subtitles(media, start=0.0, end=None, step=1.0, band=(0.70, 1.0),
+                  width=960, skip_th=3.0, min_conf=0.0, engine=None):
+    """字幕带 OCR：ffmpeg 管道流出带帧（不落盘），字幕没变的帧跳过不识别。
 
     band:    字幕带占画面高度的比例区间，默认下 30%
     skip_th: 与上一帧的带内平均绝对差小于此值即判「没变」，复用上次结果
     """
-    import tempfile
     if engine is None:
         engine = get_engine()
     w0, h0 = _probe_wh(media)
@@ -254,46 +253,48 @@ def ocr_subtitles(media, start=0.0, end=None, step=0.5, band=(0.70, 1.0),
     W = max(16, min(int(width), w0))
     H = max(8, int(round(bh * W / w0)))
     H -= H % 2
-    fd, raw = tempfile.mkstemp(suffix=".raw", dir=tmp_dir)
-    os.close(fd)
+    step = float(step) if step and step > 0 else 1.0
+    vf = "fps=%s,crop=%d:%d:0:%d,scale=%d:%d" % (1.0 / step, w0, bh, y0, W, H)
+    cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+           "-ss", str(start), "-i", str(media)]
+    if end is not None:
+        cmd += ["-t", str(max(0.0, float(end) - float(start)))]
+    cmd += ["-vf", vf, "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
+    frame_size = W * H * 3
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    out, prev, prev_res = [], None, None
+    n_ocr = n_skip = 0
     try:
-        vf = "fps=%s,crop=%d:%d:0:%d,scale=%d:%d" % (
-            (1.0 / step if step > 0 else 2), w0, bh, y0, W, H)
-        cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-               "-ss", str(start), "-i", str(media)]
-        if end is not None:
-            cmd += ["-t", str(max(0.0, float(end) - float(start)))]
-        cmd += ["-vf", vf, "-pix_fmt", "rgb24", "-f", "rawvideo", raw]
-        subprocess.run(cmd, capture_output=True, timeout=1800)
-        frame_size = W * H * 3
-        out, prev, prev_res = [], None, None
-        n_ocr = n_skip = 0
-        with open(raw, "rb") as f:
-            i = 0
-            while True:
-                buf = f.read(frame_size)
-                if len(buf) < frame_size:
-                    break
-                arr = np.frombuffer(buf, dtype=np.uint8).reshape(H, W, 3)
-                t = start + i * step
-                if prev is not None and skip_th >= 0:
-                    d = float(np.mean(np.abs(arr.astype(np.int16) - prev.astype(np.int16))))
-                    if d < skip_th:
-                        n_skip += 1
-                        out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": True,
-                                    "diff": round(d, 2), "lines": [r["text"] for r in prev_res]})
-                        i += 1
-                        continue
-                res = engine.ocr_image(arr, min_conf=min_conf)
-                n_ocr += 1
-                prev, prev_res = arr, res
-                out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": False,
-                            "lines": [r["text"] for r in res]})
-                i += 1
-        return {"frames": len(out), "ocr_runs": n_ocr, "skipped": n_skip,
-                "band_px": [W, H], "results": out}
+        i = 0
+        while True:
+            buf = proc.stdout.read(frame_size)
+            if not buf or len(buf) < frame_size:
+                break
+            arr = np.frombuffer(buf, dtype=np.uint8).reshape(H, W, 3)
+            t = start + i * step
+            if prev is not None and skip_th >= 0:
+                d = float(np.mean(np.abs(arr.astype(np.int16) - prev.astype(np.int16))))
+                if d < skip_th:
+                    n_skip += 1
+                    out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": True,
+                                "diff": round(d, 2), "lines": [r["text"] for r in prev_res]})
+                    i += 1
+                    continue
+            res = engine.ocr_image(arr, min_conf=min_conf)
+            n_ocr += 1
+            prev, prev_res = arr, res
+            out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": False,
+                        "lines": [r["text"] for r in res]})
+            i += 1
     finally:
         try:
-            os.unlink(raw)
-        except OSError:
+            proc.stdout.close()
+        except Exception:
             pass
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            proc.kill()
+    return {"frames": len(out), "ocr_runs": n_ocr, "skipped": n_skip,
+            "band_px": [W, H], "step": step, "results": out}

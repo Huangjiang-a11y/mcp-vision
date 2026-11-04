@@ -197,7 +197,7 @@ def tool_subtitles(a):
     try:
         res = ocrmod.ocr_subtitles(
             media, start, end,
-            step=float(a.get("step", 0.5)),
+            step=float(a.get("step", 1.0)),
             band=(float(band[0]), float(band[1])),
             width=int(a.get("width") or 960),
             skip_th=float(a.get("skip_th", 3.0)),
@@ -253,7 +253,7 @@ TOOLS = [
          "frames": {"type": "integer"},
          "width": {"type": "integer"},
          "cols": {"type": "integer"},
-         "step": {"type": "number", "description": "采样间隔秒，默认 0.5"},
+         "step": {"type": "number", "description": "采样间隔秒，默认 1.0"},
          "band": {"type": "array", "items": {"type": "number"}, "description": "字幕带高度比例，默认 [0.72,1.0]"},
          "skip_th": {"type": "number", "description": "跳帧阈值，默认 3.0"},
          "rows": {"type": "integer"},
