@@ -205,16 +205,7 @@ def tool_subtitles(a):
             engine=ocrmod.get_engine())
     except Exception as e:
         return ("字幕提取失败: %s" % e, [])
-    segs = []
-    for e in res["results"]:
-        txt = " ".join(x for x in e["lines"] if x)
-        if segs and segs[-1]["text"] == txt:
-            segs[-1]["_to"] = e["seconds"]
-        else:
-            segs.append({"from": ocrmod._tc(e["seconds"]), "to": ocrmod._tc(e["seconds"]),
-                         "_to": e["seconds"], "text": txt})
-    for sg in segs:
-        sg["to"] = ocrmod._tc(sg.pop("_to"))
+    segs = ocrmod.fold_segments(res["results"])
     out = {"frames": res["frames"], "ocr_runs": res["ocr_runs"], "skipped": res["skipped"], "band": res.get("band"), "band_auto": res.get("band_auto"),
            "band_px": res["band_px"], "segment_count": len(segs), "segments": segs}
     return (json.dumps(out, ensure_ascii=False, indent=2)[:8000], [])

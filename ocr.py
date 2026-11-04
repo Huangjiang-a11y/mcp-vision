@@ -406,13 +406,81 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
             if d < skip_th:
                 n_skip += 1
                 out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": True,
-                            "diff": round(d, 2), "lines": [r["text"] for r in prev_res]})
+                            "diff": round(d, 2),
+                            "conf": round(sum(r["conf"] for r in prev_res) / len(prev_res), 4) if prev_res else 0.0,
+                            "lines": [r["text"] for r in prev_res]})
                 continue
         res = engine.ocr_image(arr, min_conf=min_conf)
         n_ocr += 1
         prev, prev_res = arr, res
+        conf = round(sum(r["conf"] for r in res) / len(res), 4) if res else 0.0
         out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": False,
-                    "lines": [r["text"] for r in res]})
+                    "conf": conf, "lines": [r["text"] for r in res]})
     return {"frames": len(out), "ocr_runs": n_ocr, "skipped": n_skip,
             "band": [y0r, y1r], "band_auto": band_auto, "band_px": [W, H],
             "step": float(step), "results": out}
+
+
+def _lev(a, b):
+    """编辑距离（字符串短，直接 DP）。"""
+    if a == b:
+        return 0
+    la, lb = len(a), len(b)
+    if la == 0:
+        return lb
+    if lb == 0:
+        return la
+    prev = list(range(lb + 1))
+    for i in range(1, la + 1):
+        cur = [i] + [0] * lb
+        ca = a[i - 1]
+        for j in range(1, lb + 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != b[j - 1]))
+        prev = cur
+    return prev[lb]
+
+
+def fold_segments(results, min_len=2, max_edit_ratio=0.2, max_gap=5.0):
+    """逐帧 OCR 结果折叠成字幕段。
+
+    重要认知（实测《琵琶行》教学/音乐视频得出）：
+      这类视频的歌词会把每句的尾短语**重复演唱一遍**，字幕轨里因此存在
+      独立短 cue（如「如私语」「落玉盘」「胜有声」）。它们是**真实内容**，
+      既不是 OCR 残缺，也不是擦除动画，绝不能当成噪声合并掉。
+      判据：字幕发生「硬切 + 重新居中」，即为新 cue。
+
+    折叠规则（只处理真正的噪声）：
+      1. 空帧/过短 → 丢弃
+      2. 与上段同文 → 同一 cue 延续，延长结束时间
+      3. 与上段近似（编辑距离 ≤ max(1, 20%·较短长度)）→ 同一 cue 的 OCR 变体，
+         合并并保留更长/置信度更高的那条
+      4. 否则（含「是上段后缀但更短」）→ 视为新 cue，单独成段
+    """
+    out = []
+    for r in results:
+        txt = " ".join(x for x in r.get("lines", []) if x).strip()
+        if len(txt) < min_len:
+            continue
+        conf = float(r.get("conf") or 0.0)
+        ts = r.get("timestamp")
+        sec = float(r.get("seconds") or 0.0)
+        if out:
+            prev = out[-1]
+            pt = prev["text"]
+            if sec - prev["_sec"] <= max_gap:
+                if txt == pt:
+                    prev["to"] = ts
+                    prev["_sec"] = sec
+                    continue
+                m = min(len(txt), len(pt))
+                if m >= 4 and _lev(txt, pt) <= max(1, int(m * max_edit_ratio)):
+                    if len(txt) > len(pt) or (len(txt) == len(pt) and conf >= prev.get("conf", 0.0) - 0.02):
+                        prev["text"] = txt
+                        prev["conf"] = round(conf, 4)
+                    prev["to"] = ts
+                    prev["_sec"] = sec
+                    continue
+        out.append({"from": ts, "to": ts, "text": txt, "conf": round(conf, 4), "_sec": sec})
+    for sg in out:
+        sg.pop("_sec", None)
+    return out
