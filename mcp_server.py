@@ -172,6 +172,53 @@ def tool_ocr(a):
                        ensure_ascii=False, indent=2)[:8000], [])
 
 
+def tool_subtitles(a):
+    """字幕带 OCR：裁下 30% 画面 + 变帧跳过，输出折叠后的字幕段。"""
+    cwd = a.get("cwd") or os.getcwd()
+    try:
+        import ocr as ocrmod
+    except Exception as e:
+        return ("OCR 不可用: %s" % e, [])
+    asset = None
+    vid = a.get("video_id")
+    if vid:
+        man = Path(cwd) / DEFAULT_CACHE / "videos" / vid / "manifest.json"
+        if man.exists():
+            asset = json.loads(man.read_text())
+    if asset is None:
+        asset = engine.load_latest(cwd)
+    if asset is None:
+        return ("先 open 一个视频", [])
+    media = asset["media_path"]
+    start = float(a.get("start_seconds", 0))
+    end = a.get("end_seconds")
+    end = float(end) if end is not None else float(asset["duration"])
+    band = a.get("band") or [0.72, 1.0]
+    try:
+        res = ocrmod.ocr_subtitles(
+            media, start, end,
+            step=float(a.get("step", 0.5)),
+            band=(float(band[0]), float(band[1])),
+            width=int(a.get("width") or 960),
+            skip_th=float(a.get("skip_th", 3.0)),
+            engine=ocrmod.get_engine())
+    except Exception as e:
+        return ("字幕提取失败: %s" % e, [])
+    segs = []
+    for e in res["results"]:
+        txt = " ".join(x for x in e["lines"] if x)
+        if segs and segs[-1]["text"] == txt:
+            segs[-1]["_to"] = e["seconds"]
+        else:
+            segs.append({"from": ocrmod._tc(e["seconds"]), "to": ocrmod._tc(e["seconds"]),
+                         "_to": e["seconds"], "text": txt})
+    for sg in segs:
+        sg["to"] = ocrmod._tc(sg.pop("_to"))
+    out = {"frames": res["frames"], "ocr_runs": res["ocr_runs"], "skipped": res["skipped"],
+           "band_px": res["band_px"], "segment_count": len(segs), "segments": segs}
+    return (json.dumps(out, ensure_ascii=False, indent=2)[:8000], [])
+
+
 def tool_status(a):
     cwd = a.get("cwd") or os.getcwd()
     st = engine.status(cwd)
@@ -196,7 +243,7 @@ def tool_clean(a):
 TOOLS = [
     {"name": "video_vision", "description": "观看视频：抽帧/故事板/音频分析/状态。纯 Python，无 Node。",
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["open", "frames", "sheet", "audio", "ocr", "status", "clean"]},
+         "action": {"type": "string", "enum": ["open", "frames", "sheet", "audio", "ocr", "subtitles", "status", "clean"]},
          "source": {"type": "string", "description": "视频路径或链接"},
          "image": {"type": "string", "description": "要 OCR 的图片路径"},
          "video_id": {"type": "string"},
@@ -206,6 +253,9 @@ TOOLS = [
          "frames": {"type": "integer"},
          "width": {"type": "integer"},
          "cols": {"type": "integer"},
+         "step": {"type": "number", "description": "采样间隔秒，默认 0.5"},
+         "band": {"type": "array", "items": {"type": "number"}, "description": "字幕带高度比例，默认 [0.72,1.0]"},
+         "skip_th": {"type": "number", "description": "跳帧阈值，默认 3.0"},
          "rows": {"type": "integer"},
          "cwd": {"type": "string"}}}}]
 
@@ -222,6 +272,8 @@ def dispatch(a):
         return tool_audio(a)
     if act == "ocr":
         return tool_ocr(a)
+    if act == "subtitles":
+        return tool_subtitles(a)
     if act == "status":
         return tool_status(a)
     if act == "clean":

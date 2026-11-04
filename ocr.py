@@ -16,7 +16,7 @@ DET_TH = float(os.environ.get("DET_TH", "0.2"))
 
 
 def _providers():
-    want = os.environ.get("MVV_ORT_PROVIDERS", "xnnpack,cpu").lower().split(",")
+    want = os.environ.get("MVV_ORT_PROVIDERS", "cpu").lower().split(",")
     avail = ort.get_available_providers()
     m = {"cpu": "CPUExecutionProvider", "xnnpack": "XnnpackExecutionProvider", "nnapi": "NnapiExecutionProvider"}
     out = [m[w] for w in want if m.get(w) in avail]
@@ -68,7 +68,7 @@ class PPOCR:
             if not f.exists():
                 raise FileNotFoundError("缺模型文件: %s（跑 scripts/fetch-models.py）" % f)
         so = ort.SessionOptions()
-        so.intra_op_num_threads = int(os.environ.get("MVV_ORT_THREADS", "4"))
+        so.intra_op_num_threads = int(os.environ.get("MVV_ORT_THREADS", "2"))
         so.log_severity_level = 3
         prov = providers or _providers()
         self.det = ort.InferenceSession(str(det), so, providers=prov)
@@ -211,3 +211,89 @@ if __name__ == "__main__":
         print("识别 %d 个文本框，耗时 %.2fs" % (len(res), dt))
         for r in res:
             print("  [%d,%d] %.2f | %s" % (r["box"][0], r["box"][1], r["conf"], r["text"]))
+
+
+# ---------- 加速：engine 复用 + 字幕带 + 变帧跳过 ----------
+_ENGINE = None
+
+
+def _tc(seconds):
+    s = max(0.0, float(seconds))
+    return "%02d:%06.3f" % (int(s // 60), s % 60)
+
+
+def get_engine(**kw):
+    """模块级单例：ONNX 会话只载一次（每次重载约 0.29s，纯浪费）。"""
+    global _ENGINE
+    if _ENGINE is None:
+        _ENGINE = PPOCR(**kw)
+    return _ENGINE
+
+
+def _probe_wh(path):
+    p = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, timeout=60)
+    w, h = p.stdout.strip().split(",")[:2]
+    return int(w), int(h)
+
+
+def ocr_subtitles(media, start=0.0, end=None, step=0.5, band=(0.70, 1.0),
+                  width=960, skip_th=3.0, min_conf=0.0, engine=None, tmp_dir=None):
+    """字幕带 OCR：一次 ffmpeg 出全部带帧；字幕没变的帧跳过不识别。
+
+    band:    字幕带占画面高度的比例区间，默认下 30%
+    skip_th: 与上一帧的带内平均绝对差小于此值即判「没变」，复用上次结果
+    """
+    import tempfile
+    if engine is None:
+        engine = get_engine()
+    w0, h0 = _probe_wh(media)
+    y0 = int(h0 * band[0])
+    bh = max(8, int(h0 * band[1]) - y0)
+    W = max(16, min(int(width), w0))
+    H = max(8, int(round(bh * W / w0)))
+    H -= H % 2
+    fd, raw = tempfile.mkstemp(suffix=".raw", dir=tmp_dir)
+    os.close(fd)
+    try:
+        vf = "fps=%s,crop=%d:%d:0:%d,scale=%d:%d" % (
+            (1.0 / step if step > 0 else 2), w0, bh, y0, W, H)
+        cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+               "-ss", str(start), "-i", str(media)]
+        if end is not None:
+            cmd += ["-t", str(max(0.0, float(end) - float(start)))]
+        cmd += ["-vf", vf, "-pix_fmt", "rgb24", "-f", "rawvideo", raw]
+        subprocess.run(cmd, capture_output=True, timeout=1800)
+        frame_size = W * H * 3
+        out, prev, prev_res = [], None, None
+        n_ocr = n_skip = 0
+        with open(raw, "rb") as f:
+            i = 0
+            while True:
+                buf = f.read(frame_size)
+                if len(buf) < frame_size:
+                    break
+                arr = np.frombuffer(buf, dtype=np.uint8).reshape(H, W, 3)
+                t = start + i * step
+                if prev is not None and skip_th >= 0:
+                    d = float(np.mean(np.abs(arr.astype(np.int16) - prev.astype(np.int16))))
+                    if d < skip_th:
+                        n_skip += 1
+                        out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": True,
+                                    "diff": round(d, 2), "lines": [r["text"] for r in prev_res]})
+                        i += 1
+                        continue
+                res = engine.ocr_image(arr, min_conf=min_conf)
+                n_ocr += 1
+                prev, prev_res = arr, res
+                out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": False,
+                            "lines": [r["text"] for r in res]})
+                i += 1
+        return {"frames": len(out), "ocr_runs": n_ocr, "skipped": n_skip,
+                "band_px": [W, H], "results": out}
+    finally:
+        try:
+            os.unlink(raw)
+        except OSError:
+            pass

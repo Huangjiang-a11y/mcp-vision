@@ -49,6 +49,30 @@ python3 ocr.py out/ocr_test.png      # 单图
 - 调参：`DET_MAX_SIDE`（默认 720）、`DET_TH`（默认 0.2）、`MVV_ORT_THREADS`
 - 实测：880x320 三行中英混排，1.0s 识别完毕，置信度 0.94–0.98
 
+## 性能
+
+实测环境：Android aarch64，Python 3.14，onnxruntime 1.31.1。
+
+**线程数**：这机器 **2 线程最优**。det 推理 1 线程 0.182s → 2 线程 **0.117s** → 4 线程 0.125s → 8 线程 0.149s（小核争用）。
+默认已设为 2，可用 `MVV_ORT_THREADS` 调。
+
+**加速器**：`CPU` 实测最快，`XNNPACK` 反而更慢，`NNAPI` 初始化贵。默认 `cpu`，可用 `MVV_ORT_PROVIDERS` 改。
+
+**字幕带 + 跳帧**（`action=subtitles`）是最有效的一刀，实测 **6.8x**：
+
+| 方案 | 30s 视频 / 0.5s 采样 | OCR 次数 |
+|---|---|---|
+| 全帧逐帧 | 16.38s | 60 |
+| **字幕带+跳帧** | **2.40s** | **15** |
+
+原理：只裁下 30% 字幕带（640x360 → 640x100，像素少 3.6 倍），且字幕没变的帧直接复用上次结果。
+
+**关于自量化**（结论：死路，已验证）：
+把 Conv 权重压成 int8 并改写成 `DynamicQuantizeLinear` + `QLinearConv` 是可行的
+（`scripts/quantize-dynamic.py`，需自建 `onnx_pb2`，因为 Termux 装不了 `onnx` 包），
+但 ORT 的 ARM int8 卷积**和 fp32 NEON 一样快**：推理 0.101s vs 0.101s，**提速 1.00x**，
+还多出 62×3 个节点、精度下降（per-tensor，mean diff 0.064）。故不采用。
+
 ## 状态
 
 v0.1 已通：probe / frames / sheet / audio / ocr / status / clean。
