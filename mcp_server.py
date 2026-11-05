@@ -12,6 +12,25 @@ def _mask(s):
     return s
 
 
+def _normalize_source(src):
+    # 借自 dsh-video-vision/lib/ytdlp.js normalizeSource：规范化短链接
+    try:
+        from urllib.parse import urlparse, parse_qs
+        u = urlparse(src)
+        host = (u.hostname or "").lower()
+        if host == "youtu.be":
+            vid = u.path.strip("/").split("/")[0]
+            if vid and len(vid) == 11:
+                return "https://www.youtube.com/watch?v=" + vid
+        if host in ("youtube.com", "www.youtube.com", "m.youtube.com"):
+            q = parse_qs(u.query)
+            if "v" in q and len(q["v"][0]) == 11:
+                return "https://www.youtube.com/watch?v=" + q["v"][0]
+    except Exception:
+        pass
+    return src
+
+
 def tool_open(a):
     src = (a.get("source") or a.get("file") or "").strip()
     if not src:
@@ -33,13 +52,32 @@ def tool_open(a):
         return "需要 yt-dlp（pip install yt-dlp）才能下载链接", []
     out_dir = Path(cwd) / DEFAULT_CACHE / "downloads"
     out_dir.mkdir(parents=True, exist_ok=True)
-    ydl_opts = {"outtmpl": str(out_dir / "%(id)s.%(ext)s"), "format": "best[height<=720]/best", "quiet": True}
+    max_h = int(a.get("max_height") or 720)
+    ydl_opts = {
+        "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
+        "format": "bestvideo[height<=%d]+bestaudio/bestvideo+bestaudio/best" % max_h,
+        "merge_output_format": "mp4",
+        "quiet": True, "no_warnings": True, "noplaylist": True,
+        "retries": 3, "fragment_retries": 3,
+    }
+    cookie_file = a.get("cookies") or a.get("cookie_file")
+    if cookie_file:
+        ydl_opts["cookiefile"] = cookie_file
+    browser = a.get("cookies_from_browser")
+    if browser:
+        ydl_opts["cookiesfrombrowser"] = (browser,)
+    # 规范化链接
+    src = _normalize_source(src)
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(src, download=True)
             fname = ydl.prepare_filename(info)
+            if not Path(fname).exists():
+                for cand in out_dir.glob("%s.*" % info.get("id")):
+                    if cand.suffix in (".mp4", ".mkv", ".webm"):
+                        fname = str(cand); break
     except Exception as e:
-        return ("下载失败: %s" % e, [])
+        return ("下载失败: %s" % str(e)[:300], [])
     asset = engine.open_local(cwd, fname)
     return ("已下载并打开 %s\n时长 %.2fs  %sx%s" % (
         asset["title"], asset["duration"], asset["width"], asset["height"]), [])
@@ -250,7 +288,10 @@ TOOLS = [
          "skip_th": {"type": "number", "description": "跳帧阈值（掩码差百分比），默认 0.5"},
          "text_th": {"type": "number", "description": "文字高亮阈值，默认 220"},
          "rows": {"type": "integer"},
-         "cwd": {"type": "string"}}}}]
+         "cwd": {"type": "string"},
+         "max_height": {"type": "integer", "description": "下载/抽帧最大高度，默认 720"},
+         "cookies": {"type": "string", "description": "cookies.txt 路径（B站高清/登录态需要）"},
+         "cookies_from_browser": {"type": "string", "description": "从浏览器取 cookies，如 chrome/firefox"}}}}]
 
 
 def dispatch(a):
