@@ -33,7 +33,7 @@ python3 mcp_server.py --http 8765
 四个大工具，按职责分层：
 
 - `workspace`：`open`（打开/下载）/ `list`
-- `video`：`analyze`（整片：时间线抽帧 + 网格页，可选 `subs` 硬字幕）/ `frame`（单帧，可 `crop` `scale`）
+- `video`：`analyze`（整片：时间线抽帧 + 近似正方形网格页）/ `frame`（单帧，可 `crop` `scale`）
 - `audio`：`levels` / `extract`（`transcribe` / `transcript` 待做）
 - `subtitles`：`ocr` / `band`（`search` 待做）
 

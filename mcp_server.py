@@ -336,11 +336,10 @@ TOOLS = [
          "source": {"type": "string", "description": "视频路径或链接；本地用 file:// 协议"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"], "description": "low=480p medium=720p high=1080p max=源最大；按短边筛选，竖屏不误杀"},
          "cookies": {"type": "boolean", "description": "true 时使用仓库根目录的 cookies.txt"}}}},
-    {"name": "video", "description": "视频：analyze 整片理解（时间线抽帧+网格页，可选字幕）；frame 单帧核对（可裁剪/缩放）。",
+    {"name": "video", "description": "视频：analyze 整片理解（时间线抽帧 + 近似正方形网格页）；frame 单帧核对（可裁剪/缩放）。",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["analyze", "frame"]},
          "video": {"type": "string", "description": "视频路径或链接；不传则用最近打开的视频"},
-         "subs": {"type": "boolean", "description": "analyze 时是否跑硬字幕 OCR"},
          "baseFps": {"type": "number", "description": "analyze 采样帧率，默认 5，上限 12 帧"},
          "t": {"type": "number", "description": "frame 的时间点（秒）"},
          "crop": {"type": "string", "description": "frame 裁剪：WxH+X+Y，如 720x300+0+880"},
@@ -454,14 +453,6 @@ def tool_analyze(a):
                                  title=asset.get("title"))
         except Exception:
             sheet_path = None
-    subs = []
-    if a.get("subs"):
-        try:
-            txt, _ = tool_subtitles({"cwd": cwd, "video_id": asset.get("id"),
-                                     "width": int(a.get("width") or 960)})
-            subs = json.loads(txt).get("segments", [])
-        except Exception:
-            subs = []
     out = {
         "ok": True,
         "title": asset.get("title"),
@@ -471,8 +462,6 @@ def tool_analyze(a):
         "frames": len(frames),
         "timeline": [{"t": f["seconds"], "path": f["path"]} for f in frames],
         "sheet": sheet_path,
-        "subsCount": len(subs),
-        "subs": subs[:50],
         "videoDir": asset.get("video_dir"),
         "nextStep": "描述画面前先看 sheet 或 timeline 里的图；细节用 action=frame 取原帧。",
     }
