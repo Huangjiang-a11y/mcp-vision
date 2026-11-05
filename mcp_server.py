@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """mcp-video-vision MCP 服务器（stdio 或 --http PORT）。手写 JSON-RPC，无 mcp SDK 依赖。"""
-import argparse, base64, json, os, sys, time, http.server, socketserver, threading
+import argparse, base64, json, os, re, sys, time, http.server, socketserver, threading
 from pathlib import Path
 import engine
 
@@ -56,6 +56,44 @@ def _normalize_source(src):
     return src
 
 
+
+
+def _convert_cookies_txt(cwd):
+    # cookies.txt: 单行 name=value; ... 转 Netscape 格式，写到 .cookies_netscape.txt
+    root = Path(cwd)
+    fpath = root / "cookies.txt"
+    if not fpath.exists():
+        return None
+    try:
+        text = fpath.read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    if text.startswith("# Netscape") or text.startswith("# HTTP Cookie"):
+        return str(fpath)
+    domain = ".bilibili.com"
+    lines = ["# Netscape HTTP Cookie File", "# https://curl.haxx.se/rfc/cookie_spec.html", ""]
+    for part in text.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        eq = part.find("=")
+        if eq <= 0:
+            continue
+        name = part[:eq].strip()
+        value = part[eq + 1:].strip()
+        if not name:
+            continue
+        lines.append(domain + "\tTRUE\t/\tFALSE\t0\t" + name + "\t" + value)
+    out = root / ".cookies_netscape.txt"
+    try:
+        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:
+        return None
+    return str(out)
+
+
 def _QUALITY_MAP(q):
     return {"low": 480, "medium": 720, "high": 1080, "max": None}.get((q or "medium").lower(), 720)
 
@@ -70,7 +108,7 @@ def tool_open(a):
         if not src.startswith("/"):
             src = "/" + src
     src = _normalize_source(src)
-    cwd = a.get("cwd") or os.getcwd()
+    cwd = Path(a.get("cwd") or (Path(__file__).resolve().parent))
     # 本地文件
     pth = Path(src)
     if not pth.is_absolute():
@@ -91,7 +129,8 @@ def tool_open(a):
     if max_h is None:
         fmt = "bestvideo+bestaudio/best"
     else:
-        fmt = "bestvideo[height<=%d]+bestaudio/bestvideo+bestaudio/best" % max_h
+        # 用 min(w,h) 而非 height：竖屏视频 height 是长边，会误杀
+        fmt = "bestvideo[min(w,h)<=%d]+bestaudio/bestvideo+bestaudio/best" % max_h
     ydl_opts = {
         "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
         "format": fmt,
@@ -101,15 +140,12 @@ def tool_open(a):
     }
     # cookies: 真值表；cookies.txt 放在仓库根目录
     if a.get("cookies"):
-        for cand in (Path(cwd) / "cookies.txt",
-                     Path(cwd).parent / "cookies.txt",
-                     Path("/data/data/com.termux/files/home/mcp-video-vision/cookies.txt")):
-            if cand.exists():
-                ydl_opts["cookiefile"] = str(cand)
-                break
-    browser = a.get("cookies_from_browser")
-    if browser:
-        ydl_opts["cookiesfrombrowser"] = (browser,) if isinstance(browser, str) else browser
+        converted = _convert_cookies_txt(cwd)
+        if converted:
+            ydl_opts["cookiefile"] = converted
+        else:
+            # 若转换失败或未找到，不强制报错，让 yt-dlp 自己决定
+            pass
     # 规范化链接
     src = _normalize_source(src)
     try:
@@ -298,22 +334,18 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["open", "list"]},
          "source": {"type": "string", "description": "视频路径或链接；本地用 file:// 协议"},
-         "quality": {"type": "string", "enum": ["low", "medium", "high", "max"], "description": "low=480p medium=720p high=1080p max=源最大"},
-         "cookies": {"type": "boolean", "description": "true 时使用仓库根目录的 cookies.txt"},
-         "cookies_from_browser": {"type": "string", "description": "从浏览器取 cookies，如 chrome"},
-         "cwd": {"type": "string"}}}},
-    {"name": "video", "description": "视频画面：元数据/抽帧/故事板/单帧预览。",
+         "quality": {"type": "string", "enum": ["low", "medium", "high", "max"], "description": "low=480p medium=720p high=1080p max=源最大；按短边筛选，竖屏不误杀"},
+         "cookies": {"type": "boolean", "description": "true 时使用仓库根目录的 cookies.txt"}}}},
+    {"name": "video", "description": "视频：analyze 整片理解（时间线抽帧+网格页，可选字幕）；frame 单帧核对（可裁剪/缩放）。",
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["probe", "frames", "sheet", "peek"]},
+         "action": {"type": "string", "enum": ["analyze", "frame"]},
+         "video": {"type": "string", "description": "视频路径或链接；不传则用最近打开的视频"},
+         "subs": {"type": "boolean", "description": "analyze 时是否跑硬字幕 OCR"},
+         "baseFps": {"type": "number", "description": "analyze 采样帧率，默认 5，上限 12 帧"},
+         "t": {"type": "number", "description": "frame 的时间点（秒）"},
+         "crop": {"type": "string", "description": "frame 裁剪：WxH+X+Y，如 720x300+0+880"},
+         "scale": {"type": "integer", "description": "frame 缩放宽度（像素）"},
          "video_id": {"type": "string"},
-         "timestamps": {"type": "array", "items": {"type": "number"}},
-         "start_seconds": {"type": "number"},
-         "end_seconds": {"type": "number"},
-         "frames": {"type": "integer", "description": "抽帧数，默认 6"},
-         "at": {"type": "number", "description": "peek 的时间点"},
-         "width": {"type": "integer"},
-         "cols": {"type": "integer"},
-         "rows": {"type": "integer"},
          "cwd": {"type": "string"}}}},
     {"name": "audio", "description": "音频：分析 (RMS/峰值/静音/节拍)。transcribe 待实现。",
      "inputSchema": {"type": "object", "properties": {
@@ -365,6 +397,109 @@ def tool_peek(a):
     return ("peek t=%.2f" % frames[0]["seconds"], blocks)
 
 
+def _parse_crop(spec):
+    # WxH+X+Y -> ffmpeg crop=W:H:X:Y
+    if not spec:
+        return None
+    m = re.match(r"^(\d+)x(\d+)\+(\d+)\+(\d+)$", str(spec).strip())
+    if not m:
+        raise ValueError("crop 格式应为 WxH+X+Y")
+    w, h, x, y = (int(v) for v in m.groups())
+    if w <= 0 or h <= 0:
+        raise ValueError("crop 宽高须为正")
+    return "crop=%d:%d:%d:%d" % (w, h, x, y)
+
+
+def tool_analyze(a):
+    cwd = a.get("cwd") or os.getcwd()
+    asset = _load_asset(cwd, a.get("video_id"))
+    if asset is None:
+        return ("先 open 一个视频", [])
+    duration = float(asset.get("duration") or 0)
+    base_fps = float(a.get("baseFps") or a.get("base_fps") or 5)
+    n = max(1, min(12, int(round(duration * base_fps)) or 1))
+    ts = engine.sample_times(0, duration, n)
+    frames = engine.extract_frames(asset["media_path"], ts, width=int(a.get("width") or 640),
+                                   out_dir=asset.get("video_dir"), duration=duration)
+    sheet_path = None
+    if frames:
+        cols = 3
+        rows = max(1, (len(frames) + cols - 1) // cols)
+        # 按画面宽高比选格子尺寸，竖屏不压成黑边
+        vw = float(asset.get("width") or 16)
+        vh = float(asset.get("height") or 9)
+        if vw < vh:
+            cell_w, cell_h = 180, max(1, int(round(180 * vh / vw)))
+        else:
+            cell_w, cell_h = 320, max(1, int(round(320 * vh / vw)))
+        sp = Path(asset.get("video_dir") or ".")
+        sp.mkdir(parents=True, exist_ok=True)
+        sheet_path = str(sp / ("sheet_%s.png" % engine.timecode(duration).replace(":", "")))
+        try:
+            engine.compose_sheet(asset["media_path"], [f["seconds"] for f in frames], cols, rows,
+                                 cell_w=cell_w, cell_h=cell_h, out_path=sheet_path,
+                                 title=asset.get("title"))
+        except Exception:
+            sheet_path = None
+    subs = []
+    if a.get("subs"):
+        try:
+            txt, _ = tool_subtitles({"cwd": cwd, "video_id": asset.get("id"),
+                                     "width": int(a.get("width") or 960)})
+            subs = json.loads(txt).get("segments", [])
+        except Exception:
+            subs = []
+    out = {
+        "ok": True,
+        "title": asset.get("title"),
+        "duration": round(duration, 2),
+        "width": asset.get("width"),
+        "height": asset.get("height"),
+        "frames": len(frames),
+        "timeline": [{"t": f["seconds"], "path": f["path"]} for f in frames],
+        "sheet": sheet_path,
+        "subsCount": len(subs),
+        "subs": subs[:50],
+        "videoDir": asset.get("video_dir"),
+        "nextStep": "描述画面前先看 sheet 或 timeline 里的图；细节用 action=frame 取原帧。",
+    }
+    return (json.dumps(out, ensure_ascii=False, indent=2), [])
+
+
+def tool_frame(a):
+    cwd = a.get("cwd") or os.getcwd()
+    asset = _load_asset(cwd, a.get("video_id"))
+    if asset is None:
+        return ("先 open 一个视频", [])
+    if a.get("t") is None:
+        return ("frame 需要 t（秒）", [])
+    t = float(a.get("t"))
+    width = int(a.get("scale") or a.get("width") or 0) or None
+    try:
+        crop = _parse_crop(a.get("crop"))
+    except ValueError as e:
+        return (str(e), [])
+    vf = [x for x in (crop,) if x]
+    if width:
+        vf.append("scale=%d:-1" % width)
+    out_dir = Path(asset.get("video_dir") or ".")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    import hashlib
+    tag = hashlib.md5((",".join(vf) or "raw").encode()).hexdigest()[:6]
+    dest = out_dir / ("frame_%s-%s.jpg" % (engine.timecode(t).replace(":", ""), tag))
+    cmd = ["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % t, "-i", asset["media_path"],
+           "-frames:v", "1"]
+    if vf:
+        cmd += ["-vf", ",".join(vf)]
+    cmd.append(str(dest))
+    r = engine._run(cmd, timeout=120)
+    if not dest.exists():
+        return ("取帧失败: %s" % (r or "ffmpeg 无输出"), [])
+    data = base64.b64encode(dest.read_bytes()).decode()
+    return (json.dumps({"ok": True, "t": round(t, 3), "path": str(dest)}, ensure_ascii=False),
+            [{"type": "image", "data": data, "mimeType": "image/jpeg"}])
+
+
 def dispatch_workspace(a):
     act = (a.get("action") or "open").lower()
     if act == "open":
@@ -375,15 +510,11 @@ def dispatch_workspace(a):
 
 
 def dispatch_video(a):
-    act = (a.get("action") or "frames").lower()
-    if act == "probe":
-        return tool_probe(a)
-    if act in ("frames", "watch"):
-        return tool_frames(a)
-    if act == "sheet":
-        return tool_sheet(a)
-    if act == "peek":
-        return tool_peek(a)
+    act = (a.get("action") or "analyze").lower()
+    if act in ("analyze", "frames", "watch", "probe", "sheet"):
+        return tool_analyze(a)
+    if act in ("frame", "peek"):
+        return tool_frame(a)
     return ("未知 action: %s" % act, [])
 
 
