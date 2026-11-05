@@ -276,53 +276,146 @@ def tool_clean(a):
 
 
 TOOLS = [
-    {"name": "video_vision", "description": "观看视频：抽帧/故事板/音频分析/状态。纯 Python，无 Node。",
+    {"name": "workspace", "description": "工作区：打开/下载视频、列出已打开视频。纯 Python，无 Node。",
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["open", "list", "frames", "sheet", "audio", "ocr", "subtitles", "status", "clean"]},
+         "action": {"type": "string", "enum": ["open", "list"]},
          "source": {"type": "string", "description": "视频路径或链接"},
-         "image": {"type": "string", "description": "要 OCR 的图片路径"},
+         "max_height": {"type": "integer", "description": "下载最大高度，默认 720"},
+         "cookies": {"type": "string", "description": "cookies.txt 路径"},
+         "cookies_from_browser": {"type": "string", "description": "从浏览器取 cookies，如 chrome"},
+         "cwd": {"type": "string"}}}},
+    {"name": "video", "description": "视频画面：元数据/抽帧/故事板/单帧预览。",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["probe", "frames", "sheet", "peek"]},
+         "video_id": {"type": "string"},
+         "timestamps": {"type": "array", "items": {"type": "number"}},
+         "start_seconds": {"type": "number"},
+         "end_seconds": {"type": "number"},
+         "frames": {"type": "integer", "description": "抽帧数，默认 6"},
+         "at": {"type": "number", "description": "peek 的时间点"},
+         "width": {"type": "integer"},
+         "cols": {"type": "integer"},
+         "rows": {"type": "integer"},
+         "cwd": {"type": "string"}}}},
+    {"name": "audio", "description": "音频：分析 (RMS/峰值/静音/节拍)。transcribe 待实现。",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["levels", "extract", "transcribe", "transcript"]},
          "video_id": {"type": "string"},
          "start_seconds": {"type": "number"},
          "end_seconds": {"type": "number"},
-         "timestamps": {"type": "array", "items": {"type": "number"}},
-         "frames": {"type": "integer"},
-         "width": {"type": "integer"},
-         "cols": {"type": "integer"},
+         "format": {"type": "string"},
+         "cwd": {"type": "string"}}}},
+    {"name": "subtitles", "description": "字幕：单图 OCR / 字幕带逐帧 OCR + 折叠。",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["ocr", "band", "search"]},
+         "video_id": {"type": "string"},
+         "image": {"type": "string", "description": "要 OCR 的图片路径"},
+         "start_seconds": {"type": "number"},
+         "end_seconds": {"type": "number"},
          "step": {"type": "number", "description": "采样间隔秒，默认 1.0"},
-         "band": {"description": "字幕带高度比例，默认 'auto'（自动定位），也可指定如 [0.75, 0.95]"},
-         "skip_th": {"type": "number", "description": "跳帧阈值（掩码差百分比），默认 0.5"},
+         "band": {"description": "字幕带高度比例，默认 'auto'"},
+         "skip_th": {"type": "number", "description": "跳帧阈值，默认 0.5"},
          "text_th": {"type": "number", "description": "文字高亮阈值，默认 220"},
-         "rows": {"type": "integer"},
-         "cwd": {"type": "string"},
-         "max_height": {"type": "integer", "description": "下载/抽帧最大高度，默认 720"},
-         "cookies": {"type": "string", "description": "cookies.txt 路径（B站高清/登录态需要）"},
-         "cookies_from_browser": {"type": "string", "description": "从浏览器取 cookies，如 chrome/firefox"}}}}]
+         "width": {"type": "integer"},
+         "cwd": {"type": "string"}}}},
+]
+
+def tool_probe(a):
+    cwd = a.get("cwd") or os.getcwd()
+    asset = _load_asset(cwd, a.get("video_id"))
+    if asset is None:
+        return ("先 open 一个视频", [])
+    return (json.dumps({k: asset.get(k) for k in ("id", "title", "duration", "width", "height", "fps", "has_audio", "media_path", "workspace") if asset.get(k) is not None},
+                       ensure_ascii=False, indent=2), [])
 
 
-def dispatch(a):
-    act = (a.get("action") or ("open" if a.get("source") else "status")).lower()
+def tool_peek(a):
+    cwd = a.get("cwd") or os.getcwd()
+    asset = _load_asset(cwd, a.get("video_id"))
+    if asset is None:
+        return ("先 open 一个视频", [])
+    t = float(a.get("at") or a.get("seconds") or 0)
+    ts = [t]
+    frames = engine.extract_frames(asset["media_path"], ts, width=int(a.get("width") or 640),
+                                  out_dir=asset.get("video_dir"), duration=asset["duration"])
+    if not frames:
+        return ("取帧失败", [])
+    blocks = []
+    for f in frames:
+        data = base64.b64encode(Path(f["path"]).read_bytes()).decode()
+        blocks.append({"type": "image", "data": data, "mimeType": "image/jpeg"})
+    return ("peek t=%.2f" % frames[0]["seconds"], blocks)
+
+
+def dispatch_workspace(a):
+    act = (a.get("action") or "open").lower()
     if act == "open":
         return tool_open(a)
-    if act in ("frames", "watch"):
-        return tool_frames(a)
-    if act == "sheet":
-        return tool_sheet(a)
-    if act == "audio":
-        return tool_audio(a)
-    if act == "ocr":
-        return tool_ocr(a)
-    if act == "subtitles":
-        return tool_subtitles(a)
-    if act == "status":
-        return tool_status(a)
-    if act == "clean":
-        return tool_clean(a)
     if act == "list":
         return tool_list(a)
     return ("未知 action: %s" % act, [])
 
 
-HANDLERS = {"video_vision": dispatch}
+def dispatch_video(a):
+    act = (a.get("action") or "frames").lower()
+    if act == "probe":
+        return tool_probe(a)
+    if act in ("frames", "watch"):
+        return tool_frames(a)
+    if act == "sheet":
+        return tool_sheet(a)
+    if act == "peek":
+        return tool_peek(a)
+    return ("未知 action: %s" % act, [])
+
+
+def dispatch_audio(a):
+    act = (a.get("action") or "levels").lower()
+    if act in ("levels", "analyze"):
+        return tool_audio(a)
+    if act in ("extract",):
+        return tool_audio(a)
+    if act in ("transcribe", "transcript"):
+        return ("transcribe/transcript 待实现（sherpa-onnx）", [])
+    return ("未知 action: %s" % act, [])
+
+
+def dispatch_subtitles(a):
+    act = (a.get("action") or "band").lower()
+    if act == "ocr":
+        return tool_ocr(a)
+    if act in ("band", "subtitles"):
+        return tool_subtitles(a)
+    if act == "search":
+        return ("search 待实现", [])
+    return ("未知 action: %s" % act, [])
+
+
+def dispatch(a):
+    # 兼容旧入口：按 action 或 source 推断
+    act = (a.get("action") or "").lower()
+    if not act:
+        return dispatch_workspace(a) if a.get("source") else dispatch_workspace(a)
+    # 旧 action 名映射
+    if act in ("open", "list", "status", "clean"):
+        return dispatch_workspace(a)
+    if act in ("probe", "frames", "sheet", "peek", "watch"):
+        return dispatch_video(a)
+    if act in ("levels", "analyze", "extract", "transcribe", "transcript", "audio"):
+        return dispatch_audio(a)
+    if act in ("ocr", "band", "subtitles", "search"):
+        return dispatch_subtitles(a)
+    return ("未知 action: %s" % act, [])
+
+
+HANDLERS = {
+    "workspace": dispatch_workspace,
+    "video": dispatch_video,
+    "audio": dispatch_audio,
+    "subtitles": dispatch_subtitles,
+    # 兼容旧名
+    "video_vision": dispatch,
+}
 
 
 def handle(req):
