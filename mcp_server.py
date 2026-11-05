@@ -163,8 +163,8 @@ def tool_open(a):
         asset["title"], asset["duration"], asset["width"], asset["height"]), [])
 
 def tool_frames(a):
-    cwd = a.get("cwd") or os.getcwd()
-    asset = _load_asset(cwd, a.get("video_id"))
+    cwd = str(Path(__file__).resolve().parent)
+    asset = _load_asset(cwd, None)
     if asset is None:
         return "先 open 一个视频", []
     media = asset["media_path"]
@@ -198,8 +198,8 @@ def tool_frames(a):
 
 
 def tool_sheet(a):
-    cwd = a.get("cwd") or os.getcwd()
-    asset = _load_asset(cwd, a.get("video_id"))
+    cwd = str(Path(__file__).resolve().parent)
+    asset = _load_asset(cwd, None)
     if asset is None:
         return "先 open 一个视频", []
     media = asset["media_path"]
@@ -219,8 +219,8 @@ def tool_sheet(a):
 
 
 def tool_audio(a):
-    cwd = a.get("cwd") or os.getcwd()
-    asset = _load_asset(cwd, a.get("video_id"))
+    cwd = str(Path(__file__).resolve().parent)
+    asset = _load_asset(cwd, None)
     if asset is None:
         return "先 open 一个视频", []
     start = float(a.get("start_seconds", 0))
@@ -230,7 +230,7 @@ def tool_audio(a):
 
 
 def tool_ocr(a):
-    cwd = a.get("cwd") or os.getcwd()
+    cwd = str(Path(__file__).resolve().parent)
     try:
         import ocr as ocrmod
     except Exception as e:
@@ -279,12 +279,12 @@ def tool_ocr(a):
 
 def tool_subtitles(a):
     """字幕带 OCR：裁下 30% 画面 + 变帧跳过，输出折叠后的字幕段。"""
-    cwd = a.get("cwd") or os.getcwd()
+    cwd = str(Path(__file__).resolve().parent)
     try:
         import ocr as ocrmod
     except Exception as e:
         return ("OCR 不可用: %s" % e, [])
-    asset = _load_asset(cwd, a.get("video_id"))
+    asset = _load_asset(cwd, None)
     if asset is None:
         return ("先 open 一个视频", [])
     media = asset["media_path"]
@@ -310,7 +310,7 @@ def tool_subtitles(a):
 
 
 def tool_list(a):
-    cwd = a.get("cwd") or os.getcwd()
+    cwd = str(Path(__file__).resolve().parent)
     st = engine.status(cwd)
     return (json.dumps(st, ensure_ascii=False, indent=2), [])
 
@@ -321,7 +321,7 @@ def tool_status(a):
 
 
 def tool_clean(a):
-    cwd = a.get("cwd") or os.getcwd()
+    cwd = str(Path(__file__).resolve().parent)
     root = Path(cwd) / "workspace"
     if root.exists():
         shutil.rmtree(root)
@@ -344,20 +344,17 @@ TOOLS = [
          "t": {"type": "number", "description": "frame 的时间点（秒）"},
          "crop": {"type": "string", "description": "frame 裁剪：WxH+X+Y，如 720x300+0+880"},
          "scale": {"type": "integer", "description": "frame 缩放宽度（像素）"},
-         "video_id": {"type": "string"},
-         "cwd": {"type": "string"}}}},
+         }}},
     {"name": "audio", "description": "音频：分析 (RMS/峰值/静音/节拍)。transcribe 待实现。",
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["levels", "extract", "transcribe", "transcript"]},
-         "video_id": {"type": "string"},
+         "action": {"type": "string", "enum": ["levels", "extract"]},
          "start_seconds": {"type": "number"},
          "end_seconds": {"type": "number"},
          "format": {"type": "string"},
-         "cwd": {"type": "string"}}}},
+         }}},
     {"name": "subtitles", "description": "字幕：单图 OCR / 字幕带逐帧 OCR + 折叠。",
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["ocr", "band", "search"]},
-         "video_id": {"type": "string"},
+         "action": {"type": "string", "enum": ["ocr", "band"]},
          "image": {"type": "string", "description": "要 OCR 的图片路径"},
          "start_seconds": {"type": "number"},
          "end_seconds": {"type": "number"},
@@ -366,12 +363,12 @@ TOOLS = [
          "skip_th": {"type": "number", "description": "跳帧阈值，默认 0.5"},
          "text_th": {"type": "number", "description": "文字高亮阈值，默认 220"},
          "width": {"type": "integer"},
-         "cwd": {"type": "string"}}}},
+         }}},
 ]
 
 def tool_probe(a):
-    cwd = a.get("cwd") or os.getcwd()
-    asset = _load_asset(cwd, a.get("video_id"))
+    cwd = str(Path(__file__).resolve().parent)
+    asset = _load_asset(cwd, None)
     if asset is None:
         return ("先 open 一个视频", [])
     return (json.dumps({k: asset.get(k) for k in ("id", "title", "duration", "width", "height", "fps", "has_audio", "media_path", "workspace") if asset.get(k) is not None},
@@ -379,8 +376,8 @@ def tool_probe(a):
 
 
 def tool_peek(a):
-    cwd = a.get("cwd") or os.getcwd()
-    asset = _load_asset(cwd, a.get("video_id"))
+    cwd = str(Path(__file__).resolve().parent)
+    asset = _load_asset(cwd, None)
     if asset is None:
         return ("先 open 一个视频", [])
     t = float(a.get("at") or a.get("seconds") or 0)
@@ -410,8 +407,8 @@ def _parse_crop(spec):
 
 
 def tool_analyze(a):
-    cwd = a.get("cwd") or os.getcwd()
-    asset = _load_asset(cwd, a.get("video_id"))
+    cwd = str(Path(__file__).resolve().parent)
+    asset = _load_asset(cwd, None)
     if asset is None:
         return ("先 open 一个视频", [])
     duration = float(asset.get("duration") or 0)
@@ -469,8 +466,8 @@ def tool_analyze(a):
 
 
 def tool_frame(a):
-    cwd = a.get("cwd") or os.getcwd()
-    asset = _load_asset(cwd, a.get("video_id"))
+    cwd = str(Path(__file__).resolve().parent)
+    asset = _load_asset(cwd, None)
     if asset is None:
         return ("先 open 一个视频", [])
     if a.get("t") is None:

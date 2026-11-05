@@ -34,8 +34,8 @@ python3 mcp_server.py --http 8765
 
 - `workspace`：`open`（打开/下载）/ `list`
 - `video`：`analyze`（整片：时间线抽帧 + 近似正方形网格页）/ `frame`（单帧，可 `crop` `scale`）
-- `audio`：`levels` / `extract`（`transcribe` / `transcript` 待做）
-- `subtitles`：`ocr` / `band`（`search` 待做）
+- `audio`：`levels` / `extract`
+- `subtitles`：`ocr` / `band`
 
 所有产物落到 `workspace/<标题>/{video,audio,subtitles}/`，可直接用文件系统管理（`ls`/`rm`/`cp`），
 不再用不透明的 `.mvv-cache`。
