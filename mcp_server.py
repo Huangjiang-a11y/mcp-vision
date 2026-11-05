@@ -34,7 +34,13 @@ def _load_asset(cwd, vid=None):
                             return a
                     except Exception:
                         pass
+        return None
     return engine.load_latest(cwd)
+
+
+def _missing(a):
+    v = a.get("video_id")
+    return ("找不到视频文件夹: %s（用 workspace.list 看有哪些）" % v) if v else "先 open 一个视频"
 
 
 def _normalize_source(src):
@@ -164,9 +170,9 @@ def tool_open(a):
 
 def tool_frames(a):
     cwd = str(Path(__file__).resolve().parent)
-    asset = _load_asset(cwd, None)
+    asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
-        return "先 open 一个视频", []
+        return _missing(a), []
     media = asset["media_path"]
     width = int(a.get("width") or 1280)
     frames = []
@@ -199,9 +205,9 @@ def tool_frames(a):
 
 def tool_sheet(a):
     cwd = str(Path(__file__).resolve().parent)
-    asset = _load_asset(cwd, None)
+    asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
-        return "先 open 一个视频", []
+        return _missing(a), []
     media = asset["media_path"]
     cols = int(a.get("cols", 3))
     rows = int(a.get("rows", 3))
@@ -220,9 +226,9 @@ def tool_sheet(a):
 
 def tool_audio(a):
     cwd = str(Path(__file__).resolve().parent)
-    asset = _load_asset(cwd, None)
+    asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
-        return "先 open 一个视频", []
+        return _missing(a), []
     start = float(a.get("start_seconds", 0))
     end = float(a.get("end_seconds", min(start + 30, asset["duration"])))
     res = engine.analyze_audio(asset["media_path"], start, end, out_dir=asset.get("audio_dir"))
@@ -284,9 +290,9 @@ def tool_subtitles(a):
         import ocr as ocrmod
     except Exception as e:
         return ("OCR 不可用: %s" % e, [])
-    asset = _load_asset(cwd, None)
+    asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
-        return ("先 open 一个视频", [])
+        return (_missing(a), [])
     media = asset["media_path"]
     start = float(a.get("start_seconds", 0))
     end = a.get("end_seconds")
@@ -339,6 +345,7 @@ TOOLS = [
     {"name": "video", "description": "视频：analyze 整片理解（时间线抽帧 + 近似正方形网格页）；frame 单帧核对（可裁剪/缩放）。",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["analyze", "frame"]},
+         "video_id": {"type": "string", "description": "工作区里的视频文件夹名（workspace/<名>），不传用最近打开"},
          "video": {"type": "string", "description": "视频路径或链接；不传则用最近打开的视频"},
          "baseFps": {"type": "number", "description": "analyze 采样帧率，默认 5，上限 12 帧"},
          "t": {"type": "number", "description": "frame 的时间点（秒）"},
@@ -348,6 +355,7 @@ TOOLS = [
     {"name": "audio", "description": "音频：分析 (RMS/峰值/静音/节拍)。transcribe 待实现。",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["levels", "extract"]},
+         "video_id": {"type": "string", "description": "工作区里的视频文件夹名，不传用最近打开"},
          "start_seconds": {"type": "number"},
          "end_seconds": {"type": "number"},
          "format": {"type": "string"},
@@ -355,6 +363,7 @@ TOOLS = [
     {"name": "subtitles", "description": "字幕：单图 OCR / 字幕带逐帧 OCR + 折叠。",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["ocr", "band"]},
+         "video_id": {"type": "string", "description": "工作区里的视频文件夹名，不传用最近打开"},
          "image": {"type": "string", "description": "要 OCR 的图片路径"},
          "start_seconds": {"type": "number"},
          "end_seconds": {"type": "number"},
@@ -368,18 +377,18 @@ TOOLS = [
 
 def tool_probe(a):
     cwd = str(Path(__file__).resolve().parent)
-    asset = _load_asset(cwd, None)
+    asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
-        return ("先 open 一个视频", [])
+        return (_missing(a), [])
     return (json.dumps({k: asset.get(k) for k in ("id", "title", "duration", "width", "height", "fps", "has_audio", "media_path", "workspace") if asset.get(k) is not None},
                        ensure_ascii=False, indent=2), [])
 
 
 def tool_peek(a):
     cwd = str(Path(__file__).resolve().parent)
-    asset = _load_asset(cwd, None)
+    asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
-        return ("先 open 一个视频", [])
+        return (_missing(a), [])
     t = float(a.get("at") or a.get("seconds") or 0)
     ts = [t]
     frames = engine.extract_frames(asset["media_path"], ts, width=int(a.get("width") or 640),
@@ -408,9 +417,9 @@ def _parse_crop(spec):
 
 def tool_analyze(a):
     cwd = str(Path(__file__).resolve().parent)
-    asset = _load_asset(cwd, None)
+    asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
-        return ("先 open 一个视频", [])
+        return (_missing(a), [])
     duration = float(asset.get("duration") or 0)
     base_fps = float(a.get("baseFps") or a.get("base_fps") or 5)
     vw = float(asset.get("width") or 16)
@@ -467,9 +476,9 @@ def tool_analyze(a):
 
 def tool_frame(a):
     cwd = str(Path(__file__).resolve().parent)
-    asset = _load_asset(cwd, None)
+    asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
-        return ("先 open 一个视频", [])
+        return (_missing(a), [])
     if a.get("t") is None:
         return ("frame 需要 t（秒）", [])
     t = float(a.get("t"))

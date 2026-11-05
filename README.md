@@ -37,6 +37,9 @@ python3 mcp_server.py --http 8765
 - `audio`：`levels` / `extract`
 - `subtitles`：`ocr` / `band`
 
+视频固定在工作区 `workspace/<文件夹名>/`。
+`video` / `audio` / `subtitles` 默认作用于最近打开的那个，可用 `video_id` 传文件夹名指定。
+
 所有产物落到 `workspace/<标题>/{video,audio,subtitles}/`，可直接用文件系统管理（`ls`/`rm`/`cp`），
 不再用不透明的 `.mvv-cache`。
 
