@@ -30,9 +30,15 @@ python3 mcp_server.py --http 8765
 
 ## 工具
 
-单一工具 `video_vision`，action 分档：`open` / `watch` / `frames` / `sheet` /
-`audio` / `transcribe` / `transcript` / `text` / `comments` / `danmaku` /
-`search` / `hot` / `status` / `clean` / `export`。
+四个大工具，按职责分层：
+
+- `workspace`：`open`（打开/下载）/ `list`
+- `video`：`probe` / `frames` / `sheet` / `peek`（`scene` 待做）
+- `audio`：`levels` / `extract`（`transcribe` / `transcript` 待做）
+- `subtitles`：`ocr` / `band`（`search` 待做）
+
+所有产物落到 `workspace/<标题>/{video,audio,subtitles}/`，可直接用文件系统管理（`ls`/`rm`/`cp`），
+不再用不透明的 `.mvv-cache`。
 
 ## OCR
 
