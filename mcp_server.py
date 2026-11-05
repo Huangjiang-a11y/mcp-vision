@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """mcp-video-vision MCP 服务器（stdio 或 --http PORT）。手写 JSON-RPC，无 mcp SDK 依赖。"""
-import argparse, base64, json, os, re, sys, time, http.server, socketserver, threading
+import argparse, base64, json, math, os, re, sys, time, http.server, socketserver, threading
 from pathlib import Path
 import engine
 
@@ -417,21 +417,34 @@ def tool_analyze(a):
         return ("先 open 一个视频", [])
     duration = float(asset.get("duration") or 0)
     base_fps = float(a.get("baseFps") or a.get("base_fps") or 5)
-    n = max(1, min(12, int(round(duration * base_fps)) or 1))
-    ts = engine.sample_times(0, duration, n)
+    vw = float(asset.get("width") or 16)
+    vh = float(asset.get("height") or 9)
+    aspect = vw / vh
+    n0 = max(1, min(12, int(round(duration * base_fps)) or 1))
+    # 先定网格，让整张图接近正方形；再按 cols*rows 抽帧，避免空格
+    best = None
+    for c in range(1, n0 + 1):
+        base_r = (n0 + c - 1) // c
+        for r in (base_r, base_r + 1):
+            empty = c * r - n0
+            if empty > 3:
+                continue
+            score = abs(math.log((c / r) * aspect)) + 0.05 * empty
+            key = (round(score, 3), empty)
+            if best is None or key < best[0]:
+                best = (key, c, r)
+    cols, rows = best[1], best[2]
+    need = min(cols * rows, 18)
+    ts = engine.sample_times(0, duration, need)
     frames = engine.extract_frames(asset["media_path"], ts, width=int(a.get("width") or 640),
                                    out_dir=asset.get("video_dir"), duration=duration)
     sheet_path = None
     if frames:
-        cols = 3
-        rows = max(1, (len(frames) + cols - 1) // cols)
-        # 按画面宽高比选格子尺寸，竖屏不压成黑边
-        vw = float(asset.get("width") or 16)
-        vh = float(asset.get("height") or 9)
-        if vw < vh:
-            cell_w, cell_h = 180, max(1, int(round(180 * vh / vw)))
+        short = 190
+        if aspect < 1:
+            cell_w, cell_h = short, max(1, int(round(short / aspect)))
         else:
-            cell_w, cell_h = 320, max(1, int(round(320 * vh / vw)))
+            cell_h, cell_w = short, max(1, int(round(short * aspect)))
         sp = Path(asset.get("video_dir") or ".")
         sp.mkdir(parents=True, exist_ok=True)
         sheet_path = str(sp / ("sheet_%s.png" % engine.timecode(duration).replace(":", "")))
