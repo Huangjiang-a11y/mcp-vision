@@ -56,17 +56,27 @@ def _normalize_source(src):
     return src
 
 
+def _QUALITY_MAP(q):
+    return {"low": 480, "medium": 720, "high": 1080, "max": None}.get((q or "medium").lower(), 720)
+
+
 def tool_open(a):
     src = (a.get("source") or a.get("file") or "").strip()
     if not src:
-        return "要给 source（视频路径或链接）"
+        return "要给 source（视频路径或链接）", []
+    # 本地文件用 file:// 协议
+    if src.lower().startswith("file://"):
+        src = src[7:]
+        if not src.startswith("/"):
+            src = "/" + src
+    src = _normalize_source(src)
     cwd = a.get("cwd") or os.getcwd()
     # 本地文件
-    p = Path(src)
-    if not p.is_absolute():
-        p = (Path(cwd) / p).resolve()
-    if p.exists():
-        asset = engine.open_local(cwd, str(p))
+    pth = Path(src)
+    if not pth.is_absolute():
+        pth = (Path(cwd) / pth).resolve()
+    if pth.exists():
+        asset = engine.open_local(cwd, str(pth))
         return ("已打开 %s\n时长 %.2fs  %sx%s  音频=%s" % (
             asset["title"], asset["duration"], asset["width"], asset["height"],
             "有" if asset["has_audio"] else "无"), [])
@@ -77,20 +87,29 @@ def tool_open(a):
         return "需要 yt-dlp（pip install yt-dlp）才能下载链接", []
     out_dir = Path(cwd) / DEFAULT_CACHE / "downloads"
     out_dir.mkdir(parents=True, exist_ok=True)
-    max_h = int(a.get("max_height") or 720)
+    max_h = _QUALITY_MAP(a.get("quality"))
+    if max_h is None:
+        fmt = "bestvideo+bestaudio/best"
+    else:
+        fmt = "bestvideo[height<=%d]+bestaudio/bestvideo+bestaudio/best" % max_h
     ydl_opts = {
         "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
-        "format": "bestvideo[height<=%d]+bestaudio/bestvideo+bestaudio/best" % max_h,
+        "format": fmt,
         "merge_output_format": "mp4",
         "quiet": True, "no_warnings": True, "noplaylist": True,
         "retries": 3, "fragment_retries": 3,
     }
-    cookie_file = a.get("cookies") or a.get("cookie_file")
-    if cookie_file:
-        ydl_opts["cookiefile"] = cookie_file
+    # cookies: 真值表；cookies.txt 放在仓库根目录
+    if a.get("cookies"):
+        for cand in (Path(cwd) / "cookies.txt",
+                     Path(cwd).parent / "cookies.txt",
+                     Path("/data/data/com.termux/files/home/mcp-video-vision/cookies.txt")):
+            if cand.exists():
+                ydl_opts["cookiefile"] = str(cand)
+                break
     browser = a.get("cookies_from_browser")
     if browser:
-        ydl_opts["cookiesfrombrowser"] = (browser,)
+        ydl_opts["cookiesfrombrowser"] = (browser,) if isinstance(browser, str) else browser
     # 规范化链接
     src = _normalize_source(src)
     try:
@@ -106,7 +125,6 @@ def tool_open(a):
     asset = engine.open_local(cwd, fname)
     return ("已下载并打开 %s\n时长 %.2fs  %sx%s" % (
         asset["title"], asset["duration"], asset["width"], asset["height"]), [])
-
 
 def tool_frames(a):
     cwd = a.get("cwd") or os.getcwd()
@@ -279,9 +297,9 @@ TOOLS = [
     {"name": "workspace", "description": "工作区：打开/下载视频、列出已打开视频。纯 Python，无 Node。",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["open", "list"]},
-         "source": {"type": "string", "description": "视频路径或链接"},
-         "max_height": {"type": "integer", "description": "下载最大高度，默认 720"},
-         "cookies": {"type": "string", "description": "cookies.txt 路径"},
+         "source": {"type": "string", "description": "视频路径或链接；本地用 file:// 协议"},
+         "quality": {"type": "string", "enum": ["low", "medium", "high", "max"], "description": "low=480p medium=720p high=1080p max=源最大"},
+         "cookies": {"type": "boolean", "description": "true 时使用仓库根目录的 cookies.txt"},
          "cookies_from_browser": {"type": "string", "description": "从浏览器取 cookies，如 chrome"},
          "cwd": {"type": "string"}}}},
     {"name": "video", "description": "视频画面：元数据/抽帧/故事板/单帧预览。",
