@@ -12,6 +12,31 @@ def _mask(s):
     return s
 
 
+def _load_asset(cwd, vid=None):
+    """按新布局加载 asset：workspace/<title>/meta.json。"""
+    root = Path(cwd) / "workspace"
+    if vid:
+        cand = root / vid
+        if cand.is_dir() and (cand / "meta.json").exists():
+            try:
+                return json.loads((cand / "meta.json").read_text())
+            except Exception:
+                pass
+        if root.exists():
+            for d in root.iterdir():
+                if not d.is_dir():
+                    continue
+                m = d / "meta.json"
+                if m.exists():
+                    try:
+                        a = json.loads(m.read_text())
+                        if a.get("id") == vid:
+                            return a
+                    except Exception:
+                        pass
+    return engine.load_latest(cwd)
+
+
 def _normalize_source(src):
     # 借自 dsh-video-vision/lib/ytdlp.js normalizeSource：规范化短链接
     try:
@@ -85,15 +110,7 @@ def tool_open(a):
 
 def tool_frames(a):
     cwd = a.get("cwd") or os.getcwd()
-    asset = None
-    vid = a.get("video_id")
-    if vid:
-        folder = Path(cwd) / DEFAULT_CACHE / "videos" / vid
-        man = folder / "manifest.json"
-        if man.exists():
-            asset = json.loads(man.read_text())
-    if asset is None:
-        asset = engine.load_latest(cwd)
+    asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return "先 open 一个视频", []
     media = asset["media_path"]
@@ -101,19 +118,22 @@ def tool_frames(a):
     frames = []
     if a.get("timestamps"):
         ts = [float(x) for x in a["timestamps"]]
-        frames = engine.extract_frames(media, ts, width=width, duration=asset["duration"])
+        frames = engine.extract_frames(media, ts, width=width, out_dir=asset.get("video_dir"), duration=asset["duration"])
     else:
         start = float(a.get("start_seconds", asset.get("cursor", 0)))
         end = float(a.get("end_seconds", min(start + 30, asset["duration"])))
         count = int(a.get("frames", 6))
         count = max(1, min(engine.MAX_FRAMES, count))
         ts = engine.sample_times(start, end, count)
-        frames = engine.extract_frames(media, ts, width=width, duration=asset["duration"])
+        frames = engine.extract_frames(media, ts, width=width, out_dir=asset.get("video_dir"), duration=asset["duration"])
     # update cursor
     if frames and not a.get("timestamps"):
         asset["cursor"] = frames[-1]["seconds"]
-        Path(asset and (Path(cwd)/DEFAULT_CACHE/"videos"/asset["id"]/"manifest.json")).write_text(
-            json.dumps(asset, ensure_ascii=False, indent=2))
+        meta = Path(asset["workspace"]) / "meta.json"
+        try:
+            meta.write_text(json.dumps(asset, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
     # build content blocks
     blocks = []
     head = "frames=%d  range=%s" % (len(frames), ",".join("%.1f" % f["seconds"] for f in frames))
@@ -125,7 +145,7 @@ def tool_frames(a):
 
 def tool_sheet(a):
     cwd = a.get("cwd") or os.getcwd()
-    asset = engine.load_latest(cwd)
+    asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return "先 open 一个视频", []
     media = asset["media_path"]
@@ -134,7 +154,7 @@ def tool_sheet(a):
     n = cols * rows
     dur = asset["duration"]
     ts = engine.sample_times(0, dur, n)
-    out = Path(cwd) / "out" / "sheet.png"
+    out = Path(asset.get("video_dir", cwd)) / "sheet.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     cell_w = 400
     cell_h = 225
@@ -146,19 +166,12 @@ def tool_sheet(a):
 
 def tool_audio(a):
     cwd = a.get("cwd") or os.getcwd()
-    asset = None
-    vid = a.get("video_id")
-    if vid:
-        man = Path(cwd) / DEFAULT_CACHE / "videos" / vid / "manifest.json"
-        if man.exists():
-            asset = json.loads(man.read_text())
-    if asset is None:
-        asset = engine.load_latest(cwd)
+    asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return "先 open 一个视频", []
     start = float(a.get("start_seconds", 0))
     end = float(a.get("end_seconds", min(start + 30, asset["duration"])))
-    res = engine.analyze_audio(asset["media_path"], start, end)
+    res = engine.analyze_audio(asset["media_path"], start, end, out_dir=asset.get("audio_dir"))
     return (json.dumps(res, ensure_ascii=False, indent=2)[:8000], [])
 
 
@@ -217,14 +230,7 @@ def tool_subtitles(a):
         import ocr as ocrmod
     except Exception as e:
         return ("OCR 不可用: %s" % e, [])
-    asset = None
-    vid = a.get("video_id")
-    if vid:
-        man = Path(cwd) / DEFAULT_CACHE / "videos" / vid / "manifest.json"
-        if man.exists():
-            asset = json.loads(man.read_text())
-    if asset is None:
-        asset = engine.load_latest(cwd)
+    asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return ("先 open 一个视频", [])
     media = asset["media_path"]
@@ -249,31 +255,30 @@ def tool_subtitles(a):
     return (json.dumps(out, ensure_ascii=False, indent=2)[:8000], [])
 
 
-def tool_status(a):
+def tool_list(a):
     cwd = a.get("cwd") or os.getcwd()
     st = engine.status(cwd)
-    asset = engine.load_latest(cwd)
-    info = {"cache": st}
-    if asset:
-        info["latest"] = {"id": asset["id"], "title": asset.get("title"),
-                          "duration": asset["duration"], "resolution": "%sx%s" % (asset["width"], asset["height"]),
-                          "cursor": asset.get("cursor", 0)}
-    return (json.dumps(info, ensure_ascii=False, indent=2), [])
+    return (json.dumps(st, ensure_ascii=False, indent=2), [])
+
+
+# 兼容别名：status/clean 仍可调用，但建议直接用文件系统
+def tool_status(a):
+    return tool_list(a)
 
 
 def tool_clean(a):
     cwd = a.get("cwd") or os.getcwd()
-    root = Path(cwd) / DEFAULT_CACHE
+    root = Path(cwd) / "workspace"
     if root.exists():
         shutil.rmtree(root)
         return ("已清空 %s" % root, [])
-    return ("无缓存", [])
+    return ("无 workspace", [])
 
 
 TOOLS = [
     {"name": "video_vision", "description": "观看视频：抽帧/故事板/音频分析/状态。纯 Python，无 Node。",
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["open", "frames", "sheet", "audio", "ocr", "subtitles", "status", "clean"]},
+         "action": {"type": "string", "enum": ["open", "list", "frames", "sheet", "audio", "ocr", "subtitles", "status", "clean"]},
          "source": {"type": "string", "description": "视频路径或链接"},
          "image": {"type": "string", "description": "要 OCR 的图片路径"},
          "video_id": {"type": "string"},
@@ -312,6 +317,8 @@ def dispatch(a):
         return tool_status(a)
     if act == "clean":
         return tool_clean(a)
+    if act == "list":
+        return tool_list(a)
     return ("未知 action: %s" % act, [])
 
 

@@ -3,7 +3,8 @@ import os, json, subprocess, time, math, struct, zlib, hashlib, shutil, urllib.r
 from pathlib import Path
 import numpy as np
 
-CACHE_DIRNAME = ".mvv-cache"
+WORKSPACE_DIRNAME = "workspace"
+CACHE_DIRNAME = WORKSPACE_DIRNAME  # 兼容别名
 DEFAULT_FRAME_WIDTH = 1280
 MAX_FRAMES = 12
 
@@ -338,22 +339,42 @@ def analyze_audio(media, start, end, out_dir=None):
 
 
 # ---------- cache ----------
+def _sanitize_title(name):
+    # 保留中文/字母/数字/常见标点，去掉路径分隔与控制字符
+    bad = set('/\\:*?"<>|\x00')
+    out = "".join(c for c in (name or "") if c not in bad).strip(" .")
+    return out or "video"
+
+
+def workspace_root(cwd):
+    return Path(cwd) / WORKSPACE_DIRNAME
+
+
 def cache_root(cwd):
-    return Path(cwd) / CACHE_DIRNAME
+    return workspace_root(cwd)
 
 
 def status(cwd):
-    root = cache_root(cwd)
+    root = workspace_root(cwd)
     if not root.exists():
-        return {"cache_directory": str(root), "videos": 0, "bytes": 0}
+        return {"workspace": str(root), "videos": [], "bytes": 0}
+    videos = []
     total = 0
-    n = 0
-    for p in root.rglob("*"):
-        if p.is_file():
-            total += p.stat().st_size
-            if p.name == "manifest.json":
-                n += 1
-    return {"cache_directory": str(root), "videos": n, "bytes": total}
+    for d in root.iterdir():
+        if not d.is_dir():
+            continue
+        meta = d / "meta.json"
+        if meta.exists():
+            try:
+                m = json.loads(meta.read_text())
+                videos.append({"id": m.get("id"), "title": m.get("title"),
+                               "duration": m.get("duration"), "path": m.get("media_path")})
+            except Exception:
+                pass
+        for pp in d.rglob("*"):
+            if pp.is_file():
+                total += pp.stat().st_size
+    return {"workspace": str(root), "videos": videos, "bytes": total}
 
 
 def open_local(cwd, path):
@@ -363,29 +384,47 @@ def open_local(cwd, path):
     if not p.exists():
         raise FileNotFoundError(str(p))
     info = probe(p)
-    cid = hashlib.sha1(str(p).encode()).hexdigest()[:12]
-    folder = cache_root(cwd) / "videos" / cid
+    title = _sanitize_title(p.stem)
+    folder = workspace_root(cwd) / title
     folder.mkdir(parents=True, exist_ok=True)
-    manifest = folder / "manifest.json"
-    asset = {"id": cid, "source": "local", "title": p.name, "source_url": None,
-             "media_path": str(p), "cursor": 0, "opened_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    for sub in ("video", "audio", "subtitles"):
+        (folder / sub).mkdir(exist_ok=True)
+    dest = folder / p.name
+    if dest.resolve() != p.resolve() and not dest.exists():
+        shutil.copy2(p, dest)
+    media_path = str(dest if dest.exists() else p)
+    asset = {"id": title, "source": "local", "title": p.name, "source_url": None,
+             "media_path": media_path, "workspace": str(folder),
+             "video_dir": str(folder / "video"),
+             "audio_dir": str(folder / "audio"),
+             "subtitles_dir": str(folder / "subtitles"),
+             "cursor": 0, "opened_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
              **info}
-    manifest.write_text(json.dumps(asset, ensure_ascii=False, indent=2))
-    (cache_root(cwd) / "latest.json").write_text(json.dumps({"id": cid}))
+    (folder / "meta.json").write_text(json.dumps(asset, ensure_ascii=False, indent=2))
+    (workspace_root(cwd) / "latest.txt").write_text(media_path)
     return asset
 
 
 def load_latest(cwd):
-    latest = cache_root(cwd) / "latest.json"
-    if not latest.exists():
+    lp = workspace_root(cwd) / "latest.txt"
+    if not lp.exists():
         return None
     try:
-        lid = json.loads(latest.read_text()).get("id")
+        path = Path(lp.read_text().strip())
     except Exception:
         return None
-    if not lid:
+    if not path.exists():
         return None
-    man = cache_root(cwd) / "videos" / lid / "manifest.json"
-    if not man.exists():
-        return None
-    return json.loads(man.read_text())
+    meta = path.parent / "meta.json"
+    if meta.exists():
+        try:
+            return json.loads(meta.read_text())
+        except Exception:
+            pass
+    info = probe(path)
+    return {"id": path.parent.name, "title": path.name, "source": "local",
+            "media_path": str(path), "workspace": str(path.parent),
+            "video_dir": str(path.parent / "video"),
+            "audio_dir": str(path.parent / "audio"),
+            "subtitles_dir": str(path.parent / "subtitles"),
+            **info}
