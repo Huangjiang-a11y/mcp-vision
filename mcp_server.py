@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """mcp-video-vision MCP 服务器（stdio 或 --http PORT）。手写 JSON-RPC，无 mcp SDK 依赖。"""
-import argparse, base64, json, math, os, re, sys, time, http.server, socketserver, threading
+import argparse, base64, hashlib, json, math, os, re, sys, time, http.server, socketserver, threading
 from pathlib import Path
 import engine
 
@@ -342,16 +342,15 @@ TOOLS = [
          "source": {"type": "string", "description": "视频路径或链接；本地用 file:// 协议"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"], "description": "low=480p medium=720p high=1080p max=源最大；按短边筛选，竖屏不误杀"},
          "cookies": {"type": "boolean", "description": "true 时使用仓库根目录的 cookies.txt"}}}},
-    {"name": "video", "description": "视频：analyze 整片理解（时间线抽帧 + 近似正方形网格页）；frame 单帧核对（可裁剪/缩放）。",
+    {"name": "video", "description": "视频：analyze 整片理解（时间线抽帧 + 近似正方形网格页）；frame 单帧核对。",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["analyze", "frame"]},
          "video_id": {"type": "string", "description": "工作区里的视频文件夹名（workspace/<名>），不传用最近打开"},
-         "video": {"type": "string", "description": "视频路径或链接；不传则用最近打开的视频"},
-         "baseFps": {"type": "number", "description": "analyze 采样帧率，默认 5，上限 12 帧"},
-         "t": {"type": "number", "description": "frame 的时间点（秒）"},
+         "time": {"type": "number", "description": "frame 的时间点（秒）"},
+         "quantity": {"type": "integer", "description": "analyze 抽帧数，默认 15"},
          "crop": {"type": "string", "description": "frame 裁剪：WxH+X+Y，如 720x300+0+880"},
-         "scale": {"type": "integer", "description": "frame 缩放宽度（像素）"},
-         }}},
+         "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
+                     "description": "像素上限（数值平方=最大像素数）：low=512 medium=1024 high=1536 max=2048"}}}},
     {"name": "audio", "description": "音频：分析 (RMS/峰值/静音/节拍)。transcribe 待实现。",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["levels", "extract"]},
@@ -402,6 +401,25 @@ def tool_peek(a):
     return ("peek t=%.2f" % frames[0]["seconds"], blocks)
 
 
+VIDEO_QUALITY_PX = {"low": 512, "medium": 1024, "high": 1536, "max": 2048}
+
+
+def _max_pixels(a):
+    n = VIDEO_QUALITY_PX.get(str(a.get("quality") or "medium").lower(), 1024)
+    return float(n) * n
+
+
+def _fit(src_w, src_h, max_px):
+    # 只缩不放；按面积上限等比缩，宽高取偶
+    px = float(src_w) * float(src_h)
+    if px <= 0 or px <= max_px:
+        return int(src_w), int(src_h)
+    k = math.sqrt(max_px / px)
+    w = max(2, int(round(src_w * k)) // 2 * 2)
+    h = max(2, int(round(src_h * k)) // 2 * 2)
+    return w, h
+
+
 def _parse_crop(spec):
     # WxH+X+Y -> ffmpeg crop=W:H:X:Y
     if not spec:
@@ -421,11 +439,14 @@ def tool_analyze(a):
     if asset is None:
         return (_missing(a), [])
     duration = float(asset.get("duration") or 0)
-    base_fps = float(a.get("baseFps") or a.get("base_fps") or 5)
+    if duration <= 0:
+        return ("视频时长为 0，无法抽帧", [])
     vw = float(asset.get("width") or 16)
     vh = float(asset.get("height") or 9)
     aspect = vw / vh
-    n0 = max(1, min(12, int(round(duration * base_fps)) or 1))
+    fw, _fh = _fit(vw, vh, _max_pixels(a))
+    qty = int(a.get("quantity") or 15)
+    n0 = max(1, min(qty, 30))
     # 先定网格，让整张图接近正方形；再按 cols*rows 抽帧，避免空格
     best = None
     for c in range(1, n0 + 1):
@@ -434,14 +455,15 @@ def tool_analyze(a):
             empty = c * r - n0
             if empty > 3:
                 continue
-            score = abs(math.log((c / r) * aspect)) + 0.05 * empty
+            flip = (c < r) if aspect >= 1 else (c > r)
+            score = abs(math.log((c / r) * aspect)) + 0.05 * empty + (0.25 if flip else 0)
             key = (round(score, 3), empty)
             if best is None or key < best[0]:
                 best = (key, c, r)
     cols, rows = best[1], best[2]
-    need = min(cols * rows, 18)
+    need = min(cols * rows, 30)
     ts = engine.sample_times(0, duration, need)
-    frames = engine.extract_frames(asset["media_path"], ts, width=int(a.get("width") or 640),
+    frames = engine.extract_frames(asset["media_path"], ts, width=fw,
                                    out_dir=asset.get("video_dir"), duration=duration)
     sheet_path = None
     if frames:
@@ -465,6 +487,7 @@ def tool_analyze(a):
         "duration": round(duration, 2),
         "width": asset.get("width"),
         "height": asset.get("height"),
+        "frameSize": [fw, int(round(fw / aspect)) if aspect else None],
         "frames": len(frames),
         "timeline": [{"t": f["seconds"], "path": f["path"]} for f in frames],
         "sheet": sheet_path,
@@ -479,32 +502,36 @@ def tool_frame(a):
     asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return (_missing(a), [])
-    if a.get("t") is None:
-        return ("frame 需要 t（秒）", [])
-    t = float(a.get("t"))
-    width = int(a.get("scale") or a.get("width") or 0) or None
+    t = a.get("time", a.get("t"))
+    if t is None:
+        return ("frame 需要 time（秒）", [])
+    t = float(t)
+    spec = str(a.get("crop") or "").strip()
     try:
-        crop = _parse_crop(a.get("crop"))
+        crop = _parse_crop(spec)
     except ValueError as e:
         return (str(e), [])
-    vf = [x for x in (crop,) if x]
-    if width:
-        vf.append("scale=%d:-1" % width)
+    if spec:
+        m = re.match(r"^(\d+)x(\d+)\+(\d+)\+(\d+)$", spec)
+        sw, sh = float(m.group(1)), float(m.group(2))
+    else:
+        sw = float(asset.get("width") or 16)
+        sh = float(asset.get("height") or 9)
+    tw, th = _fit(sw, sh, _max_pixels(a))
+    vf = ([crop] if crop else []) + ["scale=%d:%d" % (tw, th)]
     out_dir = Path(asset.get("video_dir") or ".")
     out_dir.mkdir(parents=True, exist_ok=True)
-    import hashlib
-    tag = hashlib.md5((",".join(vf) or "raw").encode()).hexdigest()[:6]
+    tag = hashlib.md5(",".join(vf).encode()).hexdigest()[:6]
     dest = out_dir / ("frame_%s-%s.jpg" % (engine.timecode(t).replace(":", ""), tag))
     cmd = ["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % t, "-i", asset["media_path"],
-           "-frames:v", "1"]
-    if vf:
-        cmd += ["-vf", ",".join(vf)]
-    cmd.append(str(dest))
+           "-frames:v", "1", "-vf", ",".join(vf), str(dest)]
     r = engine._run(cmd, timeout=120)
     if not dest.exists():
         return ("取帧失败: %s" % (r or "ffmpeg 无输出"), [])
     data = base64.b64encode(dest.read_bytes()).decode()
-    return (json.dumps({"ok": True, "t": round(t, 3), "path": str(dest)}, ensure_ascii=False),
+    return (json.dumps({"ok": True, "t": round(t, 3), "save": str(dest),
+                        "size": [tw, th], "quality": a.get("quality") or "medium"},
+                       ensure_ascii=False),
             [{"type": "image", "data": data, "mimeType": "image/jpeg"}])
 
 
