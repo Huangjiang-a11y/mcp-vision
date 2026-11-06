@@ -1,14 +1,20 @@
-# mcp-video-vision
+# mcp-vision
 
-**让 AI 看视频、听视频、读视频。** Python 实现的 MCP 服务器，**不依赖 Node**。
+**让 AI 看视频。** 纯 Python 的 MCP 服务器，不依赖 Node 运行时。
 
-把视频变成模型能消费的结构化内容：带时间戳的帧、音频信号分析、语音转写、字幕、B 站评论/弹幕、九宫格故事板。所有处理在本机完成。
+仓库结构参照 [dsh-video-vision](https://github.com/Tests4gptplay/dsh-video-vision) 的分层重写：
+保留同样的 `workspace` / `video` / `audio` / `subtitles` 四层与工作区目录布局，
+实现全部换成 Python —— ffmpeg 解码、numpy 计算、onnxruntime 跑 PP-OCRv4，
+没有浏览器、没有 Node 进程、没有 Electron。
+
+输入本地文件或 B 站链接，输出模型能直接消费的东西：带时间戳的帧、近似正方形的网格故事板、
+音频电平与静音区间、画面 OCR 与折叠后的字幕轨。全部在本机完成。
 
 ## 设计原则
 
-- **纯 Python**：stdlib + numpy + ffmpeg + yt-dlp + sherpa-onnx。无 Node、无 Pillow、无 ImageMagick。
-- **自含**：不复用任何外部仓库的代码（经验可借，代码重写）。
-- **MCP 优先**：stdio + HTTP 双入口，工具 schema 与 `mcp_server.py` 风格一致。
+- **纯 Python**：stdlib + numpy + onnxruntime（可选）+ ffmpeg/ffprobe + yt-dlp。无 Node、无 Pillow、无 ImageMagick。
+- **自含**：结构照搬，代码重写，不 import 任何外部仓库（见「致谢」）。
+- **MCP 优先**：stdio + HTTP 双入口，工具 schema 与实现一一对应。
 - **MIT**。
 
 ## 依赖
@@ -16,9 +22,8 @@
 - Python 3.10+（开发在 3.14）
 - `ffmpeg` / `ffprobe`（PATH 或配置）
 - `numpy`
-- `yt-dlp`（pip，多站下载）
-- `sherpa-onnx`（可选，ASR 转写）
-- RapidOCR（可选，画面 OCR）
+- `onnxruntime`（可选，OCR 用）
+- `yt-dlp`（可选，链接下载）
 
 ## 快速开始
 
@@ -145,8 +150,10 @@ python3 ocr.py out/ocr_test.png      # 单图
 
 ## 状态
 
-v0.1 已通：probe / frames / sheet / audio / ocr / status / clean。
-待做：transcribe（sherpa-onnx）、B 站元数据/评论/弹幕、TransNetV2 镜头检测、多站登录态。
+v0.2 已通：`workspace`（open / list）、`video`（analyze / frame）、
+`audio`（levels / extract）、`subtitles`（ocr / band）。
+
+未做：语音转写、B 站元数据/评论/弹幕、镜头切分、多站登录态。
 
 ## 致谢
 

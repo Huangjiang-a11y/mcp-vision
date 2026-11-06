@@ -1,4 +1,4 @@
-"""mcp-video-vision 引擎：probe / frames / sheet / audio / cache。纯 Python，无 Node。"""
+"""mcp-vision 引擎：probe / 抽帧 / 网格页 / 音频分析 / 工作区。纯 Python，无 Node。"""
 import os, json, subprocess, time, math, struct, zlib, hashlib, shutil, urllib.request
 from pathlib import Path
 import numpy as np

@@ -17,3 +17,8 @@ node_modules/
 .mvv-cache/
 models/*.onnx
 models/*.txt
+
+# 凭证与本地状态（绝不入库）
+cookies.txt
+.cookies_netscape.txt
+workspace/

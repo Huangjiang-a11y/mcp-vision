@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mcp-video-vision MCP 服务器（stdio 或 --http PORT）。手写 JSON-RPC，无 mcp SDK 依赖。"""
+"""mcp-vision MCP 服务器（stdio 或 --http PORT）。手写 JSON-RPC，无 mcp SDK 依赖。"""
 import argparse, base64, hashlib, json, math, os, re, sys, time, http.server, socketserver, threading
 from pathlib import Path
 import engine
@@ -559,8 +559,6 @@ def dispatch_audio(a):
         return tool_audio(a)
     if act in ("extract",):
         return tool_audio(a)
-    if act in ("transcribe", "transcript"):
-        return ("transcribe/transcript 待实现（sherpa-onnx）", [])
     return ("未知 action: %s" % act, [])
 
 
@@ -612,7 +610,7 @@ def handle(req):
     if method == "initialize":
         return {"jsonrpc": "2.0", "id": rid,
                 "result": {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
-                           "serverInfo": {"name": "mcp-video-vision", "version": "0.1.0"}}}
+                           "serverInfo": {"name": "mcp-vision", "version": "0.2.0"}}}
     if method == "notifications/initialized":
         return None if is_note else {"jsonrpc": "2.0", "id": rid, "result": {}}
     if method == "tools/list":
