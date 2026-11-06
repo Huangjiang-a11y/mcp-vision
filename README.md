@@ -101,6 +101,38 @@ export MVV_OCR_REC=models/doc_rec.onnx
 # 不用配 MVV_OCR_KEYS：模型名带 doc 时会自动找同目录的 ppocrv4_doc_dict.txt
 ```
 
+## 取窗：先选时间戳，再选看多久
+
+所有耗时动作（`video analyze` / `audio` / `subtitles`）共用一套取窗：
+
+| 参数 | 含义 |
+|---|---|
+| `start_seconds` | 从哪个时间戳开始，默认 0 |
+| `seconds` | 看多久；不传则看到上限或结尾 |
+| `end_seconds` | 兼容用，等价于 `seconds = end - start` |
+| `max_seconds` | 单次上限，默认 **900 秒（15 分钟）** |
+
+超过上限会被夹住，并在返回里带 `note` 说明夹到了哪里。长视频靠 `start_seconds` 翻页，
+不会一次跑到底。
+
+```jsonc
+{"action":"transcribe","start_seconds":1200,"seconds":600}   // 从 20 分开始，转 10 分钟
+```
+
+## 输出不裁剪
+
+`_dump()` 默认**不截断**。之前 8000 字符上限会把 97 段字幕砍成 55 段还不显眼，
+现在整份返回；确实要塞小响应时才显式传 `limit`。
+
+字幕可直接出 SRT：
+
+```jsonc
+{"action":"subtitles","start_seconds":0,"seconds":900,"format":"srt"}
+```
+
+落盘到 `workspace/<视频>/out/subtitles.srt`，也可用 `save_to` 指定。
+时间轴只有秒级精度，毫秒位固定补 `000`——不伪造精度。
+
 ## 性能
 
 实测环境：Android aarch64，Python 3.14，onnxruntime 1.31.1。

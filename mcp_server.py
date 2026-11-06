@@ -12,10 +12,13 @@ def _mask(s):
     return s
 
 
-def _dump(obj, limit=8000):
-    """序列化。超长时按数组逐半裁剪，保证返回的仍是合法 JSON。"""
+def _dump(obj, limit=0):
+    """序列化。默认**不裁剪**：调用方是模型，宁可长也别悄悄少一半。
+
+    limit>0 时仍保留旧的逐半裁剪逻辑，应急用。
+    """
     txt = json.dumps(obj, ensure_ascii=False, indent=2)
-    if len(txt) <= limit:
+    if limit <= 0 or len(txt) <= limit:
         return txt
     import copy
     o = copy.deepcopy(obj)
@@ -23,7 +26,6 @@ def _dump(obj, limit=8000):
         v = o.get(key)
         if isinstance(v, list) and v:
             o.setdefault("_truncated", {})[key] = len(v)
-    # 反复砍掉最长的数组，直到塞得下
     while len(json.dumps(o, ensure_ascii=False, indent=2)) > limit:
         cand = [k for k in o if isinstance(o[k], list) and len(o[k]) > 1]
         if not cand:
@@ -32,6 +34,50 @@ def _dump(obj, limit=8000):
         o[k] = o[k][: max(1, len(o[k]) // 2)]
         o.setdefault("_truncated", {})[k] = "只保留前 %d 条" % len(o[k])
     return json.dumps(o, ensure_ascii=False, indent=2)
+
+
+MAX_ANALYZE_SECONDS = 900.0   # 单次分析硬上限 15 分钟
+
+
+def _window(a, asset, default_span=None):
+    """统一的取窗：先定时间戳 start_seconds，再定看多久 seconds。
+
+    - start_seconds：从哪开始（默认 0）
+    - seconds / analyze_seconds：看多久；不给则看满 default_span 或上限
+    - end_seconds：仍兼容，等价于 sec = end - start
+    - max_seconds：单次上限，默认 900（15 分钟）
+    返回 (start, end, note)，note 非空表示被夹过。
+    """
+    dur = float(asset.get("duration") or 0)
+    start = max(0.0, float(a.get("start_seconds") or 0))
+    cap = float(a.get("max_seconds") or MAX_ANALYZE_SECONDS)
+    if cap <= 0:
+        cap = MAX_ANALYZE_SECONDS
+
+    span = None
+    if a.get("seconds") is not None:
+        span = float(a["seconds"])
+    elif a.get("analyze_seconds") is not None:
+        span = float(a["analyze_seconds"])
+    elif a.get("end_seconds") is not None:
+        span = max(0.0, float(a["end_seconds"]) - start)
+    elif default_span:
+        span = float(default_span)
+
+    if span is None:
+        span = cap
+    notes = []
+    if span > cap:
+        span = cap
+        notes.append("单次上限 %.0f 秒（max_seconds 可调）" % cap)
+    end = start + span
+    if dur > 0 and end > dur:
+        end = dur
+        notes.append("已到视频结尾 %.0f 秒" % dur)
+    if dur > 0 and start >= dur:
+        notes.append("start_seconds 超出时长，回退到 0")
+        start, end = 0.0, min(dur, cap)
+    return start, max(start, end), "；".join(notes)
 
 
 def _load_asset(cwd, vid=None):
@@ -250,9 +296,10 @@ def tool_audio(a):
     asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return _missing(a), []
-    start = float(a.get("start_seconds", 0))
-    end = float(a.get("end_seconds", min(start + 30, asset["duration"])))
+    start, end, note = _window(a, asset, default_span=30.0)
     res = engine.analyze_audio(asset["media_path"], start, end, out_dir=asset.get("audio_dir"))
+    if note:
+        res = dict(res, note=note)
     return (_dump(res), [])
 
 
@@ -302,6 +349,30 @@ def tool_ocr(a):
     return (_dump({"frames": len(out), "providers": o.providers, "results": out}), [])
 
 
+def _to_srt(segs):
+    """字幕段 → SRT。时间轴只有秒级精度，毫秒位一律补 000，不伪造精度。"""
+    def to_sec(v):
+        # 段里的时间既可能是秒数，也可能是 "00:06.000" / "1:02:03.000"
+        if isinstance(v, (int, float)):
+            return float(v)
+        parts = [float(x) for x in str(v).replace(",", ".").split(":")]
+        sec = 0.0
+        for p in parts:
+            sec = sec * 60 + p
+        return sec
+
+    def tc(sec):
+        t = int(round(max(0.0, to_sec(sec))))
+        return "%02d:%02d:%02d,000" % (t // 3600, t // 60 % 60, t % 60)
+    lines = []
+    for i, g in enumerate(segs, 1):
+        lines.append("%d" % i)
+        lines.append("%s --> %s" % (tc(g["from"]), tc(g["to"])))
+        lines.append(g["text"])
+        lines.append("")
+    return "\n".join(lines)
+
+
 def tool_subtitles(a):
     """字幕带 OCR：裁下 30% 画面 + 变帧跳过，输出折叠后的字幕段。"""
     cwd = str(Path(__file__).resolve().parent)
@@ -313,9 +384,7 @@ def tool_subtitles(a):
     if asset is None:
         return (_missing(a), [])
     media = asset["media_path"]
-    start = float(a.get("start_seconds", 0))
-    end = a.get("end_seconds")
-    end = float(end) if end is not None else float(asset["duration"])
+    start, end, window_note = _window(a, asset)
     band = a.get("band", "auto")
     try:
         res = ocrmod.ocr_subtitles(
@@ -331,6 +400,16 @@ def tool_subtitles(a):
     segs = ocrmod.fold_segments(res["results"], step=float(a.get("step", 1.0)))
     out = {"frames": res["frames"], "ocr_runs": res["ocr_runs"], "skipped": res["skipped"], "band": res.get("band"), "band_auto": res.get("band_auto"),
            "band_px": res["band_px"], "segment_count": len(segs), "segments": segs}
+    if window_note:
+        out["note"] = window_note
+    fmt = str(a.get("format") or "json").lower()
+    if fmt in ("srt", "subrip") or a.get("save_srt"):
+        srt = _to_srt(segs)
+        dest = Path(a.get("save_to") or (Path(asset["video_dir"]).parent / "out" / "subtitles.srt"))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(srt, encoding="utf-8")
+        out["srt_path"] = str(dest)
+        out["srt"] = srt if fmt in ("srt", "subrip") else None
     return (_dump(out), [])
 
 
@@ -367,6 +446,9 @@ TOOLS = [
          "video_id": {"type": "string", "description": "工作区里的视频文件夹名（workspace/<名>），不传用最近打开"},
          "time": {"type": "number", "description": "frame 的时间点（秒）"},
          "quantity": {"type": "integer", "description": "analyze 抽帧数，默认 15"},
+         "start_seconds": {"type": "number", "description": "从哪个时间戳开始，默认 0"},
+         "seconds": {"type": "number", "description": "看多久（秒）；不传则为 15 分钟上限内全长"},
+         "max_seconds": {"type": "number", "description": "单次上限秒数，默认 900（15 分钟）"},
          "crop": {"type": "string", "description": "frame 裁剪：WxH+X+Y，如 720x300+0+880"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
                      "description": "像素上限（数值平方=最大像素数）：low=512 medium=1024 high=1536 max=2048"}}}},
@@ -375,7 +457,9 @@ TOOLS = [
          "action": {"type": "string", "enum": ["levels", "extract", "transcribe"]},
          "video_id": {"type": "string", "description": "工作区里的视频文件夹名，不传用最近打开"},
          "start_seconds": {"type": "number", "description": "起始秒，默认 0"},
-         "end_seconds": {"type": "number", "description": "结束秒，默认到结尾"},
+         "seconds": {"type": "number", "description": "看多久（秒）；优先于 end_seconds"},
+         "end_seconds": {"type": "number", "description": "结束秒（兼容用）"},
+         "max_seconds": {"type": "number", "description": "单次上限秒数，默认 900（15 分钟）"},
          "format": {"type": "string", "description": "extract 的输出格式，如 wav / mp3"},
          "language": {"type": "string", "description": "transcribe 语言：zh / en / ja / ko，默认 zh"},
          "max_speech": {"type": "number", "description": "transcribe 单段上限秒数，默认 20"},
@@ -385,8 +469,12 @@ TOOLS = [
          "action": {"type": "string", "enum": ["ocr", "band"]},
          "video_id": {"type": "string", "description": "工作区里的视频文件夹名，不传用最近打开"},
          "image": {"type": "string", "description": "要 OCR 的图片路径"},
-         "start_seconds": {"type": "number"},
-         "end_seconds": {"type": "number"},
+         "start_seconds": {"type": "number", "description": "从哪个时间戳开始，默认 0"},
+         "seconds": {"type": "number", "description": "看多久（秒）；优先于 end_seconds"},
+         "end_seconds": {"type": "number", "description": "结束秒（兼容用）"},
+         "max_seconds": {"type": "number", "description": "单次上限秒数，默认 900（15 分钟）"},
+         "format": {"type": "string", "enum": ["json", "srt"], "description": "srt 额外写字幕文件"},
+         "save_to": {"type": "string", "description": "srt 落盘路径，默认 workspace/<视频>/out/subtitles.srt"},
          "step": {"type": "number", "description": "采样间隔秒，默认 1.0"},
          "band": {"description": "字幕带高度比例，默认 'auto'"},
          "skip_th": {"type": "number", "description": "跳帧阈值，默认 0.5"},
@@ -483,7 +571,8 @@ def tool_analyze(a):
                 best = (key, c, r)
     cols, rows = best[1], best[2]
     need = min(cols * rows, 30)
-    ts = engine.sample_times(0, duration, need)
+    win_start, win_end, window_note = _window(a, asset)
+    ts = engine.sample_times(win_start, win_end, need)
     frames = engine.extract_frames(asset["media_path"], ts, width=fw,
                                    out_dir=asset.get("video_dir"), duration=duration)
     sheet_path = None
@@ -580,14 +669,11 @@ def tool_transcribe(a):
     if asset is None:
         return (_missing(a), [])
     dur_total = float(asset.get("duration") or 0)
-    start = max(0.0, float(a.get("start_seconds") or 0))
-    end = a.get("end_seconds")
-    end = float(end) if end is not None else None
-    if dur_total > 0:
-        if start >= dur_total:
-            return (json.dumps({"ok": False, "error": "start_seconds=%.1f 超出时长 %.1f" % (start, dur_total)},
-                               ensure_ascii=False), [])
-        end = min(end, dur_total) if end is not None else None
+    if dur_total > 0 and float(a.get("start_seconds") or 0) >= dur_total:
+        return (json.dumps({"ok": False,
+                            "error": "start_seconds=%.1f 超出时长 %.1f" % (float(a["start_seconds"]), dur_total)},
+                           ensure_ascii=False), [])
+    start, end, window_note = _window(a, asset)
     language = str(a.get("language") or "zh")
     max_speech = float(a.get("max_speech") or 20)
     t0 = time.time()
@@ -606,6 +692,8 @@ def tool_transcribe(a):
         "text": "".join(x["text"] for x in segs),
         "elapsed": round(time.time() - t0, 2),
     }
+    if window_note:
+        out["note"] = window_note
     return (json.dumps(out, ensure_ascii=False, indent=2), [])
 
 
