@@ -323,7 +323,7 @@ def _stream_frames(media, start=0.0, end=None, step=1.0, width=960, crop=None):
             proc.kill()
 
 
-def detect_subtitle_band(media, samples=4, start=0.0, end=None, width=480,
+def detect_subtitle_band(media, samples=4, start=0.0, end=None, width=640,
                          lower_from=0.45, pad=0.02, engine=None):
     """利用少量采样点按 OCR 框坐标聚类，秒级自动锁定字幕带 (y0_ratio, y1_ratio)。
 
@@ -365,32 +365,42 @@ def detect_subtitle_band(media, samples=4, start=0.0, end=None, width=480,
         except Exception:
             continue
         for r in res:
-            y0 = (r["box"][1] + crop_y) / float(H)
-            y1 = (r["box"][3] + crop_y) / float(H)
+            b = r["box"]
+            y0 = (b[1] + crop_y) / float(H)
+            y1 = (b[3] + crop_y) / float(H)
             if (y1 - y0) < 0.02:  # 太矮的噪点排除
                 continue
-            boxes.append((y0, y1))
+            boxes.append((y0, y1, max(0.0, (b[2] - b[0]) / float(W))))
 
     if not boxes:
         return None
 
     # 按纵向重叠聚类
     clusters = []
-    for y0, y1 in boxes:
+    for y0, y1, wr in boxes:
         hit = None
         for c in clusters:
             if y0 < c["y1"] and y1 > c["y0"]:
                 hit = c
                 break
         if hit is None:
-            clusters.append({"y0": y0, "y1": y1, "count": 1})
+            clusters.append({"y0": y0, "y1": y1, "count": 1, "hs": [y1 - y0], "ws": [wr]})
         else:
             hit["y0"] = min(hit["y0"], y0)
             hit["y1"] = max(hit["y1"], y1)
             hit["count"] += 1
+            hit["hs"].append(y1 - y0)
+            hit["ws"].append(wr)
 
-    # 取出现次数最多的簇
-    best = max(clusters, key=lambda c: c["count"])
+    # 选簇不能只看框数：手写正文一行行的小字框永远比字幕多。
+    # 字幕的特征是「字大、横向长、位置靠下」，所以按字号×宽度×位置打分。
+    def score(c):
+        h = sum(c["hs"]) / len(c["hs"])
+        w = max(c["ws"]) if c["ws"] else 0.0
+        lower = max(0.0, c["y0"] - 0.5)     # 0.5 以下才算加分
+        return (h ** 1.5) * (0.3 + w) * (1.0 + lower * 2.0)
+
+    best = max(clusters, key=score)
     # 至少在 1 个采样点明确检出，且高宽比合理
     y0_band = max(0.0, best["y0"] - pad)
     y1_band = min(1.0, best["y1"] + pad)
@@ -403,76 +413,6 @@ def _text_sig(arr, th):
     """字幕的视觉签名：高亮像素掩码。背景在动也不影响文字轮廓。"""
     g = arr.astype(np.float32).mean(axis=2)
     return g > float(th)
-
-
-def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
-                  width=960, skip_th=0.5, text_th=220, min_conf=0.0, engine=None):
-    """字幕带 OCR：ffmpeg 管道流出带帧（不落盘），字幕没变的帧跳过不识别。
-
-    band: (y0_ratio, y1_ratio) 显式指定；"auto" 用 OCR 框坐标自动定位；None 等价 auto。
-    skip_th: 与上一帧的带内平均绝对差小于此值即判「没变」，复用上次结果。
-    """
-    if engine is None:
-        engine = get_engine()
-    band_used = band
-    band_auto = None
-    if band in (None, "auto"):
-        band_auto = detect_subtitle_band(media, samples=4, start=start, end=end, engine=engine)
-        band_used = band_auto or (0.70, 1.0)
-    y0r, y1r = float(band_used[0]), float(band_used[1])
-    out, prev, prev_res = [], None, None
-    n_ocr = n_skip = 0
-    W = H = 0
-    for i, t, arr in _stream_frames(media, start, end, step=step, width=width,
-                                    crop=(y0r, y1r)):
-        H, W = arr.shape[0], arr.shape[1]
-        if prev is not None and skip_th >= 0:
-            ps = _text_sig(prev, text_th)
-            cs = _text_sig(arr, text_th)
-            if not ps.any() and not cs.any():
-                d = 0.0
-            else:
-                d = 100.0 * float(np.mean(cs != ps))
-            if d < skip_th:
-                n_skip += 1
-                out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": True,
-                            "diff": round(d, 2),
-                            "conf": round(sum(r["conf"] for r in prev_res) / len(prev_res), 4) if prev_res else 0.0,
-                            "lines": [r["text"] for r in prev_res]})
-                continue
-        res = engine.ocr_image(arr, min_conf=min_conf)
-        n_ocr += 1
-        prev, prev_res = arr, res
-        conf = round(sum(r["conf"] for r in res) / len(res), 4) if res else 0.0
-        out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": False,
-                    "conf": conf, "lines": [r["text"] for r in res]})
-    return {"frames": len(out), "ocr_runs": n_ocr, "skipped": n_skip,
-            "band": [y0r, y1r], "band_auto": band_auto, "band_px": [W, H],
-            "step": float(step), "results": out}
-
-
-def _lev(a, b):
-    """编辑距离（字符串短，直接 DP）。"""
-    if a == b:
-        return 0
-    la, lb = len(a), len(b)
-    if la == 0:
-        return lb
-    if lb == 0:
-        return la
-    prev = list(range(lb + 1))
-    for i in range(1, la + 1):
-        cur = [i] + [0] * lb
-        ca = a[i - 1]
-        for j in range(1, lb + 1):
-            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != b[j - 1]))
-        prev = cur
-    return prev[lb]
-
-
-def _tc(sec):
-    sec = max(0.0, float(sec))
-    return "%02d:%06.3f" % (int(sec // 60), sec % 60)
 
 
 def fold_segments(results, min_len=2, max_edit_ratio=0.2, max_gap=5.0, step=1.0):
@@ -529,6 +469,20 @@ def fold_segments(results, min_len=2, max_edit_ratio=0.2, max_gap=5.0, step=1.0)
     return out
 
 
+def _keep_wide(res, W):
+    """带里往往还混着正文/手写小字：字幕是横向铺开的，只留最宽那一档。
+
+    判据：宽度 ≥ 本帧最大框宽的一半，且至少占画面 12%。
+    都不够宽时原样返回，避免把短字幕整帧丢掉。
+    """
+    if len(res) <= 1:
+        return res
+    ws = [(r["box"][2] - r["box"][0]) / float(W) for r in res]
+    top = max(ws)
+    keep = [r for r, w in zip(res, ws) if w >= max(0.12, top * 0.5)]
+    return keep or res
+
+
 def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
                   width=960, skip_th=0.5, text_th=220, min_conf=0.0, engine=None):
     """字幕带 OCR：ffmpeg 管道流出带帧（不落盘），字幕没变的帧跳过不识别。
@@ -564,7 +518,7 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
                             "conf": round(sum(r["conf"] for r in prev_res) / len(prev_res), 4) if prev_res else 0.0,
                             "lines": [r["text"] for r in prev_res]})
                 continue
-        res = engine.ocr_image(arr, min_conf=min_conf)
+        res = _keep_wide(engine.ocr_image(arr, min_conf=min_conf), W)
         n_ocr += 1
         prev, prev_res = arr, res
         conf = round(sum(r["conf"] for r in res) / len(res), 4) if res else 0.0
