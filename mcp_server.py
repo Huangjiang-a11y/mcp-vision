@@ -392,7 +392,7 @@ def tool_subtitles(a):
             step=float(a.get("step", 1.0)),
             band=band if band == "auto" else (float(band[0]), float(band[1])),
             width=int(a.get("width") or 960),
-            skip_th=float(a.get("skip_th", 0.5)),
+            skip_th=float(a.get("skip_th", 1.0)),
             text_th=float(a.get("text_th", 220)),
             engine=ocrmod.get_engine())
     except Exception as e:
@@ -477,7 +477,7 @@ TOOLS = [
          "save_to": {"type": "string", "description": "srt 落盘路径，默认 workspace/<视频>/out/subtitles.srt"},
          "step": {"type": "number", "description": "采样间隔秒，默认 1.0"},
          "band": {"description": "字幕带高度比例，默认 'auto'"},
-         "skip_th": {"type": "number", "description": "跳帧阈值，默认 0.5"},
+         "skip_th": {"type": "number", "description": "跳帧阈值（带内文字块变化百分比），默认 1.0；设 -1 关闭跳帧"},
          "text_th": {"type": "number", "description": "文字高亮阈值，默认 220"},
          "width": {"type": "integer"},
          }}},

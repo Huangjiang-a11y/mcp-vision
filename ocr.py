@@ -512,7 +512,7 @@ def _keep_wide(res, W):
 
 
 def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
-                  width=960, skip_th=0.5, text_th=220, min_conf=0.0, engine=None):
+                  width=960, skip_th=1.0, text_th=220, min_conf=0.0, engine=None):
     """字幕带 OCR：ffmpeg 管道流出带帧（不落盘），字幕没变的帧跳过不识别。
 
     band: (y0_ratio, y1_ratio) 显式指定；"auto" 用 OCR 框坐标自动定位；None 等价 auto。
