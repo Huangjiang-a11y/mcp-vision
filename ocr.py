@@ -323,7 +323,7 @@ def _stream_frames(media, start=0.0, end=None, step=1.0, width=960, crop=None):
             proc.kill()
 
 
-def detect_subtitle_band(media, samples=4, start=0.0, end=None, width=640,
+def detect_subtitle_band(media, samples=4, start=0.0, end=None, width=None,
                          lower_from=0.45, pad=0.02, engine=None):
     """利用少量采样点按 OCR 框坐标聚类，秒级自动锁定字幕带 (y0_ratio, y1_ratio)。
 
@@ -344,6 +344,10 @@ def detect_subtitle_band(media, samples=4, start=0.0, end=None, width=640,
     # 均匀挑选 samples 个探测时间点，稍微避开纯头尾
     pts = [start + span * (i + 1) / (samples + 1) for i in range(samples)]
     w0, h0 = _probe_wh(media)
+    # 采样宽度跟片源走：固定 480/640 时，720p 的字幕缩完只有 20 来像素高，检测不到。
+    # 取源宽的 75%，夹在 640~960 之间。
+    if width is None:
+        width = min(960, max(640, int(w0 * 0.75)))
     W = min(width, w0)
     H = int(round(h0 * W / w0))
     H -= H % 2
@@ -373,6 +377,15 @@ def detect_subtitle_band(media, samples=4, start=0.0, end=None, width=640,
             boxes.append((y0, y1, max(0.0, (b[2] - b[0]) / float(W))))
 
     if not boxes:
+        # 两条退路：先加密采样点（短窗口里字幕可能恰好不在那 4 个时刻），
+        # 再降一档分辨率（小字幕在高分辨率下框不出字）。
+        if samples < 8:
+            return detect_subtitle_band(media, samples=8, start=start, end=end, width=width,
+                                        lower_from=lower_from, pad=pad, engine=engine)
+        if width > 560:
+            return detect_subtitle_band(media, samples=8, start=start, end=end,
+                                        width=max(480, width // 2), lower_from=lower_from,
+                                        pad=pad, engine=engine)
         return None
 
     # 按纵向重叠聚类
