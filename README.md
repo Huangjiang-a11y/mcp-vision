@@ -147,3 +147,17 @@ python3 ocr.py out/ocr_test.png      # 单图
 
 v0.1 已通：probe / frames / sheet / audio / ocr / status / clean。
 待做：transcribe（sherpa-onnx）、B 站元数据/评论/弹幕、TransNetV2 镜头检测、多站登录态。
+
+## 致谢
+
+思路参考了以下三个项目。**代码没有复用，全部按 Python 重写**，运行时也不依赖它们。
+
+- [video-understanding-kit](https://github.com/yangjili6/video-understanding-kit) — 把视频拆成 `analyze`（整片）和 `frame`（单帧）两层的做法，以及网格故事板的排版思路。
+- [dsh-video-vision](https://github.com/Tests4gptplay/dsh-video-vision) — 链接规范化（`lib/ytdlp.js` 的 `normalizeSource`）、按时间点取原帧。
+- [dsh-bili-watch](https://github.com/ppppiii/dsh-bili-watch) — B 站下载与登录态（cookies）处理的经验。
+
+也感谢 ffmpeg、yt-dlp、numpy、onnxruntime 与 PP-OCRv4 的作者。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。© 2026 Huangjiang-a11y
