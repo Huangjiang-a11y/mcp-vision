@@ -23,6 +23,7 @@
 - `ffmpeg` / `ffprobe`（PATH 或配置）
 - `numpy`
 - `onnxruntime`（可选，OCR 用）
+- `sherpa-onnx`（可选，转写用）+ 模型 `~/asr/sensevoice`、`~/asr/vad/silero_vad.onnx`
 - `yt-dlp`（可选，链接下载）
 
 ## 快速开始
@@ -40,7 +41,7 @@ python3 mcp_server.py --http 8765
 - `workspace`：`open`（打开/下载）/ `list`
 - `video`：`analyze`（整片：时间线抽帧 + 近似正方形网格页）/ `frame`（单帧，可 `crop`）
   - `quantity` 抽帧数（默认 15）；`quality` 帧像素上限：low=512² medium=1024² high=1536² max=2048²
-- `audio`：`levels` / `extract`
+- `audio`：`levels` / `extract` / `transcribe`（silero-vad 自动断句 + SenseVoice，模型取自 `~/asr`）
 - `subtitles`：`ocr` / `band`
 
 视频固定在工作区 `workspace/<文件夹名>/`。
@@ -150,10 +151,13 @@ python3 ocr.py out/ocr_test.png      # 单图
 
 ## 状态
 
-v0.2 已通：`workspace`（open / list）、`video`（analyze / frame）、
-`audio`（levels / extract）、`subtitles`（ocr / band）。
+v0.3 已通：`workspace`（open / list）、`video`（analyze / frame）、
+`audio`（levels / extract / transcribe）、`subtitles`（ocr / band）。
 
-未做：语音转写、B 站元数据/评论/弹幕、镜头切分、多站登录态。
+转写链路：ffmpeg 直出 16k 单声道 → silero-vad 自动断句（阈值/静音/最长段交给模型，
+不写死时间网格）→ 逐段 SenseVoice 解码 → 丢弃纯语气词片段。
+
+未做：B 站元数据/评论/弹幕、镜头切分、多站登录态。
 
 ## 致谢
 

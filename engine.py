@@ -1,5 +1,5 @@
 """mcp-vision 引擎：probe / 抽帧 / 网格页 / 音频分析 / 工作区。纯 Python，无 Node。"""
-import os, json, subprocess, time, math, struct, zlib, hashlib, shutil, urllib.request
+import os, re, json, subprocess, time, math, struct, zlib, hashlib, shutil, urllib.request
 from pathlib import Path
 import numpy as np
 
@@ -428,3 +428,121 @@ def load_latest(cwd):
             "audio_dir": str(path.parent / "audio"),
             "subtitles_dir": str(path.parent / "subtitles"),
             **info}
+
+
+# ---------- STT：silero-vad 自动断句 + SenseVoice 识别 ----------
+ASR_HOME = Path(os.environ.get("MVV_ASR_HOME", "~/asr")).expanduser()
+
+_ASR_CACHE = {}
+
+
+def asr_models():
+    """返回 (sensevoice_model, tokens, silero_vad)。模型不在仓库里，复用 ~/asr。"""
+    if "paths" in _ASR_CACHE:
+        return _ASR_CACHE["paths"]
+    d = ASR_HOME
+    onnx = sorted([p for p in (d / "sensevoice").glob("*.onnx")], key=lambda p: (0 if "int8" in p.name else 1, len(p.name)))
+    tokens = d / "sensevoice" / "tokens.txt"
+    vad = d / "vad" / "silero_vad.onnx"
+    if not onnx or not tokens.exists():
+        raise RuntimeError("找不到 SenseVoice 模型：%s（用 MVV_ASR_HOME 指定）" % (d / "sensevoice"))
+    if not vad.exists():
+        raise RuntimeError("找不到 VAD 模型：%s（用 MVV_ASR_HOME 指定）" % vad)
+    _ASR_CACHE["paths"] = (str(onnx[0]), str(tokens), str(vad))
+    return _ASR_CACHE["paths"]
+
+
+def _asr_recognizer(threads=2, language="zh"):
+    key = ("rec", threads, language)
+    if key in _ASR_CACHE:
+        return _ASR_CACHE[key]
+    import sherpa_onnx
+    model, tokens, _ = asr_models()
+    rec = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+        model=model, tokens=tokens, num_threads=int(threads),
+        use_itn=True, language=language, debug=False)
+    _ASR_CACHE[key] = rec
+    return rec
+
+
+def pcm16k(media, start=0.0, end=None, timeout=1800):
+    """ffmpeg 直出 16k 单声道 float32，不落盘。"""
+    cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+           "-ss", "%.3f" % max(0.0, float(start))]
+    if end is not None:
+        cmd += ["-t", "%.3f" % (float(end) - float(start))]
+    cmd += ["-i", str(media), "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-"]
+    p = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    if p.returncode != 0:
+        err = (p.stderr or b"").decode("utf-8", "ignore")[:500]
+        raise RuntimeError("ffmpeg 提取音频失败：%s" % err)
+    if not p.stdout:
+        raise RuntimeError("ffmpeg 没有输出音频（该视频可能没有音轨）")
+    return np.frombuffer(p.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+
+
+def _is_noise_only(text):
+    t = re.sub(r"[，。！？、,.!?…~～\s]", "", text or "")
+    if not t:
+        return True
+    if len(t) > 3:
+        return False
+    return re.fullmatch(r"[啊哦嗯呃唉哎哈嘿呀哇喔噢欸呢呐啦哟]+", t) is not None
+
+
+def transcribe(media, start=0.0, end=None, language="zh", threads=2,
+               threshold=0.4, min_silence=0.4, max_speech=20.0, min_speech=0.25,
+               drop_noise=True):
+    """按 VAD 自动断句，逐段识别。返回 [{s, e, text}]（秒，相对整片）。"""
+    import sherpa_onnx
+    samples = pcm16k(media, start, end)
+    if samples.size == 0:
+        return [], 0.0
+    _, _, vad_path = asr_models()
+    cfg = sherpa_onnx.VadModelConfig()
+    cfg.silero_vad.model = vad_path
+    cfg.silero_vad.threshold = float(threshold)
+    cfg.silero_vad.min_silence_duration = float(min_silence)
+    cfg.silero_vad.max_speech_duration = float(max_speech)
+    cfg.silero_vad.min_speech_duration = float(min_speech)
+    cfg.sample_rate = 16000
+    cfg.num_threads = 1
+    vad = sherpa_onnx.VoiceActivityDetector(cfg, buffer_size_in_seconds=int(max_speech + 30))
+    rec = _asr_recognizer(threads, language)
+    sr = 16000
+    win = 512  # silero 硬性窗口
+    base = float(start)
+
+    out = []
+    dropped = 0
+
+    def _emit(seg):
+        nonlocal dropped
+        audio = np.array(seg.samples, dtype=np.float32).reshape(-1)
+        dur = len(audio) / float(sr)
+        if dur < min_speech:
+            return
+        s = rec.create_stream()
+        s.accept_waveform(sr, audio)
+        rec.decode_stream(s)
+        text = re.sub(r"\s+", "", str(s.result.text or "")).strip()
+        if not text:
+            return
+        if drop_noise and _is_noise_only(text):
+            dropped += 1
+            return
+        a = base + seg.start / float(sr)
+        out.append({"s": round(a, 2), "e": round(a + dur, 2), "text": text})
+
+    for i in range(0, samples.size, win):
+        vad.accept_waveform(samples[i:i + win])
+        while not vad.empty():
+            seg = vad.front
+            _emit(seg)
+            vad.pop()
+    vad.flush()
+    while not vad.empty():
+        seg = vad.front
+        _emit(seg)
+        vad.pop()
+    return out, samples.size / float(sr)

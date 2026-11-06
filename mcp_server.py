@@ -351,13 +351,15 @@ TOOLS = [
          "crop": {"type": "string", "description": "frame 裁剪：WxH+X+Y，如 720x300+0+880"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
                      "description": "像素上限（数值平方=最大像素数）：low=512 medium=1024 high=1536 max=2048"}}}},
-    {"name": "audio", "description": "音频：分析 (RMS/峰值/静音/节拍)。transcribe 待实现。",
+    {"name": "audio", "description": "音频：levels 电平分析 / extract 导出 / transcribe 转写（silero-vad 自动断句 + SenseVoice）。",
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["levels", "extract"]},
+         "action": {"type": "string", "enum": ["levels", "extract", "transcribe"]},
          "video_id": {"type": "string", "description": "工作区里的视频文件夹名，不传用最近打开"},
-         "start_seconds": {"type": "number"},
-         "end_seconds": {"type": "number"},
-         "format": {"type": "string"},
+         "start_seconds": {"type": "number", "description": "起始秒，默认 0"},
+         "end_seconds": {"type": "number", "description": "结束秒，默认到结尾"},
+         "format": {"type": "string", "description": "extract 的输出格式，如 wav / mp3"},
+         "language": {"type": "string", "description": "transcribe 语言：zh / en / ja / ko，默认 zh"},
+         "max_speech": {"type": "number", "description": "transcribe 单段上限秒数，默认 20"},
          }}},
     {"name": "subtitles", "description": "字幕：单图 OCR / 字幕带逐帧 OCR + 折叠。",
      "inputSchema": {"type": "object", "properties": {
@@ -553,12 +555,49 @@ def dispatch_video(a):
     return ("未知 action: %s" % act, [])
 
 
+def tool_transcribe(a):
+    cwd = str(Path(__file__).resolve().parent)
+    asset = _load_asset(cwd, a.get("video_id"))
+    if asset is None:
+        return (_missing(a), [])
+    dur_total = float(asset.get("duration") or 0)
+    start = max(0.0, float(a.get("start_seconds") or 0))
+    end = a.get("end_seconds")
+    end = float(end) if end is not None else None
+    if dur_total > 0:
+        if start >= dur_total:
+            return (json.dumps({"ok": False, "error": "start_seconds=%.1f 超出时长 %.1f" % (start, dur_total)},
+                               ensure_ascii=False), [])
+        end = min(end, dur_total) if end is not None else None
+    language = str(a.get("language") or "zh")
+    max_speech = float(a.get("max_speech") or 20)
+    t0 = time.time()
+    try:
+        segs, dur = engine.transcribe(asset["media_path"], start, end,
+                                      language=language, max_speech=max_speech)
+    except RuntimeError as e:
+        return (json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False, indent=2), [])
+    out = {
+        "ok": True,
+        "engine": "silero-vad + sensevoice",
+        "range": [round(start, 2), round(start + dur, 2)],
+        "duration": round(dur, 2),
+        "segments": len(segs),
+        "cues": segs,
+        "text": "".join(x["text"] for x in segs),
+        "elapsed": round(time.time() - t0, 2),
+    }
+    return (json.dumps(out, ensure_ascii=False, indent=2), [])
+
+
 def dispatch_audio(a):
     act = (a.get("action") or "levels").lower()
     if act in ("levels", "analyze"):
         return tool_audio(a)
     if act in ("extract",):
         return tool_audio(a)
+    if act in ("transcribe", "transcript", "stt"):
+        return tool_transcribe(a)
     return ("未知 action: %s" % act, [])
 
 
