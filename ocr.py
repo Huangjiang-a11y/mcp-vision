@@ -72,6 +72,12 @@ class PPOCR:
 
         det = pick("MVV_OCR_DET", "ch_PP-OCRv4_det_infer.onnx")
         rec = pick("MVV_OCR_REC", "ch_PP-OCRv4_rec_infer.onnx")
+        # 没显式指定 rec 时，只要目录里躺着 server_rec_doc 就用它：
+        # 印刷体和手写体都更准（实测 5:1），代价是 91MB 和约 +20% 时间。
+        if model_dir is None and not (os.environ.get("MVV_OCR_REC") or "").strip():
+            doc_rec = rec.with_name("ch_doc_PP-OCRv4_rec_server_infer.onnx")
+            if doc_rec.exists():
+                rec = doc_rec
         dic = pick("MVV_OCR_KEYS", "ppocr_keys_v1.txt")
         # server_rec_doc 用另一套 15629 字字典；没显式配 KEYS 时按模型名自动跟随，
         # 免得换了 rec 忘了换 dict，整段变成拼音乱码。
