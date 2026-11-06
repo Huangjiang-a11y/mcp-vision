@@ -75,13 +75,6 @@ class PPOCR:
         det = pick("MVV_OCR_DET", "ch_PP-OCRv4_det_infer.onnx")
         rec = pick("MVV_OCR_REC", "ch_PP-OCRv4_rec_infer.onnx")
         dic = pick("MVV_OCR_KEYS", "ppocr_keys_v1.txt")
-        # server_rec_doc 用另一套 15629 字字典；没显式配 KEYS 时按模型名自动跟随，
-        # 免得换了 rec 忘了换 dict，整段变成拼音乱码。
-        if model_dir is None and not (os.environ.get("MVV_OCR_KEYS") or "").strip() \
-                and "doc" in rec.name.lower():
-            alt = rec.with_name("ppocrv4_doc_dict.txt")
-            if alt.exists():
-                dic = alt
         for f in (det, rec, dic):
             if not f.exists():
                 raise FileNotFoundError(

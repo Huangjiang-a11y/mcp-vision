@@ -111,7 +111,7 @@ export MVV_VAD_MODEL=~/models/vad.onnx
 | 变量 | 用途 | 必填 |
 |---|---|---|
 | `MVV_OCR_DET` | PP-OCRv4 检测模型 | OCR 时必填 |
-| `MVV_OCR_REC` | PP-OCRv4 识别模型（可换 `server_rec_doc`，见 README） | OCR 时必填 |
+| `MVV_OCR_REC` | PP-OCRv4 识别模型 | OCR 时必填 |
 | `MVV_OCR_KEYS` | 字典 `ppocr_keys_v1.txt` | OCR 时必填 |
 | `MVV_ASR_MODEL` | SenseVoice onnx | 转写时必填 |
 | `MVV_ASR_TOKENS` | SenseVoice 的 tokens | 转写时必填 |

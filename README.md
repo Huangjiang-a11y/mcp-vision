@@ -77,30 +77,6 @@ python3 ocr.py out/ocr_test.png      # 单图
 - 调参：`DET_MAX_SIDE`（默认 720）、`DET_TH`（默认 0.2）、`MVV_ORT_THREADS`
 - 实测：880x320 三行中英混排，1.0s 识别完毕，置信度 0.94–0.98
 
-### 换用文档版识别模型（可选）
-
-`PP-OCRv4_server_rec_doc` 在 server_rec 基础上混入中文文档数据，词表扩到 15629 字
-（含部分繁体、日文、特殊符号）。本机实测：
-
-| 模型 | 体积 | 单行识别 | 印刷字幕 | 手写正文 |
-|---|---|---|---|---|
-| mobile rec（默认） | 10.9 MB | 0.33s | 高的就是泡泡屋 | 然后就游戏要起嘛 |
-| server_rec_doc | 91 MB | 0.92s | **搞的就是泡泡屋！** | 想后就游戏要起嘛 |
-
-结论：**印刷字幕更准**（补回了标点，也修了「高/搞」这类同音错字），手写没有稳定收益，
-耗时约 3 倍。只在需要高精度印刷文本时换。
-
-```sh
-B=https://huggingface.co/pitapo/rapidocr/resolve/main
-curl -L -o models/doc_rec.onnx "$B/onnx/PP-OCRv4/rec/ch_doc_PP-OCRv4_rec_server_infer.onnx"
-curl -L -o models/ppocrv4_doc_dict.txt \
-     "$B/paddle/PP-OCRv4/rec/ch_doc_PP-OCRv4_rec_server_infer/ppocrv4_doc_dict.txt"
-
-export MVV_OCR_DET=models/ch_PP-OCRv4_det_infer.onnx
-export MVV_OCR_REC=models/doc_rec.onnx
-# 不用配 MVV_OCR_KEYS：模型名带 doc 时会自动找同目录的 ppocrv4_doc_dict.txt
-```
-
 ## 取窗：先选时间戳，再选看多久
 
 所有耗时动作（`video analyze` / `audio` / `subtitles`）共用一套取窗：
@@ -132,6 +108,8 @@ export MVV_OCR_REC=models/doc_rec.onnx
 
 落盘到 `workspace/<视频>/out/subtitles.srt`，也可用 `save_to` 指定。
 时间轴只有秒级精度，毫秒位固定补 `000`——不伪造精度。
+
+=======
 
 ## 性能
 
