@@ -431,24 +431,29 @@ def load_latest(cwd):
 
 
 # ---------- STT：silero-vad 自动断句 + SenseVoice 识别 ----------
-ASR_HOME = Path(os.environ.get("MVV_ASR_HOME", "~/asr")).expanduser()
-
 _ASR_CACHE = {}
+
+# 转写用的三个模型路径，全部由环境变量给出，文件名不限：
+#   MVV_ASR_MODEL   SenseVoice 的 onnx
+#   MVV_ASR_TOKENS  对应的 tokens.txt
+#   MVV_VAD_MODEL   silero VAD 的 onnx
+ASR_ENV = ("MVV_ASR_MODEL", "MVV_ASR_TOKENS", "MVV_VAD_MODEL")
 
 
 def asr_models():
-    """返回 (sensevoice_model, tokens, silero_vad)。模型不在仓库里，复用 ~/asr。"""
+    """返回 (model, tokens, vad) 的绝对路径。"""
     if "paths" in _ASR_CACHE:
         return _ASR_CACHE["paths"]
-    d = ASR_HOME
-    onnx = sorted([p for p in (d / "sensevoice").glob("*.onnx")], key=lambda p: (0 if "int8" in p.name else 1, len(p.name)))
-    tokens = d / "sensevoice" / "tokens.txt"
-    vad = d / "vad" / "silero_vad.onnx"
-    if not onnx or not tokens.exists():
-        raise RuntimeError("找不到 SenseVoice 模型：%s（用 MVV_ASR_HOME 指定）" % (d / "sensevoice"))
-    if not vad.exists():
-        raise RuntimeError("找不到 VAD 模型：%s（用 MVV_ASR_HOME 指定）" % vad)
-    _ASR_CACHE["paths"] = (str(onnx[0]), str(tokens), str(vad))
+    vals = []
+    for name in ASR_ENV:
+        v = (os.environ.get(name) or "").strip()
+        if not v:
+            raise RuntimeError("未设置 %s。转写需要三个模型路径，见 INSTALL.md" % name)
+        p = Path(v).expanduser()
+        if not p.is_file():
+            raise RuntimeError("%s 指向的文件不存在：%s" % (name, p))
+        vals.append(str(p))
+    _ASR_CACHE["paths"] = tuple(vals)
     return _ASR_CACHE["paths"]
 
 

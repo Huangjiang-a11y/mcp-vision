@@ -1,6 +1,6 @@
 """PP-OCRv4 的 Python 实现：DB 检测 + CTC 识别。
 依赖：onnxruntime + numpy + ffmpeg（读图）。不依赖 OpenCV / Pillow / pyclipper。
-模型：ch_PP-OCRv4_det_infer.onnx / ch_PP-OCRv4_rec_infer.onnx / ppocr_keys_v1.txt
+模型：路径由 MVV_OCR_DET / MVV_OCR_REC / MVV_OCR_KEYS 指定（默认 models/ 下的 PP-OCRv4）
 """
 import os, sys, json, subprocess, math
 from pathlib import Path
@@ -61,12 +61,22 @@ def resize_bilinear(img, W, H):
 class PPOCR:
     def __init__(self, model_dir=None, providers=None):
         md = Path(model_dir or MODEL_DIR)
-        det = md / "ch_PP-OCRv4_det_infer.onnx"
-        rec = md / "ch_PP-OCRv4_rec_infer.onnx"
-        dic = md / "ppocr_keys_v1.txt"
+
+        def pick(var, name):
+            # 显式传了 model_dir 就听它的；否则环境变量优先，文件名不限
+            if model_dir is None:
+                v = (os.environ.get(var) or "").strip()
+                if v:
+                    return Path(v).expanduser()
+            return md / name
+
+        det = pick("MVV_OCR_DET", "ch_PP-OCRv4_det_infer.onnx")
+        rec = pick("MVV_OCR_REC", "ch_PP-OCRv4_rec_infer.onnx")
+        dic = pick("MVV_OCR_KEYS", "ppocr_keys_v1.txt")
         for f in (det, rec, dic):
             if not f.exists():
-                raise FileNotFoundError("缺模型文件: %s（见 INSTALL.md 3.1）" % f)
+                raise FileNotFoundError(
+                    "缺模型文件: %s（设 MVV_OCR_DET / MVV_OCR_REC / MVV_OCR_KEYS，见 INSTALL.md）" % f)
         so = ort.SessionOptions()
         so.intra_op_num_threads = int(os.environ.get("MVV_ORT_THREADS", "2"))
         so.log_severity_level = 3

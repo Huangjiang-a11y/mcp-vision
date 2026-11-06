@@ -23,7 +23,16 @@
 - `ffmpeg` / `ffprobe`（PATH 或配置）
 - `numpy`
 - `onnxruntime`（可选，OCR 用）
-- `sherpa-onnx`（可选，转写用）+ 模型 `~/asr/sensevoice`、`~/asr/vad/silero_vad.onnx`
+- `sherpa-onnx`（可选，转写用）
+
+模型不随仓库分发，路径全部走环境变量：
+
+| 变量 | 用途 |
+|---|---|
+| `MVV_OCR_DET` / `MVV_OCR_REC` / `MVV_OCR_KEYS` | PP-OCRv4 三个文件 |
+| `MVV_ASR_MODEL` / `MVV_ASR_TOKENS` / `MVV_VAD_MODEL` | SenseVoice + silero VAD |
+
+没配就只缺对应能力，抽帧和电平分析不受影响。详见 [INSTALL.md](INSTALL.md)。
 - `yt-dlp`（可选，链接下载）
 
 ## 快速开始
@@ -44,7 +53,7 @@ python3 mcp_server.py --http 8765
 - `workspace`：`open`（打开/下载）/ `list`
 - `video`：`analyze`（整片：时间线抽帧 + 近似正方形网格页）/ `frame`（单帧，可 `crop`）
   - `quantity` 抽帧数（默认 15）；`quality` 帧像素上限：low=512² medium=1024² high=1536² max=2048²
-- `audio`：`levels` / `extract` / `transcribe`（silero-vad 自动断句 + SenseVoice，模型取自 `~/asr`）
+- `audio`：`levels` / `extract` / `transcribe`（silero-vad 自动断句 + SenseVoice，模型路径由环境变量指定）
 - `subtitles`：`ocr` / `band`
 
 视频固定在工作区 `workspace/<文件夹名>/`。

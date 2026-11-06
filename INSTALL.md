@@ -47,72 +47,77 @@ pip install numpy onnxruntime sherpa-onnx yt-dlp
 
 `yt-dlp` 只有下载链接才需要；`onnxruntime` / `sherpa-onnx` 分别只给 OCR 和转写用，缺了不影响其它功能。
 
-## 3. 取模型
+## 3. 模型与环境变量
+
+模型放哪、叫什么名字都不重要，**用环境变量指过去就行**。
 
 ### 3.1 OCR（画面文字，约 16 MB）
 
-把三个文件放进 `models/`：
-
-| 文件 | 字节数 |
-|---|---|
-| `ch_PP-OCRv4_det_infer.onnx` | 4745517 |
-| `ch_PP-OCRv4_rec_infer.onnx` | 10857958 |
-| `ppocr_keys_v1.txt` | 26250 |
-
 ```sh
-mkdir -p models
+mkdir -p ~/models
 HF="https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4"
-curl -L -o models/ch_PP-OCRv4_det_infer.onnx "$HF/ch_PP-OCRv4_det_infer.onnx"
-curl -L -o models/ch_PP-OCRv4_rec_infer.onnx "$HF/ch_PP-OCRv4_rec_infer.onnx"
-curl -L -o models/ppocr_keys_v1.txt \
+curl -L -o ~/models/det.onnx  "$HF/ch_PP-OCRv4_det_infer.onnx"
+curl -L -o ~/models/rec.onnx  "$HF/ch_PP-OCRv4_rec_infer.onnx"
+curl -L -o ~/models/keys.txt \
   "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt"
+
+export MVV_OCR_DET=~/models/det.onnx
+export MVV_OCR_REC=~/models/rec.onnx
+export MVV_OCR_KEYS=~/models/keys.txt
 ```
 
-国内直连慢可以换魔搭的转存（同一份文件，字节数一致）：
+魔搭的转存（同一份文件，字节数一致）：
 
 ```sh
 MS="https://www.modelscope.cn/models/deadash/paddleocr/resolve/master"
-curl -L -o models/ch_PP-OCRv4_det_infer.onnx "$MS/ch_PP-OCRv4_det_infer.onnx"
-curl -L -o models/ch_PP-OCRv4_rec_infer.onnx "$MS/ch_PP-OCRv4_rec_infer.onnx"
-curl -L -o models/ppocr_keys_v1.txt          "$MS/ppocr_keys_v1.txt"
+curl -L -o ~/models/det.onnx "$MS/ch_PP-OCRv4_det_infer.onnx"
+curl -L -o ~/models/rec.onnx "$MS/ch_PP-OCRv4_rec_infer.onnx"
+curl -L -o ~/models/keys.txt "$MS/ppocr_keys_v1.txt"
 ```
+
+三个变量里缺哪个，那个就回落到仓库 `models/` 下的默认文件名，所以只设一部分也能跑。
 
 ### 3.2 转写（语音 → 文字，约 229 MB）
 
 两个模型：断句用 **silero VAD**，识别用 **SenseVoice**。
 
 ```sh
-mkdir -p ~/asr/sensevoice ~/asr/vad
 MS="https://www.modelscope.cn/models/xiaowangge/sherpa-onnx-sense-voice-small/resolve/master"
 
-# 识别模型（228 MB，int8）
-curl -L -o ~/asr/sensevoice/model.int8.onnx "$MS/model_q8.onnx"
-curl -L -o ~/asr/sensevoice/tokens.txt     "$MS/tokens.txt"
-
-# 断句模型（629 KB）
-curl -L -o ~/asr/vad/silero_vad.onnx \
+curl -L -o ~/models/asr.onnx   "$MS/model_q8.onnx"
+curl -L -o ~/models/asr.tokens "$MS/tokens.txt"
+curl -L -o ~/models/vad.onnx \
   "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+
+export MVV_ASR_MODEL=~/models/asr.onnx
+export MVV_ASR_TOKENS=~/models/asr.tokens
+export MVV_VAD_MODEL=~/models/vad.onnx
 ```
 
-几点：
+三个都是**必填**，少一个 `transcribe` 会直接报缺哪个变量。
 
-- 文件名必须是 `model.int8.onnx`，同目录**不要**留 fp32 的 `model.onnx`——加载器按名字优先挑 int8。
-- **VAD 别用魔搭那份 `silero-vad/model.onnx`（2.3 MB）**：那是另一版导出，喂给 sherpa-onnx 的 `VoiceActivityDetector` 会一段都切不出来（实测 30 秒人声得到 0 段）。
-- 上面那份 `model_q8.onnx` 与 sherpa-onnx 官方 int8 对同一段音频输出逐字相同，`tokens.txt` 的 md5 也一致（`17cdd9d5…`）。
-- 官方 1 GB 压缩包（含 fp32 + int8）只在上面不通时用：
+要点：
 
-```sh
-cd ~/asr
-curl -L -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
-tar xjf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2 \
-  sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx \
-  sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt
-mv sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/* ~/asr/sensevoice/
-rm -rf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17*
-```
+- **VAD 别用魔搭同仓库里的 `silero-vad/model.onnx`（2.3 MB）**：那是另一版导出，喂给
+  sherpa-onnx 的 `VoiceActivityDetector` 会一段都切不出来（实测 30 秒人声 0 段）。
+- 上面那份 `model_q8.onnx` 与 sherpa-onnx 官方 int8 对同一段音频输出逐字相同，
+  `tokens.txt` 的 md5 也一致（`17cdd9d5…`）。
+- 官方 1 GB 压缩包（含 fp32 + int8 两套）只在上面不通时用，解开后把 `model.int8.onnx`
+  和 `tokens.txt` 指给前两个变量即可。
+- `MVV_ASR_MODEL` 建议用 int8 权重（229 MB）；fp32 是 894 MB，慢且占内存。
 
-- 已经装过 `~/asr`（比如跑过语音输入服务）就直接复用，不用重下。
-- 换目录：`export MVV_ASR_HOME=/path/to/asr`（该目录下要有 `sensevoice/` 和 `vad/`）。
+### 3.3 变量总表
+
+| 变量 | 用途 | 必填 |
+|---|---|---|
+| `MVV_OCR_DET` | PP-OCRv4 检测模型 | OCR 时必填 |
+| `MVV_OCR_REC` | PP-OCRv4 识别模型 | OCR 时必填 |
+| `MVV_OCR_KEYS` | 字典 `ppocr_keys_v1.txt` | OCR 时必填 |
+| `MVV_ASR_MODEL` | SenseVoice onnx | 转写时必填 |
+| `MVV_ASR_TOKENS` | SenseVoice 的 tokens | 转写时必填 |
+| `MVV_VAD_MODEL` | silero VAD onnx | 转写时必填 |
+| `MVV_ORT_THREADS` | ORT 线程数，默认 2 | 否 |
+| `MVV_ORT_PROVIDERS` | ORT 加速器，默认 cpu | 否 |
 
 ## 4. 启动
 
@@ -131,13 +136,24 @@ python3 mcp_server.py --http 8765
   "mcpServers": {
     "vision": {
       "command": "python3",
-      "args": ["/absolute/path/to/mcp-vision/mcp_server.py"]
+      "args": ["/absolute/path/to/mcp-vision/mcp_server.py"],
+      "env": {
+        "MVV_OCR_DET": "/home/me/models/det.onnx",
+        "MVV_OCR_REC": "/home/me/models/rec.onnx",
+        "MVV_OCR_KEYS": "/home/me/models/keys.txt",
+        "MVV_ASR_MODEL": "/home/me/models/asr.onnx",
+        "MVV_ASR_TOKENS": "/home/me/models/asr.tokens",
+        "MVV_VAD_MODEL": "/home/me/models/vad.onnx"
+      }
     }
   }
 }
 ```
 
-必须用**绝对路径**，客户端的工作目录不一定是仓库目录。
+两点：
+
+- 必须用**绝对路径**（脚本和模型都是），客户端的工作目录不一定是仓库目录。
+- **`env` 块里的变量不会自动继承 shell 的 `export`**，需要显式写进去。只做抽帧/电平分析的话整块可以省略。
 
 ## 5. 验证
 
@@ -150,8 +166,8 @@ sh check.sh
 ```
   [OK] python3 / ffmpeg / ffprobe / numpy / onnxruntime / yt_dlp
   [OK] sherpa_onnx
-  [OK] STT 模型（~/asr）
-  [OK] OCR 模型已就位
+  [OK] STT 模型（MVV_ASR_MODEL / MVV_ASR_TOKENS / MVV_VAD_MODEL）
+  [OK] OCR 模型
   工具: ['workspace', 'video', 'audio', 'subtitles']
 ```
 
@@ -169,7 +185,7 @@ audio     transcribe start_seconds=0 end_seconds=30
 
 ```
 mcp-vision/
-├── models/            OCR 权重（gitignore）
+├── models/            OCR 权重默认位置（gitignore，可被环境变量覆盖）
 ├── workspace/         产物：每个视频一个文件夹（gitignore）
 │   └── <标题>/
 │       ├── video/     probe.json / frame_*.jpg / sheet_*.png
