@@ -58,39 +58,68 @@ python3 scripts/fetch-models.py
 
 模型落到 `models/`：`ch_PP-OCRv4_det_infer.onnx`、`ch_PP-OCRv4_rec_infer.onnx`、`ppocr_keys_v1.txt`。
 
-国内网络慢的话设镜像：
+国内网络慢，两条路任选：
 
 ```sh
+# A. 魔搭镜像（与 HF 那份字节数一致）
+MVV_MODEL_SOURCE=modelscope python3 scripts/fetch-models.py
+
+# B. HuggingFace 镜像站
 HF_ENDPOINT=https://hf-mirror.com python3 scripts/fetch-models.py
 ```
 
 ### 3.2 转写（语音 → 文字，约 229 MB）
 
-需要两个东西：**VAD**（断句）和 **SenseVoice**（识别）。
+一行装完（默认走魔搭，国内直连较快）：
+
+```sh
+python3 scripts/fetch-asr.py
+```
+
+| 文件 | 来源 | 大小 |
+|---|---|---|
+| `~/asr/sensevoice/model.int8.onnx` | 魔搭 | 228 MB |
+| `~/asr/sensevoice/tokens.txt` | 魔搭 | 309 KB |
+| `~/asr/vad/silero_vad.onnx` | GitHub | 629 KB |
+
+换目录：`MVV_ASR_HOME=/path/to/asr python3 scripts/fetch-asr.py`
+
+**VAD 为什么单独走 GitHub**：魔搭同一仓库里还有一份 `silero-vad/model.onnx`（2.3 MB），
+是另一个版本的导出，喂给 sherpa-onnx 的 `VoiceActivityDetector` 会**一段都切不出来**
+（实测 30 秒人声得到 0 段）。所以脚本只从 GitHub release 取 629 KB 那份。
+
+**手动下载**（脚本不通时）：
 
 ```sh
 mkdir -p ~/asr/sensevoice ~/asr/vad
+MS="https://www.modelscope.cn/models/xiaowangge/sherpa-onnx-sense-voice-small/resolve/master"
 
-# VAD：silero，629 KB
+curl -L -o ~/asr/sensevoice/model.int8.onnx "$MS/model_q8.onnx"
+curl -L -o ~/asr/sensevoice/tokens.txt     "$MS/tokens.txt"
 curl -L -o ~/asr/vad/silero_vad.onnx \
-  https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
+  "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+```
 
-# 识别模型：只从压缩包里取需要的两个文件
+文件名必须是 `model.int8.onnx`（加载器按名字挑 int8，别留 fp32 的 `model.onnx` 在同一目录）。
+
+**等价性**：魔搭那份 `model_q8.onnx` 与 sherpa-onnx 官方 int8 对同一段音频输出**逐字相同**，
+`tokens.txt` 的 md5 也一致（`17cdd9d5…`），不是另一套权重。
+
+**官方 1 GB 包**（包含 fp32 和 int8 两套，只在脚本失效时用）：
+
+```sh
 cd ~/asr
 curl -L -O https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
 tar xjf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2 \
   sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx \
   sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt
-mv sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx ~/asr/sensevoice/
-mv sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt       ~/asr/sensevoice/
-rm -rf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17 sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+mv sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/* ~/asr/sensevoice/
+rm -rf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17*
 ```
 
-压缩包约 1 GB（里面同时有 fp32 和 int8 两套权重），只留 int8 的 229 MB，下完记得删包。
+**已经装过 `~/asr`（跑过语音输入服务）就不用重下**，本项目直接复用。
 
-**已经装过 `~/asr`（比如跑过语音输入服务）就不用重下**，本项目直接复用那里的模型。
-
-不想放 `~/asr` 的话，用环境变量指过去：
+不想放 `~/asr`：
 
 ```sh
 export MVV_ASR_HOME=/path/to/asr   # 该目录下需要有 sensevoice/ 和 vad/
@@ -168,6 +197,9 @@ Termux 上 `pkg install python-onnxruntime` 后再 `pip install sherpa-onnx`；�
 
 **转写返回空**
 先确认视频有音轨：`ffprobe -show_streams`。纯 BGM 无对白的片子，VAD 会判成「没有语音」，属正常。
+
+**魔搭下载中断 / 太慢**
+脚本支持断点重跑：已下完的文件大小校验通过会直接跳过，`.part` 部分文件重跑会重新开始。
 
 **转写结果错字多**
 唱腔、强 BGM、方言都会掉准确率。可以对同一段换 `language`（`zh`/`en`/`ja`/`ko`）或用更小的 `max_speech` 重试。
