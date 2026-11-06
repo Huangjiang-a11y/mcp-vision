@@ -87,11 +87,8 @@ python3 ocr.py out/ocr_test.png      # 单图
 | mobile rec（默认） | 10.9 MB | 0.33s | 高的就是泡泡屋 | 然后就游戏要起嘛 |
 | server_rec_doc | 91 MB | 0.92s | **搞的就是泡泡屋！** | 想后就游戏要起嘛 |
 
-结论：**默认就用它**。只要 `models/` 里有这个文件，`ocr.get_engine()` 会自动选它，
-不用配环境变量；想回落 mobile 就显式设 `MVV_OCR_REC=models/ch_PP-OCRv4_rec_infer.onnx`。
-
-三个片子逐段比下来印刷体和手写体都是净收益（琵琶行 4:1，南充手写 4:1 且标题整句从乱码变正确）。
-代价是 91MB 磁盘和约 +20% 时间（40s 字幕 16.1s → 18.2s）。
+结论：**印刷字幕更准**（补回了标点，也修了「高/搞」这类同音错字），手写没有稳定收益，
+耗时约 3 倍。只在需要高精度印刷文本时换。
 
 ```sh
 B=https://huggingface.co/pitapo/rapidocr/resolve/main
