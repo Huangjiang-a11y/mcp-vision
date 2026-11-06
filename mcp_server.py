@@ -250,7 +250,7 @@ def tool_ocr(a):
             return ("找不到图片: %s" % p, [])
         try:
             rgb = ocrmod.load_rgb(p)
-            o = ocrmod.PPOCR()
+            o = ocrmod.get_ppocr()
             res = o.ocr_image(rgb)
         except Exception as e:
             return ("OCR 失败: %s" % e, [])
@@ -267,7 +267,7 @@ def tool_ocr(a):
         end = float(a.get("end_seconds", min(start + 30, asset["duration"])))
         ts = engine.sample_times(start, end, max(1, int(a.get("frames", 5))))
     try:
-        o = ocrmod.PPOCR()
+        o = ocrmod.get_ppocr()
     except Exception as e:
         return ("OCR 不可用: %s" % e, [])
     frames = engine.extract_frames(media, ts, width=int(a.get("width") or 1280), duration=asset["duration"])

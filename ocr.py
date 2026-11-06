@@ -5,7 +5,6 @@
 import os, sys, json, subprocess, math
 from pathlib import Path
 import numpy as np
-import onnxruntime as ort
 
 APP_DIR = Path(__file__).resolve().parent
 MODEL_DIR = Path(os.environ.get("MVV_MODEL_DIR") or (APP_DIR / "models"))
@@ -17,6 +16,7 @@ DET_TH = float(os.environ.get("DET_TH", "0.2"))
 
 def _providers():
     want = os.environ.get("MVV_ORT_PROVIDERS", "cpu").lower().split(",")
+    import onnxruntime as ort
     avail = ort.get_available_providers()
     m = {"cpu": "CPUExecutionProvider", "xnnpack": "XnnpackExecutionProvider", "nnapi": "NnapiExecutionProvider"}
     out = [m[w] for w in want if m.get(w) in avail]
@@ -77,12 +77,6 @@ class PPOCR:
             if not f.exists():
                 raise FileNotFoundError(
                     "缺模型文件: %s（设 MVV_OCR_DET / MVV_OCR_REC / MVV_OCR_KEYS，见 INSTALL.md）" % f)
-        so = ort.SessionOptions()
-        so.intra_op_num_threads = int(os.environ.get("MVV_ORT_THREADS", "2"))
-        so.log_severity_level = 3
-        prov = providers or _providers()
-        self.det = ort.InferenceSession(str(det), so, providers=prov)
-        self.rec = ort.InferenceSession(str(rec), so, providers=prov)
         self.dict = []
         for line in dic.read_text(encoding="utf-8").splitlines():
             if line.endswith("\r"):
@@ -90,7 +84,26 @@ class PPOCR:
             self.dict.append(line)
         while self.dict and self.dict[-1] == "":
             self.dict.pop()
-        self.providers = prov
+
+        self.providers = providers or _providers()
+        self._paths = (str(det), str(rec), str(dic))
+        self._rec = None  # 懒加载：det 框出字了才建，纯画面不花这份内存
+
+        import onnxruntime as ort
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = int(os.environ.get("MVV_ORT_THREADS", "2"))
+        so.log_severity_level = 3
+        self.det = ort.InferenceSession(str(det), so, providers=self.providers)
+
+    @property
+    def rec(self):
+        if self._rec is None:
+            import onnxruntime as ort
+            so = ort.SessionOptions()
+            so.intra_op_num_threads = int(os.environ.get("MVV_ORT_THREADS", "2"))
+            so.log_severity_level = 3
+            self._rec = ort.InferenceSession(self._paths[1], so, providers=self.providers)
+        return self._rec
 
     # ---- det ----
     def detect(self, rgb, thresh=DET_TH, max_side=DET_MAX_SIDE):
@@ -199,9 +212,21 @@ class PPOCR:
         return results
 
 
+_CACHE = {}
+
+
+def get_ppocr(model_dir=None, providers=None):
+    """懒加载 + 复用：第一次真正用到 OCR 时建会话，之后一直复用。"""
+    if model_dir is None and providers is None:
+        if "default" not in _CACHE:
+            _CACHE["default"] = PPOCR()
+        return _CACHE["default"]
+    return PPOCR(model_dir=model_dir, providers=providers)
+
+
 def ocr_file(path, **kw):
     rgb = load_rgb(path, long_side=kw.pop("long_side", None))
-    return PPOCR(**kw).ocr_image(rgb)
+    return get_ppocr(**kw).ocr_image(rgb)
 
 
 if __name__ == "__main__":

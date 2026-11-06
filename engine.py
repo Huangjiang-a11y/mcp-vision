@@ -513,7 +513,7 @@ def transcribe(media, start=0.0, end=None, language="zh", threads=2,
     cfg.sample_rate = 16000
     cfg.num_threads = 1
     vad = sherpa_onnx.VoiceActivityDetector(cfg, buffer_size_in_seconds=int(max_speech + 30))
-    rec = _asr_recognizer(threads, language)
+    rec = None  # 懒加载：VAD 真切出语音了再建识别器（229 MB，没人说话就别占）
     sr = 16000
     win = 512  # silero 硬性窗口
     base = float(start)
@@ -522,11 +522,13 @@ def transcribe(media, start=0.0, end=None, language="zh", threads=2,
     dropped = 0
 
     def _emit(seg):
-        nonlocal dropped
+        nonlocal dropped, rec
         audio = np.array(seg.samples, dtype=np.float32).reshape(-1)
         dur = len(audio) / float(sr)
         if dur < min_speech:
             return
+        if rec is None:
+            rec = _asr_recognizer(threads, language)
         s = rec.create_stream()
         s.accept_waveform(sr, audio)
         rec.decode_stream(s)
