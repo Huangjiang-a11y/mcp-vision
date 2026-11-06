@@ -377,14 +377,15 @@ def status(cwd):
     return {"workspace": str(root), "videos": videos, "bytes": total}
 
 
-def open_local(cwd, path):
+def open_local(cwd, path, title=None, url=None):
     p = Path(path)
     if not p.is_absolute():
         p = (Path(cwd) / p).resolve()
     if not p.exists():
         raise FileNotFoundError(str(p))
     info = probe(p)
-    title = _sanitize_title(p.stem)
+    display = (title or "").strip() or p.stem
+    title = _sanitize_title(display)
     folder = workspace_root(cwd) / title
     folder.mkdir(parents=True, exist_ok=True)
     for sub in ("video", "audio", "subtitles"):
@@ -393,7 +394,7 @@ def open_local(cwd, path):
     if dest.resolve() != p.resolve() and not dest.exists():
         shutil.copy2(p, dest)
     media_path = str(dest if dest.exists() else p)
-    asset = {"id": title, "source": "local", "title": p.name, "source_url": None,
+    asset = {"id": title, "source": "local", "title": display, "source_url": url,
              "media_path": media_path, "workspace": str(folder),
              "video_dir": str(folder / "video"),
              "audio_dir": str(folder / "audio"),

@@ -12,6 +12,28 @@ def _mask(s):
     return s
 
 
+def _dump(obj, limit=8000):
+    """序列化。超长时按数组逐半裁剪，保证返回的仍是合法 JSON。"""
+    txt = json.dumps(obj, ensure_ascii=False, indent=2)
+    if len(txt) <= limit:
+        return txt
+    import copy
+    o = copy.deepcopy(obj)
+    for key in ("segments", "results", "timeline", "cues", "frames"):
+        v = o.get(key)
+        if isinstance(v, list) and v:
+            o.setdefault("_truncated", {})[key] = len(v)
+    # 反复砍掉最长的数组，直到塞得下
+    while len(json.dumps(o, ensure_ascii=False, indent=2)) > limit:
+        cand = [k for k in o if isinstance(o[k], list) and len(o[k]) > 1]
+        if not cand:
+            return json.dumps({"_truncated": True, "note": "结果过大"}, ensure_ascii=False, indent=2)
+        k = max(cand, key=lambda x: len(json.dumps(o[x], ensure_ascii=False)))
+        o[k] = o[k][: max(1, len(o[k]) // 2)]
+        o.setdefault("_truncated", {})[k] = "只保留前 %d 条" % len(o[k])
+    return json.dumps(o, ensure_ascii=False, indent=2)
+
+
 def _load_asset(cwd, vid=None):
     """按新布局加载 asset：workspace/<title>/meta.json。"""
     root = Path(cwd) / "workspace"
@@ -132,14 +154,13 @@ def tool_open(a):
     out_dir = Path(cwd) / DEFAULT_CACHE / "downloads"
     out_dir.mkdir(parents=True, exist_ok=True)
     max_h = _QUALITY_MAP(a.get("quality"))
-    if max_h is None:
-        fmt = "bestvideo+bestaudio/best"
-    else:
-        # 用 min(w,h) 而非 height：竖屏视频 height 是长边，会误杀
-        fmt = "bestvideo[min(w,h)<=%d]+bestaudio/bestvideo+bestaudio/best" % max_h
+    # yt-dlp 的 format 表达式里没有 min()，竖屏也不能只看 height（那是长边）。
+    # 所以不写死过滤条件，改成 bv*+ba 全拿，再用 format_sort 把分辨率往上限上靠。
+    fmt = "bv*+ba/b"
     ydl_opts = {
         "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
         "format": fmt,
+        "format_sort": ["res:%d" % max_h] if max_h else None,
         "merge_output_format": "mp4",
         "quiet": True, "no_warnings": True, "noplaylist": True,
         "retries": 3, "fragment_retries": 3,
@@ -164,7 +185,7 @@ def tool_open(a):
                         fname = str(cand); break
     except Exception as e:
         return ("下载失败: %s" % str(e)[:300], [])
-    asset = engine.open_local(cwd, fname)
+    asset = engine.open_local(cwd, fname, title=info.get("title"), url=src)
     return ("已下载并打开 %s\n时长 %.2fs  %sx%s" % (
         asset["title"], asset["duration"], asset["width"], asset["height"]), [])
 
@@ -232,7 +253,7 @@ def tool_audio(a):
     start = float(a.get("start_seconds", 0))
     end = float(a.get("end_seconds", min(start + 30, asset["duration"])))
     res = engine.analyze_audio(asset["media_path"], start, end, out_dir=asset.get("audio_dir"))
-    return (json.dumps(res, ensure_ascii=False, indent=2)[:8000], [])
+    return (_dump(res), [])
 
 
 def tool_ocr(a):
@@ -254,8 +275,7 @@ def tool_ocr(a):
             res = o.ocr_image(rgb)
         except Exception as e:
             return ("OCR 失败: %s" % e, [])
-        return (json.dumps({"image": str(p), "providers": o.providers, "count": len(res), "results": res},
-                           ensure_ascii=False, indent=2)[:8000], [])
+        return (json.dumps({"image": str(p), "providers": o.providers, "count": len(res), "results": res}), [])
     asset = engine.load_latest(cwd)
     if asset is None:
         return ("先 open 一个视频，或给 image 参数", [])
@@ -279,8 +299,7 @@ def tool_ocr(a):
             res = []
         out.append({"seconds": f["seconds"], "timestamp": f["timestamp"],
                     "lines": [r["text"] for r in res]})
-    return (json.dumps({"frames": len(out), "providers": o.providers, "results": out},
-                       ensure_ascii=False, indent=2)[:8000], [])
+    return (_dump({"frames": len(out), "providers": o.providers, "results": out}), [])
 
 
 def tool_subtitles(a):
@@ -309,10 +328,10 @@ def tool_subtitles(a):
             engine=ocrmod.get_engine())
     except Exception as e:
         return ("字幕提取失败: %s" % e, [])
-    segs = ocrmod.fold_segments(res["results"])
+    segs = ocrmod.fold_segments(res["results"], step=float(a.get("step", 1.0)))
     out = {"frames": res["frames"], "ocr_runs": res["ocr_runs"], "skipped": res["skipped"], "band": res.get("band"), "band_auto": res.get("band_auto"),
            "band_px": res["band_px"], "segment_count": len(segs), "segments": segs}
-    return (json.dumps(out, ensure_ascii=False, indent=2)[:8000], [])
+    return (_dump(out), [])
 
 
 def tool_list(a):

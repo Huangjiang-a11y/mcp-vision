@@ -249,8 +249,6 @@ if __name__ == "__main__":
 
 
 # ---------- 加速：engine 复用 + 字幕带 + 变帧跳过 ----------
-_ENGINE = None
-
 
 def _tc(seconds):
     s = max(0.0, float(seconds))
@@ -258,11 +256,8 @@ def _tc(seconds):
 
 
 def get_engine(**kw):
-    """模块级单例：ONNX 会话只载一次（每次重载约 0.29s，纯浪费）。"""
-    global _ENGINE
-    if _ENGINE is None:
-        _ENGINE = PPOCR(**kw)
-    return _ENGINE
+    """旧名字，行为与 get_ppocr 一致：同一个实例，别维护两份缓存。"""
+    return get_ppocr(**kw)
 
 
 def _probe_wh(path):
@@ -475,7 +470,12 @@ def _lev(a, b):
     return prev[lb]
 
 
-def fold_segments(results, min_len=2, max_edit_ratio=0.2, max_gap=5.0):
+def _tc(sec):
+    sec = max(0.0, float(sec))
+    return "%02d:%06.3f" % (int(sec // 60), sec % 60)
+
+
+def fold_segments(results, min_len=2, max_edit_ratio=0.2, max_gap=5.0, step=1.0):
     """逐帧 OCR 结果折叠成字幕段。
 
     重要认知（实测《琵琶行》教学/音乐视频得出）：
@@ -486,10 +486,12 @@ def fold_segments(results, min_len=2, max_edit_ratio=0.2, max_gap=5.0):
 
     折叠规则（只处理真正的噪声）：
       1. 空帧/过短 → 丢弃
-      2. 与上段同文 → 同一 cue 延续，延长结束时间
-      3. 与上段近似（编辑距离 ≤ max(1, 20%·较短长度)）→ 同一 cue 的 OCR 变体，
-         合并并保留更长/置信度更高的那条
-      4. 否则（含「是上段后缀但更短」）→ 视为新 cue，单独成段
+      2. 与上段同文 → 同一 cue 延续
+      3. 与上段近似（编辑距离 ≤ max(1, 20%·较短长度)）→ 同一 cue 的 OCR 变体，合并
+      3b. 一方包含另一方（≥6 字，且间隔 ≤ 1.6 帧）→ 同一 cue 被 OCR 截断，合并
+      4. 否则 → 视为新 cue，单独成段
+
+    段长：单帧出现的 cue 至少持续 `step` 秒，否则时间轴全是零长度。
     """
     out = []
     for r in results:
@@ -497,25 +499,96 @@ def fold_segments(results, min_len=2, max_edit_ratio=0.2, max_gap=5.0):
         if len(txt) < min_len:
             continue
         conf = float(r.get("conf") or 0.0)
-        ts = r.get("timestamp")
         sec = float(r.get("seconds") or 0.0)
         if out:
             prev = out[-1]
             pt = prev["text"]
             if sec - prev["_sec"] <= max_gap:
+                same = False
                 if txt == pt:
-                    prev["to"] = ts
-                    prev["_sec"] = sec
-                    continue
-                m = min(len(txt), len(pt))
-                if m >= 4 and _lev(txt, pt) <= max(1, int(m * max_edit_ratio)):
+                    same = True
+                else:
+                    m = min(len(txt), len(pt))
+                    if m >= 4 and _lev(txt, pt) <= max(1, int(m * max_edit_ratio)):
+                        same = True
+                    elif m >= 6 and sec - prev["_sec"] <= step * 1.6 and (txt in pt or pt in txt):
+                        same = True
+                if same:
                     if len(txt) > len(pt) or (len(txt) == len(pt) and conf >= prev.get("conf", 0.0) - 0.02):
                         prev["text"] = txt
                         prev["conf"] = round(conf, 4)
-                    prev["to"] = ts
+                    prev["_last"] = sec
                     prev["_sec"] = sec
                     continue
-        out.append({"from": ts, "to": ts, "text": txt, "conf": round(conf, 4), "_sec": sec})
+        out.append({"from": _tc(sec), "to": _tc(sec + step), "text": txt,
+                    "conf": round(conf, 4), "_sec": sec, "_last": sec})
     for sg in out:
+        last = sg.pop("_last", sg.pop("_sec", 0.0))
         sg.pop("_sec", None)
+        sg["to"] = _tc(last + step)
     return out
+
+
+def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
+                  width=960, skip_th=0.5, text_th=220, min_conf=0.0, engine=None):
+    """字幕带 OCR：ffmpeg 管道流出带帧（不落盘），字幕没变的帧跳过不识别。
+
+    band: (y0_ratio, y1_ratio) 显式指定；"auto" 用 OCR 框坐标自动定位；None 等价 auto。
+    skip_th: 与上一帧的带内平均绝对差小于此值即判「没变」，复用上次结果。
+    """
+    if engine is None:
+        engine = get_engine()
+    band_used = band
+    band_auto = None
+    if band in (None, "auto"):
+        band_auto = detect_subtitle_band(media, samples=4, start=start, end=end, engine=engine)
+        band_used = band_auto or (0.70, 1.0)
+    y0r, y1r = float(band_used[0]), float(band_used[1])
+    out, prev, prev_res = [], None, None
+    n_ocr = n_skip = 0
+    W = H = 0
+    for i, t, arr in _stream_frames(media, start, end, step=step, width=width,
+                                    crop=(y0r, y1r)):
+        H, W = arr.shape[0], arr.shape[1]
+        if prev is not None and skip_th >= 0:
+            ps = _text_sig(prev, text_th)
+            cs = _text_sig(arr, text_th)
+            if not ps.any() and not cs.any():
+                d = 0.0
+            else:
+                d = 100.0 * float(np.mean(cs != ps))
+            if d < skip_th:
+                n_skip += 1
+                out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": True,
+                            "diff": round(d, 2),
+                            "conf": round(sum(r["conf"] for r in prev_res) / len(prev_res), 4) if prev_res else 0.0,
+                            "lines": [r["text"] for r in prev_res]})
+                continue
+        res = engine.ocr_image(arr, min_conf=min_conf)
+        n_ocr += 1
+        prev, prev_res = arr, res
+        conf = round(sum(r["conf"] for r in res) / len(res), 4) if res else 0.0
+        out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": False,
+                    "conf": conf, "lines": [r["text"] for r in res]})
+    return {"frames": len(out), "ocr_runs": n_ocr, "skipped": n_skip,
+            "band": [y0r, y1r], "band_auto": band_auto, "band_px": [W, H],
+            "step": float(step), "results": out}
+
+
+def _lev(a, b):
+    """编辑距离（字符串短，直接 DP）。"""
+    if a == b:
+        return 0
+    la, lb = len(a), len(b)
+    if la == 0:
+        return lb
+    if lb == 0:
+        return la
+    prev = list(range(lb + 1))
+    for i in range(1, la + 1):
+        cur = [i] + [0] * lb
+        ca = a[i - 1]
+        for j in range(1, lb + 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != b[j - 1]))
+        prev = cur
+    return prev[lb]
