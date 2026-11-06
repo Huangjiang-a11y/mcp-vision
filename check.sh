@@ -15,7 +15,7 @@ fi
 if [ -f models/ch_PP-OCRv4_det_infer.onnx ] && [ -f models/ch_PP-OCRv4_rec_infer.onnx ]; then
   echo "  [OK] OCR 模型已就位"
 else
-  echo "  [--] OCR 模型缺失（python3 scripts/fetch-models.py）"
+  echo "  [--] OCR 模型缺失（见 INSTALL.md 3.1）"
 fi
 echo "冒烟：MCP tools/list"
 printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n' | python3 mcp_server.py | tail -1 | python3 -c "import sys,json; d=json.load(sys.stdin); print('  工具:', [t['name'] for t in d['result']['tools']]); print('  action:', d['result']['tools'][0]['inputSchema']['properties']['action']['enum'])"

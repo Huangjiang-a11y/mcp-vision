@@ -66,7 +66,7 @@ class PPOCR:
         dic = md / "ppocr_keys_v1.txt"
         for f in (det, rec, dic):
             if not f.exists():
-                raise FileNotFoundError("缺模型文件: %s（跑 scripts/fetch-models.py）" % f)
+                raise FileNotFoundError("缺模型文件: %s（见 INSTALL.md 3.1）" % f)
         so = ort.SessionOptions()
         so.intra_op_num_threads = int(os.environ.get("MVV_ORT_THREADS", "2"))
         so.log_severity_level = 3

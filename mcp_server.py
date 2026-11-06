@@ -240,7 +240,7 @@ def tool_ocr(a):
     try:
         import ocr as ocrmod
     except Exception as e:
-        return ("OCR 不可用: %s（先 pkg install python-onnxruntime 并跑 scripts/fetch-models.py）" % e, [])
+        return ("OCR 不可用: %s（先 pkg install python-onnxruntime，并把 PP-OCRv4 放进 models/，见 INSTALL.md）" % e, [])
     src = a.get("image") or a.get("path")
     if src:
         p = Path(src)

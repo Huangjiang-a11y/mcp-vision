@@ -51,61 +51,55 @@ pip install numpy onnxruntime sherpa-onnx yt-dlp
 
 ### 3.1 OCR（画面文字，约 16 MB）
 
+把三个文件放进 `models/`：
+
+| 文件 | 字节数 |
+|---|---|
+| `ch_PP-OCRv4_det_infer.onnx` | 4745517 |
+| `ch_PP-OCRv4_rec_infer.onnx` | 10857958 |
+| `ppocr_keys_v1.txt` | 26250 |
+
 ```sh
-cd mcp-vision
-python3 scripts/fetch-models.py
+mkdir -p models
+HF="https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4"
+curl -L -o models/ch_PP-OCRv4_det_infer.onnx "$HF/ch_PP-OCRv4_det_infer.onnx"
+curl -L -o models/ch_PP-OCRv4_rec_infer.onnx "$HF/ch_PP-OCRv4_rec_infer.onnx"
+curl -L -o models/ppocr_keys_v1.txt \
+  "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt"
 ```
 
-模型落到 `models/`：`ch_PP-OCRv4_det_infer.onnx`、`ch_PP-OCRv4_rec_infer.onnx`、`ppocr_keys_v1.txt`。
-
-国内网络慢，两条路任选：
+国内直连慢可以换魔搭的转存（同一份文件，字节数一致）：
 
 ```sh
-# A. 魔搭镜像（与 HF 那份字节数一致）
-MVV_MODEL_SOURCE=modelscope python3 scripts/fetch-models.py
-
-# B. HuggingFace 镜像站
-HF_ENDPOINT=https://hf-mirror.com python3 scripts/fetch-models.py
+MS="https://www.modelscope.cn/models/deadash/paddleocr/resolve/master"
+curl -L -o models/ch_PP-OCRv4_det_infer.onnx "$MS/ch_PP-OCRv4_det_infer.onnx"
+curl -L -o models/ch_PP-OCRv4_rec_infer.onnx "$MS/ch_PP-OCRv4_rec_infer.onnx"
+curl -L -o models/ppocr_keys_v1.txt          "$MS/ppocr_keys_v1.txt"
 ```
 
 ### 3.2 转写（语音 → 文字，约 229 MB）
 
-一行装完（默认走魔搭，国内直连较快）：
-
-```sh
-python3 scripts/fetch-asr.py
-```
-
-| 文件 | 来源 | 大小 |
-|---|---|---|
-| `~/asr/sensevoice/model.int8.onnx` | 魔搭 | 228 MB |
-| `~/asr/sensevoice/tokens.txt` | 魔搭 | 309 KB |
-| `~/asr/vad/silero_vad.onnx` | GitHub | 629 KB |
-
-换目录：`MVV_ASR_HOME=/path/to/asr python3 scripts/fetch-asr.py`
-
-**VAD 为什么单独走 GitHub**：魔搭同一仓库里还有一份 `silero-vad/model.onnx`（2.3 MB），
-是另一个版本的导出，喂给 sherpa-onnx 的 `VoiceActivityDetector` 会**一段都切不出来**
-（实测 30 秒人声得到 0 段）。所以脚本只从 GitHub release 取 629 KB 那份。
-
-**手动下载**（脚本不通时）：
+两个模型：断句用 **silero VAD**，识别用 **SenseVoice**。
 
 ```sh
 mkdir -p ~/asr/sensevoice ~/asr/vad
 MS="https://www.modelscope.cn/models/xiaowangge/sherpa-onnx-sense-voice-small/resolve/master"
 
+# 识别模型（228 MB，int8）
 curl -L -o ~/asr/sensevoice/model.int8.onnx "$MS/model_q8.onnx"
 curl -L -o ~/asr/sensevoice/tokens.txt     "$MS/tokens.txt"
+
+# 断句模型（629 KB）
 curl -L -o ~/asr/vad/silero_vad.onnx \
   "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
 ```
 
-文件名必须是 `model.int8.onnx`（加载器按名字挑 int8，别留 fp32 的 `model.onnx` 在同一目录）。
+几点：
 
-**等价性**：魔搭那份 `model_q8.onnx` 与 sherpa-onnx 官方 int8 对同一段音频输出**逐字相同**，
-`tokens.txt` 的 md5 也一致（`17cdd9d5…`），不是另一套权重。
-
-**官方 1 GB 包**（包含 fp32 和 int8 两套，只在脚本失效时用）：
+- 文件名必须是 `model.int8.onnx`，同目录**不要**留 fp32 的 `model.onnx`——加载器按名字优先挑 int8。
+- **VAD 别用魔搭那份 `silero-vad/model.onnx`（2.3 MB）**：那是另一版导出，喂给 sherpa-onnx 的 `VoiceActivityDetector` 会一段都切不出来（实测 30 秒人声得到 0 段）。
+- 上面那份 `model_q8.onnx` 与 sherpa-onnx 官方 int8 对同一段音频输出逐字相同，`tokens.txt` 的 md5 也一致（`17cdd9d5…`）。
+- 官方 1 GB 压缩包（含 fp32 + int8）只在上面不通时用：
 
 ```sh
 cd ~/asr
@@ -117,13 +111,8 @@ mv sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/* ~/asr/sensevoice/
 rm -rf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17*
 ```
 
-**已经装过 `~/asr`（跑过语音输入服务）就不用重下**，本项目直接复用。
-
-不想放 `~/asr`：
-
-```sh
-export MVV_ASR_HOME=/path/to/asr   # 该目录下需要有 sensevoice/ 和 vad/
-```
+- 已经装过 `~/asr`（比如跑过语音输入服务）就直接复用，不用重下。
+- 换目录：`export MVV_ASR_HOME=/path/to/asr`（该目录下要有 `sensevoice/` 和 `vad/`）。
 
 ## 4. 启动
 
@@ -198,8 +187,8 @@ Termux 上 `pkg install python-onnxruntime` 后再 `pip install sherpa-onnx`；�
 **转写返回空**
 先确认视频有音轨：`ffprobe -show_streams`。纯 BGM 无对白的片子，VAD 会判成「没有语音」，属正常。
 
-**魔搭下载中断 / 太慢**
-脚本支持断点重跑：已下完的文件大小校验通过会直接跳过，`.part` 部分文件重跑会重新开始。
+**下载中断 / 太慢**
+`curl -C -` 可以续传：`curl -C - -L -o 目标文件 "地址"`。下完用 `ls -l` 对一下字节数。
 
 **转写结果错字多**
 唱腔、强 BGM、方言都会掉准确率。可以对同一段换 `language`（`zh`/`en`/`ja`/`ko`）或用更小的 `max_speech` 重试。
@@ -259,4 +248,7 @@ OCR 与语音转写的输出**可能有错**，尤其在唱腔、方言、强背
 - Silero VAD：MIT
 - sherpa-onnx：Apache-2.0
 
-模型文件不随本仓库分发。
+**七、模型分发**
+
+本仓库**不包含任何模型权重**，也不附带下载脚本。INSTALL.md 里只给出去往第三方托管地的地址，
+文件由你自行获取；这些地址的可用性、访问条款与许可由托管方决定，与本项目无关。

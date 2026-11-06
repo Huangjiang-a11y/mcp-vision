@@ -60,7 +60,7 @@ PP-OCRv4（det + rec）在 **numpy + onnxruntime** 上从零实现，不依赖 O
 
 ```sh
 pkg install python-onnxruntime
-python3 scripts/fetch-models.py      # 约 16MB；必要时设 https_proxy
+# 先按 INSTALL.md 3.1 把 PP-OCRv4 三个文件放进 models/（约 16MB）
 python3 ocr.py out/ocr_test.png      # 单图
 ```
 
