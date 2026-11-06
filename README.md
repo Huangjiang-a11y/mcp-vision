@@ -87,8 +87,15 @@ python3 ocr.py out/ocr_test.png      # 单图
 | mobile rec（默认） | 10.9 MB | 0.33s | 高的就是泡泡屋 | 然后就游戏要起嘛 |
 | server_rec_doc | 91 MB | 0.92s | **搞的就是泡泡屋！** | 想后就游戏要起嘛 |
 
-结论：**默认就用它**。只要 `models/` 里有这个文件，`ocr.get_engine()` 会自动选它，
-不用配环境变量；想回落 mobile 就显式设 `MVV_OCR_REC=models/ch_PP-OCRv4_rec_infer.onnx`。
+结论：**默认走两级**——先用 mobile 快跑，置信度低于 `MVV_OCR_ESC_CONF`（默认 0.90）
+的行再请 server_doc 复核。印刷体正常行几乎不触发，手写/难句才付重模型的代价。
+
+| 模式 | 环境变量 | 说明 |
+|---|---|---|
+| 降级重跑（默认） | `MVV_OCR_MODE=escalate` | 快 + 难句照样准 |
+| 全程重模型 | `MVV_OCR_MODE=doc` | 最准，最慢 |
+| 全程轻模型 | `MVV_OCR_MODE=mobile` | 最快，错字自担 |
+| 指定模型 | `MVV_OCR_REC=...` | 单模型，不重跑 |
 
 三个片子逐段比下来印刷体和手写体都是净收益（琵琶行 4:1，南充手写 4:1 且标题整句从乱码变正确）。
 代价是 91MB 磁盘和约 +20% 时间（40s 字幕 16.1s → 18.2s）。

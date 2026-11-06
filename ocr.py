@@ -13,6 +13,19 @@ STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 DET_MAX_SIDE = int(os.environ.get("DET_MAX_SIDE", "720"))
 # 识别输入的最大宽度：字幕行短，320 够；手写长行降到 256/192 明显掉字，别乱调
 REC_MAX_W = int(os.environ.get("MVV_REC_MAX_W", "320"))
+ESC_CONF = float(os.environ.get("MVV_OCR_ESC_CONF", "0.90"))
+_MODELS_DIR = Path(os.environ.get("MVV_OCR_DIR") or (Path(__file__).resolve().parent / "models"))
+DOC_REC = Path(os.environ.get("MVV_OCR_DOC_REC") or (_MODELS_DIR / "ch_doc_PP-OCRv4_rec_server_infer.onnx"))
+DOC_DICT = _MODELS_DIR / "ppocrv4_doc_dict.txt"
+
+
+def _load_dict(path):
+    dic = []
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        dic.append(line.rstrip("\r"))
+    while dic and dic[-1] == "":
+        dic.pop()
+    return dic
 DET_TH = float(os.environ.get("DET_TH", "0.2"))
 
 
@@ -74,13 +87,19 @@ class PPOCR:
 
         det = pick("MVV_OCR_DET", "ch_PP-OCRv4_det_infer.onnx")
         rec = pick("MVV_OCR_REC", "ch_PP-OCRv4_rec_infer.onnx")
-        # 没显式指定 rec 时，只要目录里躺着 server_rec_doc 就用它：
-        # 印刷体和手写体都更准（实测 5:1），代价是 91MB 和约 +20% 时间。
-        if model_dir is None and not (os.environ.get("MVV_OCR_REC") or "").strip():
-            doc_rec = rec.with_name("ch_doc_PP-OCRv4_rec_server_infer.onnx")
-            if doc_rec.exists():
-                rec = doc_rec
+        _mode = os.environ.get("MVV_OCR_MODE", "escalate").strip().lower()
+        _forced = bool((os.environ.get("MVV_OCR_REC") or "").strip())
+        if not _forced:
+            _doc = rec.with_name("ch_doc_PP-OCRv4_rec_server_infer.onnx")
+            if _mode == "doc" and _doc.exists():
+                rec = _doc                     # 全程重模型
+            elif _mode in ("escalate", "mobile") and rec.exists():
+                pass                           # 主用 mobile，重模型按需复核
+            elif _doc.exists():
+                rec = _doc                     # mobile 不在，退回重模型
         dic = pick("MVV_OCR_KEYS", "ppocr_keys_v1.txt")
+        if rec.name != "ch_PP-OCRv4_rec_infer.onnx" and (rec.parent / "ppocrv4_doc_dict.txt").exists():
+            dic = rec.parent / "ppocrv4_doc_dict.txt"
         # server_rec_doc 用另一套 15629 字字典；没显式配 KEYS 时按模型名自动跟随，
         # 免得换了 rec 忘了换 dict，整段变成拼音乱码。
         if model_dir is None and not (os.environ.get("MVV_OCR_KEYS") or "").strip() \
@@ -102,7 +121,13 @@ class PPOCR:
 
         self.providers = providers or _providers()
         self._paths = (str(det), str(rec), str(dic))
-        self._rec = None  # 懒加载：det 框出字了才建，纯画面不花这份内存
+        self._rec = None          # 主识别模型，懒加载
+        self._rec_doc = None      # 降级重跑用的重模型
+        self._doc_dict = None
+        self.escalated = 0
+        self.mode = os.environ.get("MVV_OCR_MODE", "escalate").strip().lower()
+        if (os.environ.get("MVV_OCR_REC") or "").strip():
+            self.mode = "single"
 
         import onnxruntime as ort
         so = ort.SessionOptions()
@@ -119,6 +144,18 @@ class PPOCR:
             so.log_severity_level = 3
             self._rec = ort.InferenceSession(self._paths[1], so, providers=self.providers)
         return self._rec
+
+    @property
+    def rec_doc(self):
+        """重模型：只在主模型置信度低时启用。"""
+        if self._rec_doc is None and DOC_REC.exists():
+            import onnxruntime as ort
+            so = ort.SessionOptions()
+            so.intra_op_num_threads = int(os.environ.get("MVV_ORT_THREADS", "2"))
+            so.log_severity_level = 3
+            self._rec_doc = ort.InferenceSession(str(DOC_REC), so, providers=self.providers)
+            self._doc_dict = _load_dict(DOC_DICT if DOC_DICT.exists() else self._paths[2])
+        return self._rec_doc
 
     # ---- det ----
     def detect(self, rgb, thresh=DET_TH, max_side=DET_MAX_SIDE):
@@ -183,36 +220,46 @@ class PPOCR:
         return results
 
     # ---- rec ----
-    def recognize(self, rgb, box):
+    def _decode(self, sess, dic, x):
+        name = sess.get_inputs()[0].name
+        preds = np.asarray(sess.run(None, {name: x})[0])[0]
+        best = preds.argmax(axis=1)
+        bestv = preds.max(axis=1)
+        chars, conf_sum, conf_n, prev = [], 0.0, 0, -1
+        for t in range(preds.shape[0]):
+            b = int(best[t])
+            if b != 0 and b != prev:
+                ci = b - 1
+                chars.append(dic[ci] if 0 <= ci < len(dic) else "")
+                conf_sum += float(bestv[t]); conf_n += 1
+            prev = b
+        return "".join(chars), (conf_sum / conf_n if conf_n else 0.0)
+
+    def _prep(self, rgb, box):
         x0, y0, x1, y1 = box
         x0 = max(0, x0); y0 = max(0, y0)
         x1 = min(rgb.shape[1] - 1, x1); y1 = min(rgb.shape[0] - 1, y1)
         crop = rgb[y0:y1+1, x0:x1+1]
         if crop.size == 0:
-            return "", 0.0
+            return None
         bw, bh = crop.shape[1], crop.shape[0]
-        target_h = 48
-        target_w = int(max(16, min(REC_MAX_W, round((bw / max(bh, 1)) * target_h))))
-        resized = resize_bilinear(crop, target_w, target_h).astype(np.float32) / 255.0 - 0.5
-        x = np.transpose(resized, (2, 0, 1))[None].astype(np.float32)
-        name = self.rec.get_inputs()[0].name
-        preds = self.rec.run(None, {name: x})[0]
-        preds = np.asarray(preds)[0]  # [T, C]
-        T, C = preds.shape
-        best = preds.argmax(axis=1)
-        bestv = preds.max(axis=1)
-        chars = []
-        conf_sum = 0.0
-        conf_n = 0
-        prev = -1
-        for t in range(T):
-            b = int(best[t])
-            if b != 0 and b != prev:
-                ci = b - 1
-                chars.append(self.dict[ci] if 0 <= ci < len(self.dict) else "")
-                conf_sum += float(bestv[t]); conf_n += 1
-            prev = b
-        return "".join(chars), (conf_sum / conf_n if conf_n else 0.0)
+        target_w = int(max(16, min(REC_MAX_W, round((bw / max(bh, 1)) * 48))))
+        resized = resize_bilinear(crop, target_w, 48).astype(np.float32) / 255.0 - 0.5
+        return np.transpose(resized, (2, 0, 1))[None].astype(np.float32)
+
+    def recognize(self, rgb, box):
+        x = self._prep(rgb, box)
+        if x is None:
+            return "", 0.0
+        text, conf = self._decode(self.rec, self.dict, x)
+        if (self.mode == "escalate" and conf < ESC_CONF
+                and Path(self._paths[1]).name != DOC_REC.name
+                and self.rec_doc is not None):
+            t2, c2 = self._decode(self._rec_doc, self._doc_dict, x)
+            if c2 >= conf:
+                self.escalated += 1
+                return t2, c2
+        return text, conf
 
     def ocr_image(self, rgb, thresh=DET_TH, max_side=DET_MAX_SIDE, min_conf=0.0):
         boxes = self.detect(rgb, thresh=thresh, max_side=max_side)
