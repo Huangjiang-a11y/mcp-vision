@@ -11,6 +11,8 @@ MODEL_DIR = Path(os.environ.get("MVV_MODEL_DIR") or (APP_DIR / "models"))
 MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 DET_MAX_SIDE = int(os.environ.get("DET_MAX_SIDE", "720"))
+# 识别输入的最大宽度：字幕行短，320 够；手写长行降到 256/192 明显掉字，别乱调
+REC_MAX_W = int(os.environ.get("MVV_REC_MAX_W", "320"))
 DET_TH = float(os.environ.get("DET_TH", "0.2"))
 
 
@@ -190,7 +192,7 @@ class PPOCR:
             return "", 0.0
         bw, bh = crop.shape[1], crop.shape[0]
         target_h = 48
-        target_w = int(max(16, min(320, round((bw / max(bh, 1)) * target_h))))
+        target_w = int(max(16, min(REC_MAX_W, round((bw / max(bh, 1)) * target_h))))
         resized = resize_bilinear(crop, target_w, target_h).astype(np.float32) / 255.0 - 0.5
         x = np.transpose(resized, (2, 0, 1))[None].astype(np.float32)
         name = self.rec.get_inputs()[0].name
