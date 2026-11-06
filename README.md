@@ -34,6 +34,9 @@ python3 mcp_server.py            # stdio
 python3 mcp_server.py --http 8765
 ```
 
+依赖、模型下载、客户端配置见 **[INSTALL.md](INSTALL.md)**；
+使用范围与责任见其中的「免责声明」。
+
 ## 工具
 
 四个大工具，按职责分层：
