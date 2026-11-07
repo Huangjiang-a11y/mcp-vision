@@ -129,6 +129,17 @@ for bad, why in [
 # 查 JSON 键而不是裸词——注释里提到字段名是合法的，写进输出才是问题
 check("OCR 不输出 band_auto 键", '"band_auto":' in src_ocr, False)
 
+# --- 竖屏的分辨率判断 ---
+# 竖屏 height 是长边。用 [height<=720] 过滤会把竖屏全杀掉、静默回落到全尺寸；
+# 改用 min(w,h) 又根本没有这个语法（SyntaxError）。现在走 format_sort res:，
+# 而 yt-dlp 的 res 本来就是 min(height, width)。
+src_open_full = inspect.getsource(M.tool_open)
+check("下载不用 height 过滤（会误杀竖屏）", "[height<=" not in src_open_full, True)
+check("下载不用不存在的 min()", "min(w,h)" not in src_open_full, True)
+check("下载用 res: 排序短边", '"res:%d"' in src_open_full, True)
+check("不写死格式过滤（避免无匹配回落）", 'fmt = "bv*+ba/b"' in src_open_full, True)
+check("quality 档位仍是短边语义", M._QUALITY_MAP("medium"), 720)
+
 # --- 格子尺寸：整页预算要按整页算 ---
 # 以前把 sqrt(cap/(aspect·cols·rows)) 当"短边"，公式已除过 cols·rows，
 # 得到的其实是单格窄边。竖屏再拿它当页面宽 → 整页 316% 预算。
