@@ -283,7 +283,16 @@ def plot_spectrogram(d, tag="", w=1024, h=512):
     freqs = np.asarray(sg["freqs"], dtype=float)
     c = Canvas(w, h)
     x0, x1 = 96, w - 26
-    y0, y1 = 64, h - 58
+    # 每半幅自己带一条 dB 色标：-70..0dB，和上面的映射一致
+    by, bh = 46, 12
+    ramp = np.repeat(np.linspace(0, 1, x1 - x0)[None, :], bh, axis=0)
+    c.blit(_cmap(ramp), x0, by)
+    c.rect(x0, by, x1, by + bh, AXIS)
+    c.text(x0, by + bh + 4, "-70", DIM, 2)
+    lab = "-70 .. 0 DB"
+    c.text(x1 - c.tw(lab, 2), by + bh + 4, "0 DB", DIM, 2)
+    c.ctext((x0 + x1) / 2.0, by + bh + 4, "LEVEL (DB)", DIM, 2)
+    y0, y1 = 84, h - 58
     H, W = y1 - y0, x1 - x0
     nt, nf = spec.shape[1], spec.shape[0]
     if nt < 2:
