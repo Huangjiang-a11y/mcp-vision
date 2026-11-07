@@ -149,7 +149,18 @@ def _nice_db(v):
     return ("%d" % v) if abs(v - round(v)) < 1e-9 else ("%.1f" % v)
 
 
-def plot_level(d, start, end, path, w=1024, h=512):
+def _tag_title(tag, name):
+    return ("%s  %s" % (tag, name)) if tag else name
+
+
+def _caption(c, d, x1, y=30):
+    """右上角一行小字：峰值频率 / 音名 / 最大电平，和文本输出对得上。"""
+    sp, lv = d["spectrum"], d["level"]
+    txt = "PEAK %.1fHZ  %s  MAX %.1fDB" % (sp["peak_freq_hz"], sp["note"], lv["max"])
+    c.text(x1 - c.tw(txt, 2), y, txt, DIM, 2)
+
+
+def plot_level(d, start, end, tag="", w=1024, h=512):
     lv = d["level"]
     t = np.asarray(lv["times"], dtype=float)
     v = np.asarray(lv["values"], dtype=float)
@@ -181,16 +192,17 @@ def plot_level(d, start, end, path, w=1024, h=512):
     for i in range(1, len(v)):
         c.line(X(i - 1), Y(v[i - 1]), X(i), Y(v[i]), FG, 2)
     big = "%.1f" % lv["db"]
-    c.text(x0, 14, "SOUND LEVEL", TXT, 3)
+    c.text(x0, 14, _tag_title(tag, "SOUND LEVEL"), TXT, 3)
     bx = x1 - c.tw(big, 5) - 56
     c.text(bx, 12, big, FG, 5)
     c.text(bx + c.tw(big, 5) + 10, 38, "DB", DIM, 3)
     c.text(x0, 46, "TIME (S)", DIM, 2)
     c.text(x0 + 6, y0 + 6, "DB", DIM, 2)
-    return c.save(path)
+    _caption(c, d, x1, 56)
+    return c
 
 
-def plot_spectrum(d, path, w=1024, h=512):
+def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512):
     sp = d["spectrum"]
     f = np.asarray(sp["freqs"], dtype=float)
     m = np.asarray(sp["mag_db"], dtype=float)
@@ -226,9 +238,9 @@ def plot_spectrum(d, path, w=1024, h=512):
     pk = sp["peak_freq_hz"]
     if pk > fmin:
         c.vline(X(pk), y0, y1, (255, 255, 255), 1)
-    c.text(x0, 12, "SPECTRUM", TXT, 3)
+    c.text(x0, 12, _tag_title(tag, "SPECTRUM"), TXT, 3)
     rows = [("PEAK FREQ", "%.2f HZ" % pk), ("NOTE", "%s" % sp["note"]),
-            ("CENTS", "%+.2f" % sp["cents"]), ("RES", "%.2f HZ" % d["resolution_hz"])]
+            ("CENTS", "%+.2f" % sp["cents"]), ("RES", "%.2f HZ" % resolution_hz)]
     colw = (x1 - x0) // 4
     for k, (lab, val) in enumerate(rows):
         xx = x0 + k * colw
@@ -236,10 +248,10 @@ def plot_spectrum(d, path, w=1024, h=512):
         c.text(xx, 66, val, FG, 3)
     c.text(x1 - c.tw("FREQ (HZ)", 2), 14, "FREQ (HZ)", DIM, 2)
     c.vtext(8, y0 + 8, "FFT AMP (REL)", DIM, 2)
-    return c.save(path)
+    return c
 
 
-def plot_spectrogram(d, path, w=1024, h=512):
+def plot_spectrogram(d, tag="", w=1024, h=512):
     sg = d["spectrogram"]
     spec = np.asarray(sg["spec_db"], dtype=float)   # (nfreq, ntime)
     times = np.asarray(sg["times"], dtype=float)
@@ -256,7 +268,7 @@ def plot_spectrogram(d, path, w=1024, h=512):
     v = np.clip((spec.T[yt][:, xf] + 70.0) / 70.0, 0, 1)
     c.blit(_cmap(v), x0, y0)
     c.rect(x0, y0, x1, y1, AXIS)
-    c.text(x0, 12, "SPECTROGRAM", TXT, 3)
+    c.text(x0, 12, _tag_title(tag, "SPECTROGRAM"), TXT, 3)
     c.text(x1 - c.tw("FREQ (HZ)", 2), 14, "FREQ (HZ)", DIM, 2)
     c.vtext(8, y0 + 8, "TIME (S)", DIM, 2)
     for k in range(5):
@@ -295,19 +307,38 @@ def plot_spectrogram(d, path, w=1024, h=512):
                     if a2 * a2 + b2 * b2 <= 4:
                         c.px(xx + a2, yy + b2, FG)
     c.text(x1 - c.tw("TIME (S)", 2), h - 24, "TIME (S)", DIM, 2)
-    return c.save(path)
+    _caption(c, d, x1, p0 - 22)
+    return c
 
 
 def render(d, views, out_dir, stem="audio"):
-    """views: level / spectrum / spectrogram 的子集。返回 {view: png 路径}。"""
+    """views: level / spectrum / spectrogram 的子集。
+
+    每张图 1024x1024：上半 L、下半 R，中间一条分隔线。
+    返回 {view: png 路径}。
+    """
     from pathlib import Path
     out = {}
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    if "level" in views:
-        out["level"] = plot_level(d, d["_start"], d["_end"], out_dir / (stem + "-level.png"))
-    if "spectrum" in views:
-        out["spectrum"] = plot_spectrum(d, out_dir / (stem + "-spectrum.png"))
-    if "spectrogram" in views:
-        out["spectrogram"] = plot_spectrogram(d, out_dir / (stem + "-spectrogram.png"))
+    W, H = 1024, 1024
+    tl = "L (MONO)" if d.get("mono") else "L"
+    tr = "R (MONO)" if d.get("mono") else "R"
+    for view in views:
+        if view == "level":
+            top = plot_level(d["left"], d["_start"], d["_end"], tag=tl)
+            bot = plot_level(d["right"], d["_start"], d["_end"], tag=tr)
+        elif view == "spectrum":
+            top = plot_spectrum(d["left"], tag=tl, resolution_hz=d["resolution_hz"])
+            bot = plot_spectrum(d["right"], tag=tr, resolution_hz=d["resolution_hz"])
+        elif view == "spectrogram":
+            top = plot_spectrogram(d["left"], tag=tl)
+            bot = plot_spectrogram(d["right"], tag=tr)
+        else:
+            continue
+        c = Canvas(W, H)
+        c.blit(top.buf, 0, 0)
+        c.blit(bot.buf, 0, 512)
+        c.hline(512, 0, W - 1, FG, 2)
+        out[view] = c.save(out_dir / (stem + "-" + view + ".png"))
     return out

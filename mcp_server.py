@@ -299,9 +299,6 @@ def tool_audio(a):
         return (_dump({"ok": False, "error": "unknown view: %s" % view}), [])
     if a.get("seconds") is not None and float(a.get("seconds") or 0) <= 0:
         return (_dump({"ok": False, "error": "seconds 必须大于 0"}), [])
-    chan = str(a.get("channel") or "mix").lower()
-    if chan not in ("mix", "left", "right"):
-        return (_dump({"ok": False, "error": "channel 只能是 mix/left/right"}), [])
     dur_total = float(asset.get("duration") or 0)
     if dur_total > 0 and float(a.get("time") or 0) >= dur_total:
         return (_dump({"ok": False,
@@ -309,16 +306,25 @@ def tool_audio(a):
     start, end, note = _window(a, asset, default_span=10.0, cap=15.0)
     try:
         d = engine.analyze_spectrum(asset["media_path"], start, end,
-                                    fft_size=4096, out_dir=asset.get("audio_dir"),
-                                    channel=chan)
+                                    fft_size=4096, out_dir=asset.get("audio_dir"))
     except RuntimeError as e:
         return (_dump({"ok": False, "error": str(e)}), [])
     d["_start"], d["_end"] = start, end
 
-    # 峰值轨迹抽稀，纯文本模式也够用
-    track = d["spectrogram"]["peak_track"]
-    step = max(1, len(track) // 60)
-    slim_track = [[t, f] for t, f in track[::step]]
+    # 每路各自抽稀峰值轨迹，纯文本模式也够用
+    def _chan(c):
+        track = c["spectrogram"]["peak_track"]
+        step = max(1, len(track) // 60)
+        return {
+            "silent": c["silent"],
+            "level": {k: c["level"][k] for k in ("db", "min", "max", "mean", "peak_dbfs")},
+            "spectrum": {
+                "peak_freq_hz": c["spectrum"]["peak_freq_hz"],
+                "note": c["spectrum"]["note"],
+                "cents": c["spectrum"]["cents"],
+            },
+            "peak_freq_track": [[t, f] for t, f in track[::step]],
+        }
 
     summary = {
         "ok": True,
@@ -326,30 +332,25 @@ def tool_audio(a):
         "duration": d["duration"],
         "sample_rate": d["sample_rate"],
         "channels": d["channels"],
-        "channel": d["channel"],
-        "silent": d["silent"],
-        "level": {k: d["level"][k] for k in ("db", "min", "max", "mean", "peak_dbfs")},
-        "spectrum": {
-            "peak_freq_hz": d["spectrum"]["peak_freq_hz"],
-            "note": d["spectrum"]["note"],
-            "cents": d["spectrum"]["cents"],
-        },
+        "mono": d["mono"],
         "fft_size": d["fft_size"],
         "resolution_hz": d["resolution_hz"],
         "period_ms": d["period_ms"],
-        "peak_freq_track": slim_track,
+        "left": _chan(d["left"]),
+        "right": _chan(d["right"]),
     }
+    notes = []
+    if d["mono"]:
+        notes.append("单声道音轨，L 与 R 相同")
     if note:
-        summary["note"] = note
+        notes.append(note)
+    if notes:
+        summary["note"] = "；".join(notes)
 
     images = []
     try:
         out_dir = Path(asset.get("audio_dir") or (Path(asset["media_path"]).parent / "audio"))
-        # 声道进文件名，免得左/右/混音互相覆盖；mix 保持旧名
-        if d["channel"] == "mix":
-            stem = "a-%d-%d" % (round(start * 1000), round(end * 1000))
-        else:
-            stem = "a-%s-%d-%d" % (d["channel"], round(start * 1000), round(end * 1000))
+        stem = "a-%d-%d" % (round(start * 1000), round(end * 1000))
         paths = audiochart.render(d, views, out_dir, stem=stem)
         summary["images"] = {k: Path(v).name for k, v in paths.items()}
         for p in paths.values():
@@ -508,14 +509,15 @@ TOOLS = [
      "description": (
          "Measure a window's audio: a loudness curve in dB, an FFT spectrum with peak "
          "frequency / musical note / cents, and a time-frequency map. Sample rate follows "
-         "the video's own audio track. Always returns the pictures; view picks which one."
+         "the video's own audio track. L and R are always measured separately: every "
+         "picture is 1024x1024, L on the upper half, R on the lower half, each half "
+         "labelled and captioned with its own peak frequency / note / max level. "
+         "Always returns the pictures; view picks which one."
      ),
      "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number", "description": "window length in seconds, default 10, max 15"},
-         "channel": {"type": "string", "enum": ["mix", "left", "right"],
-                     "description": "which channel to analyze: mix = L+R downmix (default), left = L only, right = R only; L/R need a stereo track"},
          "view": {"type": "string", "enum": ["all", "level", "spectrum", "spectrogram"],
                   "description": "level = dB over time; spectrum = FFT; spectrogram = time-frequency; default all"}}}},
 

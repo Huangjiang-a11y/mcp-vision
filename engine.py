@@ -256,67 +256,29 @@ def _peak_bin(mag):
     return k + float(np.clip(delta, -0.5, 0.5)), float(b)
 
 
-def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None, channel="mix"):
-    """窗口内的音频剖析：电平曲线 + 频谱 + 时频图。
-
-    采样率跟视频音轨走，不重采样。
-    channel: mix（默认，左右混成单声道）/ left / right，只分析指定声道；
-    单声道音轨没有 L/R 之分，传 left/right 会报错。
-    """
-    media = Path(media)
-    info = audio_info(media)
-    sr = info["sample_rate"]
-    if sr <= 0:
-        raise RuntimeError("没有音轨")
-    channel = str(channel or "mix").lower()
-    if channel not in ("mix", "left", "right"):
-        raise RuntimeError("unknown channel: %s（只能是 mix/left/right）" % channel)
-    if channel != "mix" and int(info["channels"] or 0) < 2:
-        raise RuntimeError("这条音轨是单声道，没有 L/R 之分")
-    if out_dir is None:
-        out_dir = media.parent / (media.stem + "_audio")
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pcm_path = out_dir / ("s-%s-%d-%d.pcm" % (
-        channel, round(start * 1000), round(end * 1000)))
-    # left/right 用 pan 挑声道；mix 让 ffmpeg 自己下混
-    if channel == "left":
-        pick = ["-af", "pan=mono|c0=c0"]
-    elif channel == "right":
-        pick = ["-af", "pan=mono|c0=c1"]
-    else:
-        pick = ["-ac", "1"]
-    _run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-          "-ss", "%.3f" % float(start), "-i", str(media),
-          "-t", "%.3f" % max(0.0, float(end) - float(start)),
-          "-vn"] + pick + ["-ar", str(sr), "-f", "s16le", str(pcm_path)], timeout=300)
-    raw = open(pcm_path, "rb").read()
-    raw = raw[: len(raw) - (len(raw) % 2)]
-    if not raw:
-        raise RuntimeError("音频解码失败")
-    arr = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-    if arr.size == 0:
+def _channel_metrics(x, sr, start, size):
+    """单个声道的样本 -> 电平 / 频谱 / 时频图。L、R 各算一遍，参数完全一致。"""
+    x = np.asarray(x, dtype=np.float32)
+    if x.size == 0:
         raise RuntimeError("窗口内没有音频样本")
-    dur = arr.size / float(sr)
 
     # 电平曲线：20ms 一帧的 RMS
     hop = max(1, int(sr * 0.02))
-    nfr = arr.size // hop
+    nfr = x.size // hop
     if nfr < 1:
-        nfr, hop = 1, arr.size
-    frames = arr[: nfr * hop].reshape(nfr, hop).astype(np.float64)
+        nfr, hop = 1, x.size
+    frames = x[: nfr * hop].reshape(nfr, hop).astype(np.float64)
     rms = np.sqrt(np.mean(frames ** 2, axis=1))
     lsb = 1.0 / 32768.0          # 16bit 量化底噪，比这更小没有意义
     db = 20.0 * np.log10(np.maximum(rms, lsb))
     lt = float(start) + np.arange(nfr) * (hop / float(sr))
-    silent = bool(float(np.max(np.abs(arr))) < lsb * 2)
-    peak_dbfs = 20.0 * math.log10(max(float(np.max(np.abs(arr))), lsb))
+    silent = bool(float(np.max(np.abs(x))) < lsb * 2)
+    peak_dbfs = 20.0 * math.log10(max(float(np.max(np.abs(x))), lsb))
 
     # 频谱：取最响的一帧做 FFT
-    size = int(min(max(64, fft_size), arr.size))
     loud = int(np.argmax(rms)) * hop
-    lo = max(0, min(arr.size - size, loud - size // 2))
-    seg = arr[lo: lo + size].astype(np.float64)
+    lo = max(0, min(x.size - size, loud - size // 2))
+    seg = x[lo: lo + size].astype(np.float64)
     win = np.hanning(seg.size)
     spec = np.abs(np.fft.rfft(seg * win))
     freqs = np.fft.rfftfreq(seg.size, 1.0 / sr)
@@ -329,10 +291,10 @@ def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None, channel="mi
 
     # 时频图：STFT
     hop2 = max(1, size // 2)
-    ncol = max(1, (arr.size - size) // hop2 + 1) if arr.size >= size else 1
+    ncol = max(1, (x.size - size) // hop2 + 1) if x.size >= size else 1
     cols = np.empty((freqs.size, ncol), dtype=np.float32)
     for i in range(ncol):
-        chunk = arr[i * hop2: i * hop2 + size].astype(np.float64)
+        chunk = x[i * hop2: i * hop2 + size].astype(np.float64)
         if chunk.size < size:
             chunk = np.pad(chunk, (0, size - chunk.size))
         cols[:, i] = np.abs(np.fft.rfft(chunk * win))
@@ -353,13 +315,6 @@ def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None, channel="mi
             track.append([round(float(st[i]), 3), round(f, 2)])
 
     return {
-        "sample_rate": sr,
-        "channels": info["channels"],
-        "channel": channel,
-        "duration": round(dur, 3),
-        "fft_size": int(size),
-        "resolution_hz": round(sr / float(size), 2),
-        "period_ms": round(1000.0 * size / float(sr), 2),
         "silent": silent,
         "level": {
             "db": round(float(db[-1]), 1),
@@ -378,6 +333,53 @@ def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None, channel="mi
             "spec_db": spec_db, "freqs": freqs, "times": st,
             "peak_track": track,
         },
+    }
+
+
+def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None):
+    """窗口内的音频剖析：L、R 分别算电平 / 频谱 / 时频图。
+
+    一次解码出双声道（-ac 2），采样率跟视频音轨走，不重采样。
+    单声道音轨会被 ffmpeg 复制成 L=R，结果里 mono=True 标出来。
+    """
+    media = Path(media)
+    info = audio_info(media)
+    sr = info["sample_rate"]
+    if sr <= 0:
+        raise RuntimeError("没有音轨")
+    if out_dir is None:
+        out_dir = media.parent / (media.stem + "_audio")
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pcm_path = out_dir / ("s-%d-%d.pcm" % (round(start * 1000), round(end * 1000)))
+    _run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+          "-ss", "%.3f" % float(start), "-i", str(media),
+          "-t", "%.3f" % max(0.0, float(end) - float(start)),
+          "-vn", "-ac", "2", "-ar", str(sr), "-f", "s16le", str(pcm_path)], timeout=300)
+    raw = open(pcm_path, "rb").read()
+    # 交错 L/R 16bit：先按样本对齐，再切出两路
+    keep = len(raw) - (len(raw) % 4)
+    if keep <= 0:
+        raise RuntimeError("音频解码失败")
+    arr = np.frombuffer(raw[:keep], dtype="<i2").astype(np.float32) / 32768.0
+    pair = arr.reshape(-1, 2)
+    nsmp = pair.shape[0]
+    dur = nsmp / float(sr)
+    size = int(min(max(64, fft_size), nsmp))
+
+    left = _channel_metrics(pair[:, 0], sr, start, size)
+    right = _channel_metrics(pair[:, 1], sr, start, size)
+
+    return {
+        "sample_rate": sr,
+        "channels": info["channels"],
+        "mono": int(info["channels"] or 0) < 2,
+        "duration": round(dur, 3),
+        "fft_size": int(size),
+        "resolution_hz": round(sr / float(size), 2),
+        "period_ms": round(1000.0 * size / float(sr), 2),
+        "left": left,
+        "right": right,
     }
 
 
