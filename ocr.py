@@ -343,6 +343,9 @@ def _stream_frames(media, start=0.0, end=None, step=1.0, width=None, crop=None):
             proc.kill()
 
 
+STATIC_RATIO = 0.6      # 同一串字在簇内占比超过这个数 → 判为常驻水印
+
+
 def _norm_text(t):
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]", "", (t or "").lower())
 
@@ -353,15 +356,15 @@ def _is_static(c):
     if c.get("count", 0) < 2 or not txts:
         return False
     top = Counter(_norm_text(t) for t in txts).most_common(1)[0][1]
-    return top >= 0.6 * c["count"]
+    return top >= STATIC_RATIO * c["count"]
 
 
 def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
-                         lower_from=0.5, pad=0.02, engine=None):
+                         lower_from=0.6, pad=0.02, engine=None):
     """利用少量采样点按 OCR 框坐标聚类，秒级自动锁定字幕带 (y0_ratio, y1_ratio)。
 
     - samples 默认 10 点；短窗口一次解码取帧，长窗口逐点 seek
-    - 只搜画面下半截（> lower_from=0.5）：更上面的区域是水印和画面主体，不可能是字幕
+    - 只搜画面下方十分之四（> lower_from=0.6）：再往上是画面主体和水印
     - 采样点按窗口时长均匀分布（span/(samples+1)），覆盖整段
     """
     if engine is None:
