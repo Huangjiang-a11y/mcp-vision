@@ -91,26 +91,20 @@ def _dump(obj, limit=0):
 MAX_ANALYZE_SECONDS = 900.0   # 单次分析硬上限 15 分钟
 
 
-def _window(a, asset, default_span=None, allow_end=False):
+def _window(a, asset, default_span=None):
     """统一的取窗：先定时间戳 time，再定看多久 seconds。
 
     - time：从哪开始（默认 0）
     - seconds：看多久；不给则看满 default_span 或上限
-    - end_seconds：只有 schema 里声明了它的工具才认（audio / subtitles）；video 传了也不生效
-    - max_seconds：单次上限，默认 900（15 分钟）
     返回 (start, end, note)，note 非空表示被夹过。
     """
     dur = float(asset.get("duration") or 0)
     start = max(0.0, float(a.get("time") or 0))
-    cap = float(a.get("max_seconds") or MAX_ANALYZE_SECONDS)
-    if cap <= 0:
-        cap = MAX_ANALYZE_SECONDS
+    cap = MAX_ANALYZE_SECONDS
 
     span = None
     if a.get("seconds") is not None:
         span = float(a["seconds"])
-    elif allow_end and a.get("end_seconds") is not None:
-        span = max(0.0, float(a["end_seconds"]) - start)
     elif default_span:
         span = float(default_span)
 
@@ -119,10 +113,7 @@ def _window(a, asset, default_span=None, allow_end=False):
     notes = []
     if span > cap:
         span = cap
-        if a.get("max_seconds") is not None:
-            notes.append("单次上限 %.0f 秒（max_seconds 可调）" % cap)
-        else:
-            notes.append("单次上限 %.0f 秒" % cap)
+        notes.append("单次上限 %.0f 秒" % cap)
     end = start + span
     if dur > 0 and end > dur:
         end = dur
@@ -298,7 +289,7 @@ def tool_audio(a):
     asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return _missing(a), []
-    start, end, note = _window(a, asset, default_span=30.0, allow_end=True)
+    start, end, note = _window(a, asset, default_span=30.0)
     res = engine.analyze_audio(asset["media_path"], start, end, out_dir=asset.get("audio_dir"))
     if note:
         res = dict(res, note=note)
@@ -363,7 +354,7 @@ def tool_subtitles(a):
     if asset is None:
         return (_missing(a), [])
     media = asset["media_path"]
-    start, end, window_note = _window(a, asset, allow_end=True)
+    start, end, window_note = _window(a, asset)
     try:
         band = _parse_band(a.get("band", "auto"))
     except ValueError as e:
@@ -455,9 +446,7 @@ TOOLS = [
                     "description": "levels = loudness profile (default); transcribe = speech to text"},
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "window length in seconds; takes precedence over end_seconds"},
-         "end_seconds": {"type": "number", "description": "window end in seconds (legacy; prefer seconds)"},
-         "max_seconds": {"type": "number", "description": "window cap in seconds, default 900"},
+         "seconds": {"type": "number", "description": "window length in seconds"},
          "language": {"type": "string", "description": "transcribe: zh / en / ja / ko, default zh"},
          "max_speech": {"type": "number", "description": "transcribe: longest segment in seconds, default 20"}}}},
 
@@ -469,9 +458,7 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "band: window length in seconds; takes precedence over end_seconds"},
-         "end_seconds": {"type": "number", "description": "band: window end in seconds (legacy; prefer seconds)"},
-         "max_seconds": {"type": "number", "description": "window cap in seconds, default 900"},
+         "seconds": {"type": "number", "description": "band: window length in seconds"},
          "step": {"type": "number", "description": "band: sampling interval in seconds, default 1.0"},
          "band": {"type": "string",
                   "description": "band range: 'auto' (default) or ratios like \"0.10,0.27\""},
@@ -589,11 +576,7 @@ def _attach(jpg):
 
 
 def tool_video(a):
-    """一个动作：给窗口和张数，拼成一页；quantity=1 就出一张单帧。
-
-    原来的 analyze / frame 两个动作合并成一个，区别只剩 quantity：
-    1 张时直接给原图（可 crop，按整帧像素上限），多张时拼页（quality 管整页）。
-    """
+    """给窗口和张数：quantity=1 出一张单帧，多张拼成一页。"""
     cwd = str(Path(__file__).resolve().parent)
     asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
@@ -674,9 +657,6 @@ def dispatch_workspace(a):
 
 
 def dispatch_video(a):
-    # action 已取消：一个工具做一件事。旧的 frame 调用（没给 quantity）按单帧处理。
-    if (a.get("action") or "").lower() == "frame" and a.get("quantity") is None:
-        a = dict(a, quantity=1)
     return tool_video(a)
 
 
@@ -690,7 +670,7 @@ def tool_transcribe(a):
         return (json.dumps({"ok": False,
                             "error": "time=%.1f 超出时长 %.1f" % (float(a["time"]), dur_total)},
                            ensure_ascii=False), [])
-    start, end, window_note = _window(a, asset, allow_end=True)
+    start, end, window_note = _window(a, asset)
     language = str(a.get("language") or "zh")
     max_speech = float(a.get("max_speech") or 20)
     t0 = time.time()
