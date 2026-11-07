@@ -211,7 +211,7 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512):
     # 横轴对数，尾端固定 24000
     fmin = 10.0
     fmax = 24000.0
-    dmin = max(-80.0, float(np.min(m)))
+    dmin = max(-60.0, float(np.min(m)))   # 画到 0.001 就够，谷底不再拉低坐标
     if dmin > -30:
         dmin = -30.0
     def X(fr): return x0 + math.log10(max(fr, fmin) / fmin) / math.log10(fmax / fmin) * (x1 - x0)
@@ -231,10 +231,31 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512):
         c.vline(xx, y0, y1, GRID)
         c.ctext(xx, y1 + 12, "%g" % fr, DIM, 2)
     c.rect(x0, y0, x1, y1, AXIS)
-    for i in range(1, len(f)):
-        if f[i] < fmin:
-            continue
-        c.line(X(f[i - 1]), Y(m[i - 1]), X(f[i]), Y(m[i]), FG, 2)
+    # 1kHz 以上每个像素列挤着 5 个 bin，逐 bin 连线会在像素里来回折、看着全是锯齿；
+    # 低频段反过来，几个像素才摊到一个 bin，直接取最近 bin 又成了台阶。
+    # 所以：有多个 bin 的列取功率均值，只有一个 bin 的列用相邻 bin 插值。
+    W = x1 - x0
+    fe = fmin * (fmax / fmin) ** (np.arange(W + 1) / float(W))
+    lo = np.clip(np.searchsorted(f, fe[:-1]), 0, len(f) - 1)
+    hi = np.clip(np.searchsorted(f, fe[1:]), lo + 1, len(f))
+    cnt = hi - lo
+    pw = 10.0 ** (m / 10.0)
+    cs = np.concatenate([[0.0], np.cumsum(pw)])
+    band = 10.0 * np.log10(np.maximum((cs[hi] - cs[lo]) / cnt, 1e-12))
+    smooth = np.interp(np.log(fe[:-1]), np.log(np.maximum(f, 1.0)), m)
+    vals = np.where(cnt > 1, band, smooth)
+    # 高频段相邻 bin 差着十几 dB，逐列连出来就是一排黑色尖刺：
+    # 转成功率做 5 列滑动平均，再把谷底托到 -60dB，曲线才是一条线
+    k = 5
+    pad = np.pad(10.0 ** (vals / 10.0), (k // 2, k // 2), mode="edge")
+    mean_p = np.convolve(pad, np.ones(k) / k, mode="valid")
+    vals = 10.0 * np.log10(np.maximum(mean_p, 1e-12))
+    vals = np.maximum(vals, -60.0)
+    # 超过 Nyquist 的列没有数据，别拖一条假平线到 24000
+    lim = np.searchsorted(f, np.maximum(fe[1:], 1.0))
+    Wn = int(np.argmax((lim >= len(f) - 0.5)) or W) if np.any(lim >= len(f) - 0.5) else W
+    for i in range(1, max(2, Wn)):
+        c.line(x0 + i - 1, Y(vals[i - 1]), x0 + i, Y(vals[i]), FG, 2)
     pk = sp["peak_freq_hz"]
     if pk > fmin:
         c.vline(X(pk), y0, y1, (255, 255, 255), 1)
@@ -300,14 +321,17 @@ def plot_spectrogram(d, tag="", w=1024, h=512):
     def X(fr): return x0 + math.log10(max(fr, fmin) / fmin) / math.log10(fmax / fmin) * (x1 - x0)
     fcols = fmin * (fmax / fmin) ** (np.arange(W) / float(max(1, W - 1)))
     yt = np.linspace(nt - 1, 0, H).astype(int)      # 时间向上
-    # 对数轴下每个像素覆盖的频率宽度差很多，直接取最近 bin 会一格一格的；
-    # 在对数频率上做线性插值，低中频才连续
-    lf = np.log(np.maximum(freqs, 1e-3))
-    lfq = np.log(fcols)
-    mat = np.empty((H, W), dtype=np.float64)
-    src = spec[:, yt]
-    for j in range(H):
-        mat[j, :] = np.interp(lfq, lf, src[:, j])
+    # 对数轴上每列覆盖的带宽差很多：低端不到一个 bin，高端挤着好几个；
+    # 按列在功率域求均值，高频那一带才不会一列列地闪
+    p = 10.0 ** (spec / 10.0)
+    cs = np.vstack([np.zeros((1, p.shape[1])), np.cumsum(p, axis=0)])
+    f_lo = fmin * (fmax / fmin) ** (np.arange(W) / float(W))
+    f_hi = fmin * (fmax / fmin) ** ((np.arange(W) + 1.0) / float(W))
+    lo = np.clip(np.searchsorted(freqs, f_lo), 0, nf - 1)
+    hi = np.clip(np.searchsorted(freqs, f_hi), lo + 1, nf)
+    band = (cs[hi, :] - cs[lo, :]) / (hi - lo)[:, None]
+    db = 10.0 * np.log10(np.maximum(band, 1e-12))
+    mat = db[:, yt].T                               # (H, W)，时间向上
     mat[:, fcols > freqs[-1]] = -70.0               # 超过 Nyquist 的部分没有数据
     v = np.clip((mat + 70.0) / 70.0, 0, 1)
     c.blit(_cmap(v), x0, y0)
