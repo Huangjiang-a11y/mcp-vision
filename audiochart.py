@@ -106,11 +106,14 @@ class Canvas:
         for i in range(len(rows) - 1):
             a, b = int(rows[i]), int(rows[i + 1])
             lo, hi = (a, b) if a <= b else (b, a)
-            lo = max(0, lo - half + 1)
-            hi = min(H * ss - 1, hi + half - 1)
+            lo = max(0, lo - half)
+            hi = min(H * ss - 1, hi + half)
             if hi >= lo:
                 mask[lo:hi + 1, i] = 1.0
+        # 列与列之间斜率突变处会留下半透明的暗段，先横向补一格再缩回
+        mask[:, 1:] = np.maximum(mask[:, 1:], mask[:, :-1])
         alpha = mask.reshape(H, ss, W, ss).mean(axis=(1, 3))[..., None]
+        alpha = np.clip(alpha * 1.35, 0.0, 1.0)
         sub = self.buf[y0:y0 + H, x0:x0 + W].astype(np.float32)
         col = np.array(c, dtype=np.float32)
         self.buf[y0:y0 + H, x0:x0 + W] = np.clip(
@@ -266,13 +269,6 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512):
     band = 10.0 * np.log10(np.maximum((cs[hi] - cs[lo]) / cnt, 1e-12))
     smooth = np.interp(np.log(fe[:-1]), np.log(np.maximum(f, 1.0)), m)
     vals = np.where(cnt > 1, band, smooth)
-    # 高频段相邻 bin 差着十几 dB，逐列连出来就是一排黑色尖刺：
-    # 转成功率做 5 列滑动平均，再把谷底托到 -60dB，曲线才是一条线
-    k = 5
-    pad = np.pad(10.0 ** (vals / 10.0), (k // 2, k // 2), mode="edge")
-    mean_p = np.convolve(pad, np.ones(k) / k, mode="valid")
-    vals = 10.0 * np.log10(np.maximum(mean_p, 1e-12))
-    vals = np.maximum(vals, -60.0)
     # 超过 Nyquist 的列没有数据，别拖一条假平线到 24000
     lim = np.searchsorted(f, np.maximum(fe[1:], 1.0))
     Wn = int(np.argmax((lim >= len(f) - 0.5)) or W) if np.any(lim >= len(f) - 0.5) else W
