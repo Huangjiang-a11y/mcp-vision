@@ -445,29 +445,20 @@ TOOLS = [
 
     {"name": "video",
      "description": (
-         "Look at a clip: one page of evenly spaced frames, or a single frame when you need detail.\n"
+         "Look at a clip as one page of frames, or as a single frame.\n"
          "\n"
-         "Give a window (time + seconds) and a frame count (quantity). It samples that many frames "
-         "evenly from the window start to its end, both ends included, lays them out left to right, "
-         "top to bottom, and returns ONE page image plus a timeline.\n"
-         "quantity=1 is the special case: no page, just that one frame at full detail - use it to read "
-         "a scoreboard, a board or a subtitle line, optionally with crop.\n"
+         "Sample `quantity` frames evenly from `time` to `time`+`seconds` (both ends included) and lay "
+         "them out left to right, top to bottom on one image, plus a timeline giving each cell's moment. "
+         "quantity defaults to 15, max 30.\n"
+         "quantity=1 returns that one frame at full detail instead of a page - use it to read a board, a "
+         "scoreboard or a subtitle line, optionally with `crop` (WxH+X+Y, applied before scaling).\n"
          "\n"
-         "Example: quantity=12, seconds=60 on a 1280x720 clip gives a 1185x888 png, 3 columns x 4 rows, "
-         "cells 395x222, timeline = [{t:0.0,...}, {t:5.455,...}, ... {t:60.0,...}]. You get exactly "
-         "`quantity` frames; the grid only decides the layout and prefers a near-square shape, leaving "
-         "the last row partly empty when the count does not split cleanly.\n"
-         "Example: quantity=1, time=123.5, crop=1280x260+0+440 returns that slice as a jpg.\n"
-         "\n"
-         "The page has no timestamps burned in: cell order matches timeline order 1:1, which is how you "
-         "tell which moment a thumbnail is. The image is always sent back, with sheetJpg / sheetKB "
-         "describing the file. quality is an area cap, not a resolution: for a page it caps the whole "
-         "page (cells shrink as the grid grows), for a single frame it caps the cropped area, and it "
-         "never upscales. The window is time + seconds, capped at max_seconds (900) and clamped to the "
-         "clip, with a note in the reply when that happens. Outputs land in workspace/<video>/video/ "
-         "(page sheet_<ms>_<cols>x<rows>_<hash>.png, frame t<ms>-<w>x<h>.jpg) and repeat calls reuse them."
-     ),
-     "inputSchema": {"type": "object", "properties": {
+         "The page has no timestamps burned in; cell order matches timeline order 1:1. `quality` is an "
+         "area cap that only scales down: it caps the whole "
+         "page for a sheet and the cropped area for a single frame. The window is capped by `max_seconds` "
+         "(900) and clamped to the clip, with a note in the reply when that happens. Outputs land in "
+         "workspace/<video>/video/ and repeat calls reuse them."
+     ),     "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number",
@@ -478,7 +469,7 @@ TOOLS = [
          "crop": {"type": "string",
                   "description": "crop before scaling, WxH+X+Y (e.g. 720x300+0+880); applies to every cell"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                     "description": "pixel cap: low=512^2 medium=1024^2 high=1536^2 max=2048^2; scales down only"}}}},
+                     "description": "area cap, scales down only; see enum for the values"}}}},
 
     {"name": "audio",
      "description": (
