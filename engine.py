@@ -306,21 +306,19 @@ def _channel_metrics(x, sr, start, size):
     # 频谱：取最响的一帧做 FFT
     loud = int(np.argmax(rms)) * hop
     lo = max(0, min(x.size - size, loud - size // 2))
-    # 原始波形：和上面这段 FFT 用的是同一处声音，40ms，方便对照着看
-    wn = min(x.size, max(16, int(sr * 0.040)))
-    w0 = max(0, min(x.size - wn, (lo + size // 2) - wn // 2))
-    wseg = x[w0: w0 + wn].astype(np.float64)
-    wave = {
-        "t0": round(float(start) + w0 / float(sr), 6),
-        "ms": round(1000.0 * wn / float(sr), 3),
-        "samples": [round(float(v), 8) for v in wseg],
-        "peak": round(float(np.max(np.abs(wseg))), 6) if wseg.size else 0.0,
-        "rms": round(float(np.sqrt(np.mean(wseg ** 2))), 6) if wseg.size else 0.0,
-    }
     seg = x[lo: lo + size].astype(np.float64)
     win = np.hanning(seg.size)
     spec = np.abs(np.fft.rfft(seg * win))
     freqs = np.fft.rfftfreq(seg.size, 1.0 / sr)
+    # 原始波形就是这个 FFT 窗本身（4096 点 ≈ 92.9ms @44.1k）：
+    # 波形和频谱是同一段数据，不用再换算时间
+    wave = {
+        "t0": round(float(start) + lo / float(sr), 6),
+        "ms": round(1000.0 * seg.size / float(sr), 3),
+        "samples": [round(float(v), 8) for v in seg],
+        "peak": round(float(np.max(np.abs(seg))), 6) if seg.size else 0.0,
+        "rms": round(float(np.sqrt(np.mean(seg ** 2))), 6) if seg.size else 0.0,
+    }
     k, _ = _peak_bin(spec)
     peak_hz = float(k * sr / seg.size)
     note, cents = freq_to_note(peak_hz)
