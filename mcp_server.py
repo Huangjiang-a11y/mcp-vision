@@ -448,19 +448,13 @@ TOOLS = [
 
     {"name": "video",
      "description": (
-         "Look at a clip as one page of frames, or as a single frame.\n"
-         "\n"
-         "Sample `quantity` frames evenly from `time` to `time`+`seconds` (both ends included) and lay "
-         "them out left to right, top to bottom on one image, plus a timeline giving each cell's moment. "
-         "quantity defaults to 15, max 30.\n"
-         "quantity=1 returns that one frame at full detail instead of a page - use it to read a board, a "
-         "scoreboard or a subtitle line, optionally with `crop` (WxH+X+Y, applied before scaling).\n"
-         "\n"
-         "The page has no timestamps burned in; cell order matches timeline order 1:1. `quality` is an "
-         "area cap that only scales down: it caps the whole "
-         "page for a sheet and the cropped area for a single frame. The window is capped at 900 seconds "
-         "and clamped to the clip, with a note in the reply when that happens. Outputs land in "
-         "workspace/<video>/video/ and repeat calls reuse them."
+         "Sample `quantity` frames evenly from `time` to `time`+`seconds` (both ends included), laid "
+         "out left to right, top to bottom as one page, plus a timeline giving each cell's moment. "
+         "Defaults to 15, max 30.\n"
+         "`quantity=1` returns a single frame at full detail - use with `crop` (WxH+X+Y) to read a board, "
+         "scoreboard or subtitles.\n"
+         "No timestamps on the page; cell order matches timeline order. `quality` is an area cap that "
+         "scales down only. Window capped at 900s; outputs to workspace/<video>/video/ and repeat calls reused."
      ),     "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
