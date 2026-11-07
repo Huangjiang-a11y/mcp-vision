@@ -256,25 +256,40 @@ def _peak_bin(mag):
     return k + float(np.clip(delta, -0.5, 0.5)), float(b)
 
 
-def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None):
+def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None, channel="mix"):
     """窗口内的音频剖析：电平曲线 + 频谱 + 时频图。
 
     采样率跟视频音轨走，不重采样。
+    channel: mix（默认，左右混成单声道）/ left / right，只分析指定声道；
+    单声道音轨没有 L/R 之分，传 left/right 会报错。
     """
     media = Path(media)
     info = audio_info(media)
     sr = info["sample_rate"]
     if sr <= 0:
         raise RuntimeError("没有音轨")
+    channel = str(channel or "mix").lower()
+    if channel not in ("mix", "left", "right"):
+        raise RuntimeError("unknown channel: %s（只能是 mix/left/right）" % channel)
+    if channel != "mix" and int(info["channels"] or 0) < 2:
+        raise RuntimeError("这条音轨是单声道，没有 L/R 之分")
     if out_dir is None:
         out_dir = media.parent / (media.stem + "_audio")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    pcm_path = out_dir / ("s-%d-%d.pcm" % (round(start * 1000), round(end * 1000)))
+    pcm_path = out_dir / ("s-%s-%d-%d.pcm" % (
+        channel, round(start * 1000), round(end * 1000)))
+    # left/right 用 pan 挑声道；mix 让 ffmpeg 自己下混
+    if channel == "left":
+        pick = ["-af", "pan=mono|c0=c0"]
+    elif channel == "right":
+        pick = ["-af", "pan=mono|c0=c1"]
+    else:
+        pick = ["-ac", "1"]
     _run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
           "-ss", "%.3f" % float(start), "-i", str(media),
           "-t", "%.3f" % max(0.0, float(end) - float(start)),
-          "-vn", "-ac", "1", "-ar", str(sr), "-f", "s16le", str(pcm_path)], timeout=300)
+          "-vn"] + pick + ["-ar", str(sr), "-f", "s16le", str(pcm_path)], timeout=300)
     raw = open(pcm_path, "rb").read()
     raw = raw[: len(raw) - (len(raw) % 2)]
     if not raw:
@@ -340,6 +355,7 @@ def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None):
     return {
         "sample_rate": sr,
         "channels": info["channels"],
+        "channel": channel,
         "duration": round(dur, 3),
         "fft_size": int(size),
         "resolution_hz": round(sr / float(size), 2),
