@@ -346,9 +346,9 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
                          lower_from=0.6667, pad=0.02, engine=None):
     """利用少量采样点按 OCR 框坐标聚类，秒级自动锁定字幕带 (y0_ratio, y1_ratio)。
 
-    - samples 默认 10 点，用 ffmpeg -ss 单帧瞬时抓取
+    - samples 默认 10 点；短窗口一次解码取帧，长窗口逐点 seek
     - 先只搜画面底部三分之一（> lower_from≈2/3）；那里没字再放宽到下半截
-    - 耗时通常在 1~2 秒左右
+    - 只看开头 3 分钟：3 分钟还没字幕，基本就是没有字幕轨
     """
     if engine is None:
         engine = get_engine()
@@ -356,6 +356,9 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
     if end is None:
         end = dur
     end = min(float(end), dur) if dur else float(end)
+    cap = float(start) + 180.0
+    if end > cap:                      # 检测窗口封顶 3 分钟
+        end = cap
     span = max(0.0, end - start)
     if span <= 1.0:
         return None
@@ -374,8 +377,10 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
 
     # 一次解码拿全部采样帧：原来每个采样点单开一个 ffmpeg -ss，10 次要开 10 次容器。
     # 窗口超过 3 分钟时顺序解码到末尾反而比 seek 贵，那种情况退回逐帧抓。
+    # 顺序解码约 13 倍速：45 秒窗口 3.5 秒解完，3 分钟要 14 秒。
+    # 超过 45 秒改成逐点 seek，10 次约 4 秒，与窗口多长无关。
     lowers = []
-    if span <= 180.0:
+    if span <= 45.0:
         step = span / float(samples + 1)
         for i, _t, arr in _stream_frames(media, start, end, step=step, width=W, crop=None):
             if i == 0:
@@ -385,7 +390,9 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
                 break
     if len(lowers) < max(2, samples // 2):     # 管道没吐出够帧，退回逐帧 seek
         lowers = []
-        for t in pts:
+        # 长窗口只需粗略定位：字幕带不会全片漂移，6 个点就够，seek 次数少一半多
+        pts_seek = pts if span <= 45.0 else [start + span * (i + 1) / 7.0 for i in range(6)]
+        for t in pts_seek:
             cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                    "-ss", "%.3f" % t, "-i", str(media), "-frames:v", "1",
                    "-vf", "scale=%d:%d" % (W, H), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
@@ -394,7 +401,6 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
                 continue
             arr = np.frombuffer(p.stdout[:W*H*3], dtype=np.uint8).reshape(H, W, 3)
             lowers.append(arr[crop_y:])
-
     boxes = []
     for lower in lowers:
         try:
