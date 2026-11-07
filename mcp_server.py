@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """mcp-vision MCP 服务器（stdio 或 --http PORT）。手写 JSON-RPC，无 mcp SDK 依赖。"""
-import argparse, base64, hashlib, json, math, os, re, shutil, sys, time, http.server, socketserver, threading
+import argparse, base64, hashlib, json, math, os, re, shutil, sys, http.server, socketserver, threading
 from pathlib import Path
 import engine
 import audiochart
@@ -109,11 +109,14 @@ def _pos_seconds(a):
     return None
 
 
-def _window(a, asset, default_span=None, cap=None):
+def _window(a, asset, default_span=None, cap=None, single=False):
     """统一的取窗：先定时间戳 time，再定看多久 seconds。
 
     - time：从哪开始（默认 0），负数按 0 处理
     - seconds：看多久；不给则看满 default_span 或上限
+    - single：只要一个时间点。此时结尾根本不参与取图，
+      再报「已到视频结尾」就是误导——用户只要 t=100 那一帧，
+      却说「到结尾了」，等于凭空制造一个假的越界警告。
     返回 (start, end, note)，note 非空表示被夹过。
     """
     dur = float(asset.get("duration") or 0)
@@ -132,9 +135,6 @@ def _window(a, asset, default_span=None, cap=None):
     notes = []
     if raw_time < 0:
         notes.append("time 为负数，按 0 处理")
-    if span > cap:
-        span = cap
-        notes.append("单次上限 %.0f 秒" % cap)
 
     # time 已经越过结尾：什么都没有可看，直接回开头。
     # 这里要提前返回——否则会先算出 end>dur 又补一条「已到视频结尾」，
@@ -142,6 +142,15 @@ def _window(a, asset, default_span=None, cap=None):
     if dur > 0 and start >= dur:
         notes.append("time 超出时长 %.0f 秒，回退到 0" % dur)
         return 0.0, min(dur, cap), "；".join(notes)
+
+    if single:
+        # 单帧只用起点，seconds 和结尾都不参与取图。
+        # 此处若还报「单次上限」「已到视频结尾」，都是在描述一个不存在的窗口。
+        return start, start, "；".join(notes)
+
+    if span > cap:
+        span = cap
+        notes.append("单次上限 %.0f 秒" % cap)
 
     end = start + span
     if dur > 0 and end > dur:
@@ -471,11 +480,16 @@ def _subs_stt(a):
         out["summary"] = agg
     # 「event 是什么、不代表声道分离」属于字段语义，写进 schema 一次就够，
     # 不占每次响应。这里只在真的掉字时提醒一句。
-    if any(c.get("event") == "BGM" for c in cues):
-        out["note"] = ("带 BGM 的段转写可能掉字。"
-                       if not window_note else window_note + "；带 BGM 的段转写可能掉字")
+    #
+    # 两条 note 要合并，不能各写各的 out["note"]——
+    # 之前就是 window_note 那条在后面无条件覆盖，BGM 提示被吞了。
+    notes = []
     if window_note:
-        out["note"] = window_note
+        notes.append(window_note)
+    if any(c.get("event") == "BGM" for c in cues):
+        notes.append("带 BGM 的段转写可能掉字")
+    if notes:
+        out["note"] = "；".join(notes)
     return (_dump(out), [])
 
 
@@ -794,7 +808,7 @@ def tool_video(a):
         n = max(1, min(int(raw_q), 30)) if raw_q is not None else 15
     except (TypeError, ValueError):
         return (_dump({"ok": False, "error": "quantity 必须是整数"}), [])
-    win_start, win_end, note = _window(a, asset)
+    win_start, win_end, note = _window(a, asset, single=(n == 1))
     if raw_q is not None and int(raw_q) != n:
         extra = "quantity 夹到 %d（允许 1–30）" % n
         note = extra if not note else note + "；" + extra

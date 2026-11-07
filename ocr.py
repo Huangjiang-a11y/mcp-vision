@@ -3,7 +3,7 @@
 模型：路径由 MVV_OCR_DET / MVV_OCR_REC / MVV_OCR_KEYS 指定（默认 models/ 下的 PP-OCRv4）
 """
 from collections import Counter
-import os, re, sys, json, subprocess, math
+import os, re, sys, json, subprocess
 from pathlib import Path
 import threading
 import numpy as np

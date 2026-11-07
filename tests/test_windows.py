@@ -89,6 +89,18 @@ check("标签空值", engine._tag(None), "")
 check("标签 NONE", engine._tag("<|NONE|>"), "")
 check("标签普通字符串", engine._tag("zh"), "zh")
 
+# --- 单帧取窗：别为不存在的窗口报警 ---
+# 以前 quantity=1 时仍走完整窗口逻辑，t=100 会附赠一句「已到视频结尾 276 秒」，
+# 但单帧只用起点，结尾根本不参与取图。
+s, e, note = M._window({"time": 100}, ASSET, single=True)
+check("单帧不报结尾", note, "")
+check("单帧起点终点重合", (s, e), (100.0, 100.0))
+check("单帧忽略 seconds 上限", M._window({"time": 100, "seconds": 5000}, ASSET, single=True)[2], "")
+check("单帧仍报负时间", "负数" in M._window({"time": -5}, ASSET, single=True)[2], True)
+check("单帧仍报越界回退", "回退到 0" in M._window({"time": 99999}, ASSET, single=True)[2], True)
+# 多帧时该报的还得报
+check("多帧报结尾", "已到视频结尾" in M._window({"time": 270, "seconds": 10}, ASSET)[2], True)
+
 # --- 声学字段的边界 ---
 # emotion / event / lang 来自 SenseVoice，只有 stt 模式有。
 # OCR 读像素，原理上取不到——这条边界要是破了，就是编造数据。
@@ -101,6 +113,8 @@ check("OCR 不写 event", '"event"' in src_ocr, False)
 check("OCR 不重复声明字段缺失", "acoustic_fields" in src_ocr, False)
 check("STT 不重复声明字段存在", "acoustic_fields" in src_stt, False)
 check("STT 确实带 emotion", '"emotion"' in src_stt, True)
+# note 只能有一处赋值。之前 window_note 那条在后面无条件覆盖，BGM 提示被吞掉了。
+check("STT 的 note 只赋值一次", src_stt.count('out["note"] ='), 1)
 
 # --- 响应里不许回显已知事实 ---
 # schema 是「调用前读一次」，响应是「每次调用都读」。
