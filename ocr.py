@@ -372,17 +372,31 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
     H -= H % 2
     crop_y = int(H * lower_from)
 
+    # 一次解码拿全部采样帧：原来每个采样点单开一个 ffmpeg -ss，10 次要开 10 次容器。
+    # 窗口超过 3 分钟时顺序解码到末尾反而比 seek 贵，那种情况退回逐帧抓。
+    lowers = []
+    if span <= 180.0:
+        step = span / float(samples + 1)
+        for i, _t, arr in _stream_frames(media, start, end, step=step, width=W, crop=None):
+            if i == 0:
+                continue                       # 首帧常是黑场，跳过
+            lowers.append(arr[crop_y:])        # 只留下半截
+            if len(lowers) >= samples:
+                break
+    if len(lowers) < max(2, samples // 2):     # 管道没吐出够帧，退回逐帧 seek
+        lowers = []
+        for t in pts:
+            cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                   "-ss", "%.3f" % t, "-i", str(media), "-frames:v", "1",
+                   "-vf", "scale=%d:%d" % (W, H), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
+            p = subprocess.run(cmd, capture_output=True, timeout=15)
+            if p.returncode != 0 or len(p.stdout) < W * H * 3:
+                continue
+            arr = np.frombuffer(p.stdout[:W*H*3], dtype=np.uint8).reshape(H, W, 3)
+            lowers.append(arr[crop_y:])
+
     boxes = []
-    for t in pts:
-        cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-               "-ss", "%.3f" % t, "-i", str(media), "-frames:v", "1",
-               "-vf", "scale=%d:%d" % (W, H), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
-        p = subprocess.run(cmd, capture_output=True, timeout=15)
-        if p.returncode != 0 or len(p.stdout) < W * H * 3:
-            continue
-        arr = np.frombuffer(p.stdout[:W*H*3], dtype=np.uint8).reshape(H, W, 3)
-        # 只检下半截
-        lower = arr[crop_y:]
+    for lower in lowers:
         try:
             res = engine.ocr_image(lower)
         except Exception:
