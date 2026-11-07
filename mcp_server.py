@@ -336,9 +336,8 @@ def _subs_stt(a):
     if asset is None:
         return (_missing(a), [])
     start, end, window_note = _window(a, asset)
-    language = str(a.get("language") or "zh")
     try:
-        segs, dur = engine.transcribe(asset["media_path"], start, end, language=language)
+        segs, dur = engine.transcribe(asset["media_path"], start, end, language="auto")
     except RuntimeError as e:
         return (_dump({"ok": False, "mode": "stt", "error": str(e)}), [])
     cues = [{"from": _tc(x["s"]), "to": _tc(x["e"]), "text": x["text"]} for x in segs]
@@ -467,7 +466,6 @@ TOOLS = [
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number", "description": "window length in seconds"},
-         "language": {"type": "string", "description": "stt: zh / en / ja / ko, default zh"},
          "band": {"type": "string",
                   "description": "ocr: band range, 'auto' (default) or ratios like \"0.10,0.27\""}}}},
 
