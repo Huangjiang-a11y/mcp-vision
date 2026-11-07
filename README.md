@@ -51,7 +51,7 @@ python3 mcp_server.py --http 8765
 四个大工具，按职责分层：
 
 - `workspace`：`open`（打开/下载）/ `list`
-- `video`：`analyze`（整片：时间线抽帧 + 近似正方形网格页）/ `frame`（单帧，可 `crop`）
+- `video`：`analyze`（整片：时间线抽帧 + 近似正方形网格页）/ `frame`（单帧，可 `crop`；给了 `seconds` 就变成连拍，同样拼成一页 `strip_*.png`）
   - `quantity` 抽帧数（默认 15）；`quality` 帧像素上限：low=512² medium=1024² high=1536² max=2048²
 - `audio`：`levels` / `transcribe`（silero-vad 自动断句 + SenseVoice，模型路径由环境变量指定）
 - `subtitles`：`ocr` / `band`
@@ -83,7 +83,7 @@ python3 ocr.py out/ocr_test.png      # 单图
 
 | 参数 | 含义 |
 |---|---|
-| `time` | 从哪个时间戳开始，默认 0（frame 里是那一帧的时刻） |
+| `time` | 从哪个时间戳开始，默认 0（frame 里是第一帧的时刻） |
 | `seconds` | 看多久；不传则看到上限或结尾 |
 | `end_seconds` | 兼容用，等价于 `seconds = end - start` |
 | `max_seconds` | 单次上限，默认 **900 秒（15 分钟）** |
