@@ -359,93 +359,67 @@ def _is_static(c):
     return top >= STATIC_RATIO * c["count"]
 
 
-def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
-                         lower_from=0.0, pad=0.02, engine=None):
-    """利用少量采样点按 OCR 框坐标聚类，秒级自动锁定字幕带 (y0_ratio, y1_ratio)。
-
-    - samples 默认 8 点；短窗口一次解码取帧，长窗口逐点 seek
-    - 默认搜整幅画面（lower_from=0.0）：字幕不一定在下面，顶部/中部都有
-    - 位置在打分里体现：底部和顶部加分，中部（多半是画面主体）压低
-    - 采样点按窗口时长均匀分布（span/(samples+1)），覆盖整段
-    """
-    if engine is None:
-        engine = get_engine()
-    dur = _probe_duration(media)
-    if end is None:
-        end = dur
-    end = min(float(end), dur) if dur else float(end)
+def _collect_sample_frames(media, start, end, samples, W, H):
+    """取 samples 帧整帧数组（先不裁），管道优先，不够退回逐点 seek。"""
     span = max(0.0, end - start)
-    if span <= 1.0:
-        return None
-
-    # 均匀挑选 samples 个探测时间点，稍微避开纯头尾
-    pts = [start + span * (i + 1) / (samples + 1) for i in range(samples)]
-    w0, h0 = _probe_wh(media)
-    # 采样宽度跟片源走：固定 480/640 时，720p 的字幕缩完只有 20 来像素高，检测不到。
-    # 取源宽的 75%，夹在 640~960 之间。
-    if width is None:
-        width = min(960, max(640, int(w0 * 0.75)))
-    W = min(width, w0)
-    H = int(round(h0 * W / w0))
-    H -= H % 2
-    crop_y = int(H * lower_from)
-
-    # 一次解码拿全部采样帧：逐点单开 ffmpeg -ss，8 点就要开 8 次容器。
-    # 顺序解码约 13 倍速：45 秒窗口 3.5 秒解完，10 分钟要 46 秒。
-    # 所以只有 ≤45 秒的窗口走解码，更长的逐点 seek（每次约 0.35 秒，与片长无关）。
-    lowers = []
+    frames = []
     if span <= 45.0:
+        # 顺序解码约 13 倍速：45 秒窗口 3.5 秒解完，10 分钟要 46 秒。
+        # 所以只有短窗口走解码，更长的逐点 seek（每次约 0.35 秒，与片长无关）。
         step = span / float(samples + 1)
         for i, _t, arr in _stream_frames(media, start, end, step=step, width=W, crop=None):
             if i == 0:
                 continue                       # 首帧常是黑场，跳过
-            lowers.append(arr[crop_y:])        # 只留下半截
-            if len(lowers) >= samples:
+            frames.append(arr)
+            if len(frames) >= samples:
                 break
-    if len(lowers) < max(2, samples // 2):     # 管道没吐出够帧，退回逐帧 seek
-        lowers = []
-        for t in pts:
+    if len(frames) < max(2, samples // 2):
+        frames = []
+        for i in range(samples):
+            t = start + span * (i + 1) / (samples + 1)
             cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                    "-ss", "%.3f" % t, "-i", str(media), "-frames:v", "1",
                    "-vf", "scale=%d:%d" % (W, H), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
-            p = subprocess.run(cmd, capture_output=True, timeout=15)
-            if p.returncode != 0 or len(p.stdout) < W * H * 3:
+            proc = subprocess.run(cmd, capture_output=True, timeout=15)
+            if proc.returncode != 0 or len(proc.stdout) < W * H * 3:
                 continue
-            arr = np.frombuffer(p.stdout[:W*H*3], dtype=np.uint8).reshape(H, W, 3)
-            lowers.append(arr[crop_y:])
+            frames.append(np.frombuffer(proc.stdout[:W * H * 3], dtype=np.uint8).reshape(H, W, 3))
+    return frames
+
+
+def _boxes_from_frames(frames, y_from, y_to, H, W, engine):
+    """OCR 每帧的 [y_from:y_to) 这一段，返回 [(y0, y1, 宽度占比, 文字), ...]。"""
     boxes = []
-    for lower in lowers:
+    for fr in frames:
         try:
-            res = engine.ocr_image(lower)
+            res = engine.ocr_image(fr[y_from:y_to])
         except Exception:
             continue
         for r in res:
             b = r["box"]
-            y0 = (b[1] + crop_y) / float(H)
-            y1 = (b[3] + crop_y) / float(H)
+            y0 = (b[1] + y_from) / float(H)
+            y1 = (b[3] + y_from) / float(H)
             if (y1 - y0) < 0.02:  # 太矮的噪点排除
                 continue
             boxes.append((y0, y1, max(0.0, (b[2] - b[0]) / float(W)),
                           (r.get("text") or "").strip()))
+    return boxes
 
+
+def _band_from_boxes(boxes, pad):
+    """把框按纵向重叠聚类、打分、合并相邻行，返回 {band, count, w, line_h} 或 None。"""
     if not boxes:
-        # 退路二：加密采样点（短窗口里字幕可能恰好不在前几个时刻）
-        if samples < 16:
-            return detect_subtitle_band(media, samples=16, start=start, end=end, width=width,
-                                        lower_from=lower_from, pad=pad, engine=engine)
-        # 退路三：降一档分辨率（小字幕在高分辨率下框不出字）
-        if width > 560:
-            return detect_subtitle_band(media, samples=16, start=start, end=end,
-                                        width=max(480, width // 2), lower_from=lower_from,
-                                        pad=pad, engine=engine)
         return None
 
-    # 按纵向重叠聚类
+    # 按纵向重叠聚类。必须限高：重叠是传递的，一屏小字能从顶串到底，
+    # 串成一个 0.0-0.8 的"簇"，选带就彻底跑偏（实测《areyoulost》就这样栽过）。
     clusters = []
     for y0, y1, wr, txt in boxes:
         hit = None
         for c in clusters:
             if y0 < c["y1"] and y1 > c["y0"]:
+                if max(c["y1"], y1) - min(c["y0"], y0) > 0.25:
+                    continue                 # 这一下会把簇拉得太高，另起一簇
                 hit = c
                 break
         if hit is None:
@@ -460,8 +434,6 @@ def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
             if txt:
                 hit["texts"].append(txt)
 
-    # 选簇不能只看框数：手写正文一行行的小字框永远比字幕多。
-    # 字幕的特征是「字大、横向长、位置靠边」，所以按字号×宽度×位置打分。
     def _pos(y0):
         # 字幕一般压底或贴顶，画面中部那是主体内容。底部权重最高，顶部次之，中部打折。
         if y0 >= 0.5:
@@ -487,17 +459,15 @@ def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
         seen = min(1.0, 0.5 + 0.1 * c["count"])    # 反复出现的才像字幕
         s = (h ** 1.5) * (0.3 + w) * _pos(c["y0"]) * seen
         # 常驻水印/台标：同一位置反复出现同一段字。字幕每句都变，水印不变。
-        # 用「出现最多的那串字占比」判断，容忍 OCR 抖动（动画：长相思APP / App / 相思APT）
         if _is_static(c):
             s *= 0.25
         return s
 
     clusters = [c for c in clusters if _usable(c)] or clusters
-
     if os.environ.get("BAND_DEBUG"):
         for c in sorted(clusters, key=score, reverse=True):
             print("  簇 y=%.3f-%.3f n=%d h=%.3f w=%.2f 分=%.5f 文字=%s" % (
-                c["y0"], c["y1"], c["count"], sum(c["hs"])/len(c["hs"]),
+                c["y0"], c["y1"], c["count"], sum(c["hs"]) / len(c["hs"]),
                 max(c["ws"]) if c["ws"] else 0, score(c), list(c["texts"])[:3]))
     best = max(clusters, key=score)
     # 字幕有时一句、有时两行，纵向差 3~5%，只留最高分那一簇会把矮的那行切掉。
@@ -519,8 +489,70 @@ def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
     y1_band = min(1.0, y1 + pad_eff)
     if (y1_band - y0_band) < 0.03:
         return None
-    return (round(y0_band, 4), round(y1_band, 4))
+    return {"band": (round(y0_band, 4), round(y1_band, 4)),
+            "count": best["count"], "w": max(best["ws"]) if best["ws"] else 0.0,
+            "line_h": line_h}
 
+
+def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
+                         lower_from=None, pad=0.02, engine=None):
+    """利用少量采样点按 OCR 框坐标聚类，秒级自动锁定字幕带 (y0_ratio, y1_ratio)。
+
+    - 默认两段式：先只搜下方 40%（多数片子字幕在那儿，也便宜）；
+      找不到像样的簇再整幅扫一遍。字幕在上方的片子多付一次 OCR，常见情况不多付。
+    - samples 默认 8 点；短窗口一次解码取帧，长窗口逐点 seek
+    - 两段都走同一批帧数组，解码只做一次
+    - lower_from 给了（0.0~1.0）就只搜那一段，不跑两段式
+    """
+    if engine is None:
+        engine = get_engine()
+    dur = _probe_duration(media)
+    if end is None:
+        end = dur
+    end = min(float(end), dur) if dur else float(end)
+    span = max(0.0, end - start)
+    if span <= 1.0:
+        return None
+
+    w0, h0 = _probe_wh(media)
+    # 采样宽度跟片源走：固定 480/640 时，720p 的字幕缩完只有 20 来像素高，检测不到。
+    if width is None:
+        width = min(960, max(640, int(w0 * 0.75)))
+    W = min(width, w0)
+    H = int(round(h0 * W / w0))
+    H -= H % 2
+
+    frames = _collect_sample_frames(media, start, end, samples, W, H)
+    if not frames:
+        # 退路：加密采样点，再不行降一档分辨率
+        if samples < 16:
+            return detect_subtitle_band(media, samples=16, start=start, end=end, width=width,
+                                        lower_from=lower_from, pad=pad, engine=engine)
+        if width > 560:
+            return detect_subtitle_band(media, samples=16, start=start, end=end,
+                                        width=max(480, width // 2), lower_from=lower_from,
+                                        pad=pad, engine=engine)
+        return None
+
+    if lower_from is not None:
+        r = _band_from_boxes(_boxes_from_frames(frames, int(H * lower_from), H, H, W, engine), pad)
+        return r["band"] if r else None
+
+    # 第一段：下半屏（40% 的面积），够像字幕就收工
+    cut = int(H * 0.6)
+    low_boxes = _boxes_from_frames(frames, cut, H, H, W, engine)
+    r = _band_from_boxes(low_boxes, pad)
+    if r and r["count"] >= 2 and r["w"] >= 0.2:
+        return r["band"]
+
+    # 第二段：只补扫上半屏，和第一段的框合并再打分（整幅只扫一遍，不重复）
+    r2 = _band_from_boxes(low_boxes + _boxes_from_frames(frames, 0, cut, H, W, engine), pad)
+    if r2:
+        return r2["band"]
+    if samples < 16:
+        return detect_subtitle_band(media, samples=16, start=start, end=end, width=width,
+                                    lower_from=lower_from, pad=pad, engine=engine)
+    return None
 
 def _text_sig(arr, th):
     """字幕的视觉签名：高亮像素掩码。背景在动也不影响文字轮廓。"""
