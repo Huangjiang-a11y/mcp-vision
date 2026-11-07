@@ -264,8 +264,11 @@ if __name__ == "__main__":
 # ---------- 加速：engine 复用 + 字幕带 + 变帧跳过 ----------
 
 def _tc(seconds):
+    """秒 -> MM:SS。只到秒：OCR 的采样步长本来就是 1.0s，ms 位恒为 000，
+    补上去只是伪造精度，还每段多花 4 个 token。"""
     s = max(0.0, float(seconds))
-    return "%02d:%06.3f" % (int(s // 60), s % 60)
+    t = int(s + 0.5)
+    return "%02d:%02d" % (t // 60, t % 60)
 
 
 def get_engine(**kw):

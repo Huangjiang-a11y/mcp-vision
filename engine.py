@@ -588,6 +588,17 @@ def pcm16k(media, start=0.0, end=None, timeout=1800):
     return np.frombuffer(p.stdout, dtype=np.int16).astype(np.float32) / 32768.0
 
 
+def _tag(v):
+    """SenseVoice 的富标签 <|NEUTRAL|> -> NEUTRAL。
+
+    result.emotion / event / lang 都是这个形状，空值或异常一律返回空串。
+    """
+    t = str(v or "").strip()
+    if t.startswith("<|") and t.endswith("|>"):
+        t = t[2:-2]
+    return t if t and t.upper() != "NONE" else ""
+
+
 def _is_noise_only(text):
     t = re.sub(r"[，。！？、,.!?…~～\s]", "", text or "")
     if not t:
@@ -600,7 +611,12 @@ def _is_noise_only(text):
 def transcribe(media, start=0.0, end=None, language="zh", threads=2,
                threshold=0.4, min_silence=0.4, max_speech=20.0, min_speech=0.25,
                drop_noise=True):
-    """按 VAD 自动断句，逐段识别。返回 [{s, e, text}]（秒，相对整片）。"""
+    """按 VAD 自动断句，逐段识别。
+
+    返回 [{s, e, text, emotion?, event?, lang?}]（秒，相对整片）。
+    emotion / event / lang 来自 SenseVoice 的同一次前向，不额外花钱；
+    只有非默认值才出现（NEUTRAL / Speech / EMO_UNKNOWN 省略）。
+    """
     import sherpa_onnx
     samples = pcm16k(media, start, end)
     if samples.size == 0:
@@ -641,7 +657,19 @@ def transcribe(media, start=0.0, end=None, language="zh", threads=2,
             dropped += 1
             return
         a = base + seg.start / float(sr)
-        out.append({"s": round(a, 2), "e": round(a + dur, 2), "text": text})
+        item = {"s": round(a, 2), "e": round(a + dur, 2), "text": text}
+        # SenseVoice 一次前向顺带给出情感 / 音频事件 / 语种，丢掉就白算了。
+        # 默认值不写：NEUTRAL、Speech、以及模型给的 EMO_UNKNOWN 都是「没说啥」。
+        emo = _tag(getattr(s.result, "emotion", ""))
+        ev = _tag(getattr(s.result, "event", ""))
+        lang = _tag(getattr(s.result, "lang", ""))
+        if emo and emo != "NEUTRAL" and emo != "EMO_UNKNOWN":
+            item["emotion"] = emo
+        if ev and ev != "Speech":
+            item["event"] = ev
+        if lang:
+            item["lang"] = lang
+        out.append(item)
 
     for i in range(0, samples.size, win):
         vad.accept_waveform(samples[i:i + win])

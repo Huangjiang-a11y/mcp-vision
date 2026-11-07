@@ -449,20 +449,43 @@ def _subs_stt(a):
         segs, dur = engine.transcribe(asset["media_path"], start, end, language="auto")
     except RuntimeError as e:
         return (_dump({"ok": False, "mode": "stt", "error": str(e)}), [])
-    cues = [{"from": _tc(x["s"]), "to": _tc(x["e"]), "text": x["text"]} for x in segs]
+    cues = []
+    for x in segs:
+        c = {"from": _tc(x["s"]), "to": _tc(x["e"]), "text": x["text"]}
+        # SenseVoice 同一次前向给出的情感 / 音频事件 / 语种，非默认才写。
+        for k in ("emotion", "event", "lang"):
+            if x.get(k):
+                c[k] = x[k]
+        cues.append(c)
     out = {"mode": "stt", "engine": "silero-vad + sensevoice",
            "range": [round(start, 2), round(start + dur, 2)],
            "segment_count": len(cues), "segments": cues,
            "text": "".join(x["text"] for x in cues)}
+    # 汇总：一眼看出这首歌有没有 BGM、几处在笑/鼓掌、语种混没混。
+    agg = {}
+    for k in ("emotion", "event", "lang"):
+        vals = [c[k] for c in cues if c.get(k)]
+        if vals:
+            agg[k] = {v: vals.count(v) for v in sorted(set(vals), key=vals.count, reverse=True)}
+    if agg:
+        out["summary"] = agg
+    if any(c.get("event") in ("BGM", "Applause", "Laughter") for c in cues):
+        out["note_acoustic"] = ("事件标签来自 SenseVoice 的同一遍前向，不是声道分离："
+                                "BGM 表示这段里音乐压过了人声，转写可能因此掉字。")
     if window_note:
         out["note"] = window_note
     return (_dump(out), [])
 
 
 def _tc(sec):
-    """秒 -> MM:SS.mmm（与 ocr 段的时间格式一致）。"""
+    """秒 -> MM:SS。
+
+    只到秒。ms 位对定位没用（没人会拿它去切帧），却每段多花 4 个 token，
+    97 段字幕就是 388 个——省下来更值。原始秒数在 seconds / s·e 字段里另有。
+    """
     t = max(0.0, float(sec))
-    return "%02d:%02d.%03d" % (int(t // 60), int(t % 60), int(round((t % 1) * 1000)))
+    t = int(math.floor(t + 0.5))
+    return "%02d:%02d" % (t // 60, t % 60)
 
 
 def _subs_ocr(a):
@@ -589,7 +612,10 @@ TOOLS = [
          "Get a window's text, as cues (from/to/text). mode=ocr (default) reads on-screen "
          "subtitles by OCRing the subtitle band frame by frame - use it for burned-in subtitles, "
          "songs and any text on screen. mode=stt transcribes the audio with speech recognition - "
-         "use it when the speech is not written on screen. band=\"0.10,0.27\" pins the OCR band manually."
+         "use it when the speech is not written on screen; it also returns per-cue emotion "
+         "(HAPPY/SAD/ANGRY...), acoustic event (Speech/BGM/Applause/Laughter) and language, "
+         "plus a summary count. band=\"0.10,0.27\" pins the OCR band manually. "
+         "Cue times are MM:SS (second precision)."
      ),
      "inputSchema": {"type": "object", "properties": {
          "mode": {"type": "string", "enum": ["ocr", "stt"],

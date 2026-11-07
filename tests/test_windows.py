@@ -74,6 +74,21 @@ check("未知方法用 -32601", M.handle({"jsonrpc": "2.0", "id": 1, "method": "
 check("非法请求用 -32600", M.handle(["x"])["error"]["code"], -32600)
 check("parse error 用 -32700", M._parse_error("x")["error"]["code"], -32700)
 
+# --- 时间格式：只到秒 ---
+# 毫秒对定位没用，每段却多 8 个字符。98 段字幕就是 784 字符。
+check("_tc 到秒", M._tc(83.47), "01:23")
+check("_tc 四舍五入", M._tc(59.6), "01:00")
+check("_tc 零", M._tc(0), "00:00")
+check("_tc 不含毫秒", "." in M._tc(12.345), False)
+check("_tc 负数归零", M._tc(-5), "00:00")
+
+# --- SenseVoice 富标签解析 ---
+import engine
+check("标签剥壳", engine._tag("<|NEUTRAL|>"), "NEUTRAL")
+check("标签空值", engine._tag(None), "")
+check("标签 NONE", engine._tag("<|NONE|>"), "")
+check("标签普通字符串", engine._tag("zh"), "zh")
+
 print("\nRESULT", "ALL OK" if not fails else "HAS FAIL (%d)" % len(fails))
 for f in fails:
     print(" -", f)
