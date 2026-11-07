@@ -728,16 +728,31 @@ def _pick_grid(n0, aspect):
 
 
 def _sheet_cells(a, aspect, cols, rows):
-    """整页约等于 quality 档位的像素上限：先定页面预算，再平均分给每个格子。
+    """按 quality 档位给**整页**定像素预算，再平均分给每个格子。
 
-    短边 s 满足 s*s*aspect*cols*rows = cap，即 s = sqrt(cap/(aspect*cols*rows))。
+    设 cell 短边 = s，整页 = (s·cols·aspect) × (s·rows)（宽屏），
+    面积 s²·aspect·cols·rows = cap，即 s = sqrt(cap/(aspect·cols·rows))。
+
+    注意这个 s 是**单格**短边，因为已经除过 cols·rows 了。
+    以前代码注释写的是「短边」，实现也当整页短边用，于是竖屏拼页
+    3.31MP 是预算 1.05MP 的 316%——横屏恰好 100%，所以一直没发现。
     """
     cap = _max_pixels(a)
-    short = int(round(math.sqrt(cap / max(1e-6, aspect * cols * rows))))
-    short = max(80, min(short, 640))
+    # 预算按**整页**算：单格面积 = cap/(cols·rows)，且单格宽高比 = 画面比例。
+    #   h² · aspect = cap/(cols·rows)  →  h = sqrt(cap/(cols·rows·aspect))
+    #
+    # 之前把 sqrt(cap/(aspect·cols·rows)) 当成"短边"用，公式里已经除过 cols·rows，
+    # 得到的其实是单格窄边；竖屏再拿它当页面宽，于是整页 3.31MP = 预算的 316%。
+    # 横屏恰好 100%，所以这个偏差一直没暴露——只有竖屏才看得出来。
+    per_cell = cap / max(1, cols * rows)
+    ch = math.sqrt(per_cell / max(1e-6, aspect))
+    cw = ch * aspect
     if aspect < 1:
-        return short, max(1, int(round(short / aspect)))
-    return max(1, int(round(short * aspect))), short
+        cw, ch = cw, ch
+    # 单格尺寸兜底，避免极小窗口算出 0
+    cw = max(48, min(cw, 1280))
+    ch = max(48, min(ch, 1280))
+    return max(1, int(round(cw))), max(1, int(round(ch)))
 
 
 def _short_hash(x):

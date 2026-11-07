@@ -129,6 +129,19 @@ for bad, why in [
 # 查 JSON 键而不是裸词——注释里提到字段名是合法的，写进输出才是问题
 check("OCR 不输出 band_auto 键", '"band_auto":' in src_ocr, False)
 
+# --- 格子尺寸：整页预算要按整页算 ---
+# 以前把 sqrt(cap/(aspect·cols·rows)) 当"短边"，公式已除过 cols·rows，
+# 得到的其实是单格窄边。竖屏再拿它当页面宽 → 整页 316% 预算。
+# 横屏恰好 100%，所以只有竖屏能暴露。
+cap = M._max_pixels({"quality": "medium"})
+for label, asp, c, r in (("竖屏3x2", 1080/1920, 3, 2), ("竖屏2x5", 1080/1920, 2, 5),
+                         ("横屏3x3", 1280/720, 3, 3), ("横屏5x2", 1280/720, 5, 2),
+                         ("方形3x3", 1.0, 3, 3)):
+    w, h = M._sheet_cells({"quality": "medium"}, asp, c, r)
+    got = w * h * c * r
+    check("%s 整页 ≈ 预算" % label, abs(got / cap - 1.0) < 0.06, True)
+    check("%s 单格保持画面比例" % label, abs((w / h) / asp - 1.0) < 0.02, True)
+
 # --- 工作区清理 ---
 # _prune_workspaces 曾经定义了但零调用，MVV_KEEP_WORKSPACES 从来没生效，
 # 目录只增不减。这里既测排序，也测它确实被接进了打开流程。
