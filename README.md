@@ -51,8 +51,8 @@ python3 mcp_server.py --http 8765
 四个大工具，按职责分层：
 
 - `workspace`：`open`（打开/下载）/ `list`
-- `video`：`analyze`（整片：时间线抽帧 + 近似正方形网格页）/ `frame`（单帧，可 `crop`；给了 `seconds` 就变成连拍，同样拼成一页 `strip_*.png`）
-  - `quantity` 抽帧数（默认 15）；`quality` 帧像素上限：low=512² medium=1024² high=1536² max=2048²
+- `video`：给窗口 + 张数，抽帧拼成一页网格；`quantity=1` 时不出页，直接给单帧原图（可 `crop`）
+  - `quantity` 抽帧数（默认 15，上限 30；1 = 单帧）；`quality` 像素上限：low=512² medium=1024² high=1536² max=2048²（拼页时管整页，单帧时管裁剪后那张）
 - `audio`：`levels` / `transcribe`（silero-vad 自动断句 + SenseVoice，模型路径由环境变量指定）
 - `subtitles`：`ocr` / `band`
 
@@ -79,7 +79,7 @@ python3 ocr.py out/ocr_test.png      # 单图
 
 ## 取窗：先选时间戳，再选看多久
 
-所有耗时动作（`video analyze` / `audio` / `subtitles`）共用一套取窗：
+所有耗时动作（`video` / `audio` / `subtitles`）共用一套取窗：
 
 | 参数 | 含义 |
 |---|---|
@@ -227,11 +227,14 @@ python3 ocr.py out/ocr_test.png      # 单图
 同一窗口 OCR 19 → 24 次、8.2 → 9.9 秒。`skip_th` 提到 1.5 可回到 21 次且段数不变，
 但 3.0 会丢掉 5 段，没敢默认动。
 
-**5. 网格凑整：要 12 帧会回 15 帧**
+**5. 网格凑整：要 12 帧会回 15 帧（已修）**
 
-`analyze` 为了让整页接近方形，自动选 cols×rows，允许最多 3 个空格。
-`quantity=12` 实际返回 15 帧（排成 3×5，填 12 格空 3 格）。不是 bug，多给的帧仍均匀覆盖窗口。
-只是调用方别拿 `quantity` 当返回帧数——这条属于文档，不往工具描述里塞。
+早期版本为了让整页接近方形，按 cols×rows 抽帧，`quantity=12` 实际返回 15 帧
+（排成 3×5，填 12 格空 3 格）。现在要几张给几张，网格只决定排版，最后一排可以留空。
+
+同时把空格惩罚从 0.05 提到 0.5：只要有无空格的方案，就不为了更方形去留黑格。
+起因是 4 帧裁剪成字幕带时选了 1×5——页面比例 0.98 确实比 1×4 的 1.23 更方，
+但白占一格。现在 4 帧稳定走 1×4。
 
 **6. 整屏都是字的片子：没有可用的字幕带**
 
@@ -250,7 +253,7 @@ python3 ocr.py out/ocr_test.png      # 单图
 
 ## 状态
 
-v0.3 已通：`workspace`（open / list）、`video`（analyze / frame）、
+v0.3 已通：`workspace`（open / list）、`video`、
 `audio`（levels / transcribe）、`subtitles`（ocr / band）。
 
 转写链路：ffmpeg 直出 16k 单声道 → silero-vad 自动断句（阈值/静音/最长段交给模型，

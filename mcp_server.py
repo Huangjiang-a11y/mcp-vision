@@ -445,48 +445,38 @@ TOOLS = [
 
     {"name": "video",
      "description": (
-         "Look at the picture: either the whole clip on one page, or one exact frame.\n"
+         "Look at a clip: one page of evenly spaced frames, or a single frame when you need detail.\n"
          "\n"
-         "analyze - the whole clip at a glance.\n"
-         "Give a window and a frame count; it samples that many frames evenly from the window start to "
-         "its end (both ends included), lays them out left to right, top to bottom, and returns the page "
-         "plus a timeline list.\n"
-         "Example: quantity=12, seconds=60 on a 1280x720 clip gives a 1185x888 png laid out 3 columns x 4 rows "
-         "- 12 frames, every cell filled, each cell 395x222 - and timeline = [{t:0.0,...}, {t:5.455,...}, "
-         "... {t:60.0,...}]. You get exactly `quantity` frames; the grid only decides the layout: it prefers a "
-         "shape close to square and, when the count splits cleanly, no empty cells (a prime count like 13 falls "
-         "back to a grid with a couple of dark cells). The sheet has no timestamps burned in: cell order matches "
-         "timeline order 1:1, which is how you tell which moment a thumbnail is. The page is always sent as an "
-         "image, with sheetJpg / sheetKB describing the file.\n"
+         "Give a window (time + seconds) and a frame count (quantity). It samples that many frames "
+         "evenly from the window start to its end, both ends included, lays them out left to right, "
+         "top to bottom, and returns ONE page image plus a timeline.\n"
+         "quantity=1 is the special case: no page, just that one frame at full detail - use it to read "
+         "a scoreboard, a board or a subtitle line, optionally with crop.\n"
          "\n"
-         "frame - one moment, or a short burst as a single page.\n"
-         "Without `seconds` you get the one frame at `time`, at the full pixel cap. With `seconds` the burst "
-         "is composed into ONE page instead of N images: `quantity` frames (default 1) evenly spaced from "
-         "`time` to `time`+`seconds`, laid out like analyze, one image back plus a timeline. Files are "
-         "prefixed strip_ so you can tell them from analyze's sheet_*.\n"
-         "Example: time=123.5, crop=1280x260+0+440 returns that slice plus its path; time=42, seconds=2, "
-         "quantity=4 gives a 2x2 page of 42.0 / 42.667 / 43.333 / 44.0, each cell 683x384. Use frame when "
-         "the page is too small to read a board, a scoreboard or a subtitle line.\n"
+         "Example: quantity=12, seconds=60 on a 1280x720 clip gives a 1185x888 png, 3 columns x 4 rows, "
+         "cells 395x222, timeline = [{t:0.0,...}, {t:5.455,...}, ... {t:60.0,...}]. You get exactly "
+         "`quantity` frames; the grid only decides the layout and prefers a near-square shape, leaving "
+         "the last row partly empty when the count does not split cleanly.\n"
+         "Example: quantity=1, time=123.5, crop=1280x260+0+440 returns that slice as a jpg.\n"
          "\n"
-         "Shared: quality is an area cap, not a resolution - medium means about one megapixel total. For "
-         "analyze or a frame burst it caps the whole page (cells get smaller as the grid grows); for a "
-         "single frame it caps the cropped area. It never upscales. The window is time + seconds, capped at max_seconds "
-         "(900) and clamped to the clip, with a note in the reply when that happens. Outputs land in "
-         "workspace/<video>/video/ (frames t<ms>-<w>x<h>.jpg, analyze page sheet_*.png, burst page "
-         "strip_*.png, single frame_<ms>-<hash>.jpg) and repeat calls reuse them."
+         "The page has no timestamps burned in: cell order matches timeline order 1:1, which is how you "
+         "tell which moment a thumbnail is. The image is always sent back, with sheetJpg / sheetKB "
+         "describing the file. quality is an area cap, not a resolution: for a page it caps the whole "
+         "page (cells shrink as the grid grows), for a single frame it caps the cropped area, and it "
+         "never upscales. The window is time + seconds, capped at max_seconds (900) and clamped to the "
+         "clip, with a note in the reply when that happens. Outputs land in workspace/<video>/video/ "
+         "(page sheet_<ms>_<cols>x<rows>_<hash>.png, frame t<ms>-<w>x<h>.jpg) and repeat calls reuse them."
      ),
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["analyze", "frame"],
-                    "description": "analyze = grid page for the clip (default); frame = one frame, or a burst page when seconds is given"},
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
-         "time": {"type": "number",
-                  "description": "frame: the moment, or the start of a burst; analyze: window start, default 0"},
-         "quantity": {"type": "integer",
-                      "description": "analyze: sampled frames, default 15, max 30; frame: burst size, default 1"},
+         "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number",
-                     "description": "analyze: window length; frame: burst length starting at time (omit for a single frame)"},
+                     "description": "window length; default: to the clip end, capped by max_seconds"},
+         "quantity": {"type": "integer",
+                      "description": "frames to sample, default 15, max 30; 1 returns a single full-detail frame instead of a page"},
          "max_seconds": {"type": "number", "description": "window cap in seconds, default 900"},
-         "crop": {"type": "string", "description": "frame: crop as WxH+X+Y, e.g. 720x300+0+880"},
+         "crop": {"type": "string",
+                  "description": "crop before scaling, WxH+X+Y (e.g. 720x300+0+880); applies to every cell"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
                      "description": "pixel cap: low=512^2 medium=1024^2 high=1536^2 max=2048^2; scales down only"}}}},
 
@@ -576,7 +566,8 @@ def _pick_grid(n0, aspect):
             if empty > 3:
                 continue
             flip = (c < r) if aspect >= 1 else (c > r)
-            score = abs(math.log((c / r) * aspect)) + 0.15 * empty + (0.25 if flip else 0)
+            # 空格罚得够重：只要有无空格的方案，就不为了更方形去留黑格
+            score = abs(math.log((c / r) * aspect)) + 0.5 * empty + (0.25 if flip else 0)
             key = (round(score, 3), empty)
             if best_key is None or key < best_key:
                 best_key, best_c, best_r = key, c, r
@@ -635,7 +626,12 @@ def _attach(jpg):
         return []
 
 
-def tool_analyze(a):
+def tool_video(a):
+    """一个动作：给窗口和张数，拼成一页；quantity=1 就出一张单帧。
+
+    原来的 analyze / frame 两个动作合并成一个，区别只剩 quantity：
+    1 张时直接给原图（可 crop，按整帧像素上限），多张时拼页（quality 管整页）。
+    """
     cwd = str(Path(__file__).resolve().parent)
     asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
@@ -643,59 +639,7 @@ def tool_analyze(a):
     duration = float(asset.get("duration") or 0)
     if duration <= 0:
         return ("视频时长为 0，无法抽帧", [])
-    vw = float(asset.get("width") or 16)
-    vh = float(asset.get("height") or 9)
-    aspect = vw / vh
-    fw, fh = _fit(vw, vh, _max_pixels(a))
-    n0 = max(1, min(int(a.get("quantity") or 15), 30))
-    cols, rows = _pick_grid(n0, aspect)
-    # 要几张就抽几张：网格只决定排版，不足的最后一排留空
-    win_start, win_end, window_note = _window(a, asset)
-    ts = engine.sample_times(win_start, win_end, n0)
-    frames = engine.extract_frames(asset["media_path"], ts, width=fw, size=(fw, fh),
-                                   out_dir=asset.get("video_dir"), duration=duration)
-    sheet_path = None
-    jpg = None
-    cell_w = None
-    cell_h = None
-    if frames:
-        cell_w, cell_h = _sheet_cells(a, aspect, cols, rows)
-        key = "%s|%s|%s|%s|%dx%d|%dx%d" % (asset.get("id") or "", a.get("quantity"),
-                                           a.get("quality"), window_note, cols, rows, cell_w, cell_h)
-        sheet_path, jpg = _compose(a, asset, frames, cols, rows, cell_w, cell_h, key, "sheet", win_start)
-    out = {
-        "ok": True,
-        "title": asset.get("title"),
-        "duration": round(duration, 2),
-        "width": asset.get("width"),
-        "height": asset.get("height"),
-        "frameSize": [fw, fh],
-        "grid": [cols, rows] if frames else None,
-        "cellSize": [cell_w, cell_h] if frames else None,
-        "frames": len(frames),
-        "timeline": [{"t": f["seconds"], "path": f["path"]} for f in frames],
-        "sheet": sheet_path,
-        "sheetJpg": jpg,
-        "videoDir": asset.get("video_dir"),
-    }
-    if jpg:
-        try:
-            out["sheetKB"] = int(round(Path(jpg).stat().st_size / 1024))
-        except Exception:
-            pass
-    return (json.dumps(out, ensure_ascii=False, indent=2), _attach(jpg))
 
-
-def tool_frame(a):
-    """单帧；给了 seconds 就把 time 起这段范围拼成一页（quality 作用于整页）。"""
-    cwd = str(Path(__file__).resolve().parent)
-    asset = _load_asset(cwd, a.get("video_id"))
-    if asset is None:
-        return (_missing(a), [])
-    t0 = a.get("time")
-    if t0 is None:
-        return ("frame 需要 time（秒）", [])
-    t0 = float(t0)
     spec = str(a.get("crop") or "").strip()
     try:
         crop = _parse_crop(spec)
@@ -708,57 +652,48 @@ def tool_frame(a):
         sw = float(asset.get("width") or 16)
         sh = float(asset.get("height") or 9)
     aspect = sw / sh
-    out_dir = Path(asset.get("video_dir") or ".")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    n = max(1, min(int(a.get("quantity") or 1), 30))
-    span = a.get("seconds")
 
-    # 单帧：按整帧像素上限出图
-    if not span or n == 1:
+    n = max(1, min(int(a.get("quantity") or 15), 30))
+    win_start, win_end, note = _window(a, asset)
+    out_dir = asset.get("video_dir")
+
+    # 单帧：不拼页，按整帧（或裁剪后）的像素上限出图
+    if n == 1:
         tw, th = _fit(sw, sh, _max_pixels(a))
-        vf = ([crop] if crop else []) + ["scale=%d:%d" % (tw, th)]
-        tag = _short_hash(",".join(vf))
-        dest = out_dir / ("frame_%s-%s.jpg" % (engine.timecode(t0).replace(":", ""), tag))
-        if not dest.exists():
-            r = engine._run(["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % t0,
-                             "-i", asset["media_path"], "-frames:v", "1",
-                             "-vf", ",".join(vf), str(dest)], timeout=120)
-            if not dest.exists():
-                return ("取帧失败 @%.3fs: %s" % (t0, r or "ffmpeg 无输出"), [])
-        return (json.dumps({"ok": True, "t": round(t0, 3), "save": str(dest),
-                            "size": [tw, th], "quality": a.get("quality") or "medium"},
-                           ensure_ascii=False),
-                [{"type": "image", "data": base64.b64encode(dest.read_bytes()).decode(),
-                  "mimeType": "image/jpeg"}])
+        got = engine.extract_frames(asset["media_path"], [win_start], out_dir=out_dir,
+                                    duration=duration, size=(tw, th), crop=crop)
+        if not got:
+            return ("取帧失败 @%.3fs" % win_start, [])
+        f = got[0]
+        out = {"ok": True, "mode": "single", "title": asset.get("title"),
+               "duration": round(duration, 2), "t": f["seconds"], "save": f["path"],
+               "size": [tw, th], "crop": spec or None,
+               "quality": a.get("quality") or "medium", "videoDir": out_dir}
+        if note:
+            out["note"] = note
+        return (json.dumps(out, ensure_ascii=False, indent=2), _attach(f["path"]))
 
-    # 连拍：time 起 span 秒等距取 n 张，拼成一页
-    cap = float(a.get("max_seconds") or MAX_ANALYZE_SECONDS)
-    span = min(float(span), cap if cap > 0 else MAX_ANALYZE_SECONDS)
+    # 多帧：拼成一页
     cols, rows = _pick_grid(n, aspect)
     cell_w, cell_h = _sheet_cells(a, aspect, cols, rows)
-    ts = engine.sample_times(t0, t0 + span, n)
-    vf = ([crop] if crop else []) + ["scale=%d:%d" % (cell_w, cell_h)]
-    ftag = _short_hash(",".join(vf))
-    frames = []
-    for tt in ts:
-        dest = out_dir / ("frame_%s-%s.jpg" % (engine.timecode(tt).replace(":", ""), ftag))
-        if not dest.exists():
-            r = engine._run(["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % tt,
-                             "-i", asset["media_path"], "-frames:v", "1",
-                             "-vf", ",".join(vf), str(dest)], timeout=120)
-            if not dest.exists():
-                return ("取帧失败 @%.3fs: %s" % (tt, r or "ffmpeg 无输出"), [])
-        frames += [{"seconds": tt, "path": str(dest)}]
-
-    key = "%s|%s|%s|%s|%dx%d|%dx%d" % (asset.get("id") or "", a.get("quantity"),
-                                        a.get("quality"), spec, cols, rows, cell_w, cell_h)
-    sheet_path, jpg = _compose(a, asset, frames, cols, rows, cell_w, cell_h, key, "strip", t0)
-    out = {"ok": True, "frames": len(frames),
+    ts = engine.sample_times(win_start, win_end, n)
+    frames = engine.extract_frames(asset["media_path"], ts, out_dir=out_dir, duration=duration,
+                                   size=(cell_w, cell_h), crop=crop)
+    if not frames:
+        return ("抽帧失败（%d 个时间点都没取到）" % len(ts), [])
+    key = "%s|%d|%s|%s|%s|%dx%d|%dx%d" % (asset.get("id") or "", n, a.get("quality"),
+                                           note, spec, cols, rows, cell_w, cell_h)
+    sheet_path, jpg = _compose(a, asset, frames, cols, rows, cell_w, cell_h, key, "sheet", win_start)
+    out = {"ok": True, "mode": "sheet", "title": asset.get("title"),
+           "duration": round(duration, 2),
+           "frames": len(frames),
            "range": [round(min(ts), 3), round(max(ts), 3)],
            "grid": [cols, rows], "cellSize": [cell_w, cell_h], "crop": spec or None,
            "quality": a.get("quality") or "medium",
            "timeline": [{"t": f["seconds"], "path": f["path"]} for f in frames],
-           "sheet": sheet_path, "sheetJpg": jpg, "videoDir": asset.get("video_dir")}
+           "sheet": sheet_path, "sheetJpg": jpg, "videoDir": out_dir}
+    if note:
+        out["note"] = note
     if jpg:
         try:
             out["sheetKB"] = int(round(Path(jpg).stat().st_size / 1024))
@@ -777,12 +712,10 @@ def dispatch_workspace(a):
 
 
 def dispatch_video(a):
-    act = (a.get("action") or "analyze").lower()
-    if act == "analyze":
-        return tool_analyze(a)
-    if act == "frame":
-        return tool_frame(a)
-    return ("unknown action: %s" % act, [])
+    # action 已取消：一个工具做一件事。旧的 frame 调用（没给 quantity）按单帧处理。
+    if (a.get("action") or "").lower() == "frame" and a.get("quantity") is None:
+        a = dict(a, quantity=1)
+    return tool_video(a)
 
 
 def tool_transcribe(a):

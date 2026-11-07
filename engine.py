@@ -84,19 +84,22 @@ def probe(path):
 
 
 # ---------- frame extraction ----------
-def _extract_jpeg(media, t, width, out_path, timeout=120, size=None):
+def _extract_jpeg(media, t, width, out_path, timeout=120, size=None, crop=None):
     # size 显式指定宽高时直接给死，别再让 h=-2 自己取整，否则实际尺寸和报出去的对不上
     if size:
         vf = "scale=%d:%d:out_range=full" % (int(size[0]), int(size[1]))
     else:
         vf = "scale=w='min(%d,iw)':h=-2:out_range=full" % width
+    # crop 走 ffmpeg 的 crop 滤镜，语法就是 WxH+X+Y；先裁再缩，比例不会变形
+    if crop:
+        vf = "%s,%s" % (crop, vf)
     _run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
           "-ss", str(t), "-i", str(media), "-frames:v", "1", "-an",
           "-vf", vf, "-pix_fmt", "yuvj420p", "-q:v", "2", str(out_path)], timeout=timeout)
 
 
 def extract_frames(media, times, width=DEFAULT_FRAME_WIDTH, out_dir=None, signal=None, duration=None,
-                   size=None):
+                   size=None, crop=None):
     media = Path(media)
     if out_dir is None:
         out_dir = media.parent / (media.stem + "_frames")
@@ -113,10 +116,12 @@ def extract_frames(media, times, width=DEFAULT_FRAME_WIDTH, out_dir=None, signal
             t = max(0.0, duration - 0.05)
         if t < 0:
             t = 0.0
+        # 不同裁剪区域可能裁出同样的宽高，文件名带上裁剪的短 hash 才不会互相覆盖
+        csuf = "" if not crop else "-" + hashlib.md5(str(crop).encode()).hexdigest()[:4]
         if size:
-            path = out_dir / ("t%09d-%dx%d.jpg" % (round(t * 1000), int(size[0]), int(size[1])))
+            path = out_dir / ("t%09d-%dx%d%s.jpg" % (round(t * 1000), int(size[0]), int(size[1]), csuf))
         else:
-            path = out_dir / ("t%09d-w%d.jpg" % (round(t * 1000), width))
+            path = out_dir / ("t%09d-w%d%s.jpg" % (round(t * 1000), width, csuf))
         # reuse if fresh
         if not (path.exists() and path.stat().st_size > 0 and path.stat().st_mtime >= media_mtime):
             ok = False
@@ -124,7 +129,7 @@ def extract_frames(media, times, width=DEFAULT_FRAME_WIDTH, out_dir=None, signal
                 if cand < 0:
                     continue
                 try:
-                    _extract_jpeg(media, cand, width, path, size=size)
+                    _extract_jpeg(media, cand, width, path, size=size, crop=crop)
                     if path.exists() and path.stat().st_size > 0:
                         t = cand
                         ok = True
