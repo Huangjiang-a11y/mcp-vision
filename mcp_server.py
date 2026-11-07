@@ -441,7 +441,7 @@ TOOLS = [
          "crop": {"type": "string", "description": "frame 裁剪：WxH+X+Y，如 720x300+0+880；按裁剪后的尺寸算缩放，不失真"},
         "attach": {"type": "boolean", "description": "analyze 是否把网格页作为图片一并返回，默认 true；只要路径时传 false"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                     "description": "像素上限（数值平方=最大像素数）：low=512 medium=1024 high=1536 max=2048"}}}},
+                     "description": "像素上限（数值平方=最大像素数）：low=512 medium=1024 high=1536 max=2048；frame 作用于单帧（裁剪后算），analyze 作用于整页网格"}}}},
     {"name": "audio", "description": "音频：levels 电平分析 / extract 导出 / transcribe 转写（silero-vad 自动断句 + SenseVoice）。",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["levels", "extract", "transcribe"]},
@@ -541,7 +541,11 @@ def tool_analyze(a):
                                    out_dir=asset.get("video_dir"), duration=duration)
     sheet_path = None
     if frames:
-        short = 190
+        # 格子尺寸由 quality 档位（像素上限）反推：整页 ≈ cols*rows 格 ≈ 上限像素数
+        # 短边 s 满足 s*s*aspect*cols*rows = cap，即 s = sqrt(cap/(aspect*cols*rows))
+        cap = _max_pixels(a)
+        short = int(round(math.sqrt(cap / max(1e-6, aspect * cols * rows))))
+        short = max(80, min(short, 640))
         if aspect < 1:
             cell_w, cell_h = short, max(1, int(round(short / aspect)))
         else:
