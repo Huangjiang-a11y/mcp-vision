@@ -1,3 +1,7 @@
+"""并发压测：打运行中的 HTTP 入口，看同工具/跨工具同时跑会不会互相拖慢。
+
+不是单元测试，是基准；先 `python3 mcp_server.py --http 8765` 再跑。
+"""
 import json, threading, time, urllib.request
 
 URL = "http://127.0.0.1:8765"
@@ -13,8 +17,8 @@ def call(tool, args):
         return -1.0, str(e)
     return time.time() - t0, ""
 
-BAND = {"action": "band", "start_seconds": 0, "seconds": 16, "step": 1}
-ASR = {"action": "transcribe", "start_seconds": 30, "seconds": 12}
+BAND = {"mode": "ocr", "time": 0, "seconds": 16}
+ASR = {"mode": "stt", "time": 30, "seconds": 12}
 
 def run(label, jobs):
     out = [None] * len(jobs)

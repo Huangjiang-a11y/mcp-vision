@@ -1,5 +1,9 @@
-"""L/R 分层出图的冒烟测试：合成左 440Hz、右 3000Hz，看两半是否各归各的。"""
-import subprocess, sys, tempfile, os, shutil
+"""L/R 分层出图的冒烟测试：合成左 440Hz、右 3000Hz，看两半是否各归各的。
+
+不需要模型、不需要素材，只要 ffmpeg + numpy。`sh check.sh --test` 会跑它。
+"""
+import os, sys, subprocess, tempfile, shutil
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import engine, audiochart
 
 d = tempfile.mkdtemp(prefix="st-")

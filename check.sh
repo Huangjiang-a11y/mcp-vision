@@ -29,3 +29,9 @@ else
 fi
 echo "冒烟：MCP tools/list"
 printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n' | python3 mcp_server.py | tail -1 | python3 -c "import sys,json; d=json.load(sys.stdin); print('  工具:', [t['name'] for t in d['result']['tools']]); print('  action:', d['result']['tools'][0]['inputSchema']['properties']['action']['enum'])"
+
+# --test：跑不需要模型、不需要素材的回归测试
+if [ "$1" = "--test" ]; then
+  echo "测试：L/R 分层出图"
+  python3 tests/test_stereo.py | sed 's/^/  /' || exit 1
+fi

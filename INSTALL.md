@@ -173,12 +173,19 @@ sh check.sh
 
 任何一项是 `[--]`，就少了个可选能力，其余照样能跑。
 
-冒烟测试：
+冒烟测试（带 `--test` 会额外跑不需要模型和素材的回归测试）：
+
+```sh
+sh check.sh --test
+```
+
+手动试一遍四个工具：
 
 ```
 workspace open  "file:///path/to/a.mp4"
-video     analyze quantity=15
+video     quantity=15
 audio     view=all time=0 seconds=10
+subtitles mode=stt time=0 seconds=30
 ```
 
 ## 6. 目录约定
@@ -186,6 +193,8 @@ audio     view=all time=0 seconds=10
 ```
 mcp-vision/
 ├── models/            OCR 权重默认位置（gitignore，可被环境变量覆盖）
+├── tests/             不需要模型/素材的回归测试
+├── scripts/           基准脚本（需要模型或运行中的服务）
 ├── workspace/         产物：每个视频一个文件夹（gitignore）
 │   └── <标题>/
 │       ├── video/     probe.json / frame_*.jpg / sheet_*.png

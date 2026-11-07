@@ -43,6 +43,9 @@ python3 mcp_server.py            # stdio
 python3 mcp_server.py --http 8765
 ```
 
+`sh check.sh --test` 跑一遍体检 + 不需要模型的回归测试（L/R 分层出图）。
+基准脚本在 `scripts/`（需要模型或运行中的服务），回归测试在 `tests/`。
+
 依赖、模型下载、客户端配置见 **[INSTALL.md](INSTALL.md)**；
 使用范围与责任见其中的「免责声明」。
 
