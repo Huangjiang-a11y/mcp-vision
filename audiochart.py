@@ -523,8 +523,12 @@ def plot_wave(d, tag="", w=1024, h=512):
         t += xstep
     c.rect(x0, y0, x1, y1, AXIS)
     W = x1 - x0
-    if s.size > 2 * W:
-        # 每像素列覆盖多个样本：取 min/max 画成竖线，才是真正的包络
+    spp = s.size / float(max(1, W))          # samples per pixel
+    xs = x0 + (x1 - x0) * np.linspace(0.0, 1.0, s.size)
+    # 每像素不足 8 个样本时，min/max 会把每列画成一根从极小到极大的竖线，
+    # 一屏看着全是尖刺；这时样本点本身够密，直接连线才是真实波形。
+    # 8 个以上才用包络，否则连线会因抽稀而走样（librosa / DSP 都这么分档）。
+    if spp >= 8:
         idx = np.linspace(0, s.size, W + 1).astype(int)
         for i in range(W):
             a = idx[i]
@@ -532,8 +536,9 @@ def plot_wave(d, tag="", w=1024, h=512):
             seg = s[a:b]
             if seg.size:
                 c.vline(x0 + i, Y(float(seg.max())), Y(float(seg.min())), FG, 1)
+        # 包络底下再描一条暗一点的样本连线，保留波形形状
+        c.curve(xs, np.array([Y(v) for v in s]), x0, y0, x1, y1, AXIS, lw=1.0)
     else:
-        xs = x0 + (x1 - x0) * np.linspace(0.0, 1.0, s.size)
         c.curve(xs, np.array([Y(v) for v in s]), x0, y0, x1, y1)
     c.text(x0, 12, _tag_title(tag, "WAVE"), TXT, 3)
     c.text(x0, 48, "T %.3fS  %.0fMS" % (float(wv.get("t0") or 0.0), ms), DIM, 2)
