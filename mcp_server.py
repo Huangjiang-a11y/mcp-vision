@@ -92,7 +92,7 @@ def _dump(obj, limit=0):
 MAX_ANALYZE_SECONDS = 900.0   # 单次分析硬上限 15 分钟
 
 
-def _window(a, asset, default_span=None):
+def _window(a, asset, default_span=None, cap=None):
     """统一的取窗：先定时间戳 time，再定看多久 seconds。
 
     - time：从哪开始（默认 0）
@@ -101,7 +101,7 @@ def _window(a, asset, default_span=None):
     """
     dur = float(asset.get("duration") or 0)
     start = max(0.0, float(a.get("time") or 0))
-    cap = MAX_ANALYZE_SECONDS
+    cap = float(cap) if cap else MAX_ANALYZE_SECONDS
 
     span = None
     if a.get("seconds") is not None:
@@ -303,10 +303,10 @@ def tool_audio(a):
     if dur_total > 0 and float(a.get("time") or 0) >= dur_total:
         return (_dump({"ok": False,
                        "error": "time=%.1f 超出时长 %.1f" % (float(a.get("time") or 0), dur_total)}), [])
-    start, end, note = _window(a, asset, default_span=10.0)
+    start, end, note = _window(a, asset, default_span=10.0, cap=15.0)
     try:
         d = engine.analyze_spectrum(asset["media_path"], start, end,
-                                    fft_size=2048, out_dir=asset.get("audio_dir"))
+                                    fft_size=4096, out_dir=asset.get("audio_dir"))
     except RuntimeError as e:
         return (_dump({"ok": False, "error": str(e)}), [])
     d["_start"], d["_end"] = start, end
@@ -338,18 +338,17 @@ def tool_audio(a):
         summary["note"] = note
 
     images = []
-    if _truthy(a.get("images", True)):
-        try:
-            out_dir = Path(asset.get("audio_dir") or (Path(asset["media_path"]).parent / "audio"))
-            stem = "a-%d-%d" % (round(start * 1000), round(end * 1000))
-            paths = audiochart.render(d, views, out_dir, stem=stem)
-            summary["images"] = {k: Path(v).name for k, v in paths.items()}
-            for v in paths.values():
-                im = _attach_png(v)
-                if im:
-                    images.append(im)
-        except Exception as e:
-            summary["image_error"] = "%s: %s" % (type(e).__name__, e)
+    try:
+        out_dir = Path(asset.get("audio_dir") or (Path(asset["media_path"]).parent / "audio"))
+        stem = "a-%d-%d" % (round(start * 1000), round(end * 1000))
+        paths = audiochart.render(d, views, out_dir, stem=stem)
+        summary["images"] = {k: Path(v).name for k, v in paths.items()}
+        for p in paths.values():
+            im = _attach_png(p)
+            if im:
+                images.append(im)
+    except Exception as e:
+        summary["image_error"] = "%s: %s" % (type(e).__name__, e)
     return (_dump(summary), images)
 
 
@@ -500,17 +499,14 @@ TOOLS = [
      "description": (
          "Measure a window's audio: a loudness curve in dB, an FFT spectrum with peak "
          "frequency / musical note / cents, and a time-frequency map. Sample rate follows "
-         "the video's own audio track. view picks which picture; images=false returns the "
-         "numbers only."
+         "the video's own audio track. Always returns the pictures; view picks which one."
      ),
      "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "window length in seconds, default 10"},
+         "seconds": {"type": "number", "description": "window length in seconds, default 10, max 15"},
          "view": {"type": "string", "enum": ["all", "level", "spectrum", "spectrogram"],
-                  "description": "level = dB over time; spectrum = FFT; spectrogram = time-frequency; default all"},
-         "images": {"type": "boolean",
-                    "description": "attach the pictures; false = numbers only, default true"}}}},
+                  "description": "level = dB over time; spectrum = FFT; spectrogram = time-frequency; default all"}}}},
 
     {"name": "subtitles",
      "description": (
@@ -642,14 +638,6 @@ def _attach_png(png):
         return {"type": "image", "data": blob, "mimeType": "image/png"}
     except Exception:
         return None
-
-
-def _truthy(v, default=True):
-    if v is None:
-        return default
-    if isinstance(v, str):
-        return v.strip().lower() not in ("0", "false", "no", "off", "")
-    return bool(v)
 
 
 def tool_video(a):

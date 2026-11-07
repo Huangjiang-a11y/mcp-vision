@@ -256,7 +256,7 @@ def _peak_bin(mag):
     return k + float(np.clip(delta, -0.5, 0.5)), float(b)
 
 
-def analyze_spectrum(media, start, end, fft_size=2048, out_dir=None):
+def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None):
     """窗口内的音频剖析：电平曲线 + 频谱 + 时频图。
 
     采样率跟视频音轨走，不重采样。
