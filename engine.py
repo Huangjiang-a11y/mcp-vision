@@ -213,145 +213,151 @@ def compose_sheet(media, times, cols, rows, cell_w, cell_h, out_path, title=None
 
 
 # ---------- audio analysis ----------
-def _extract_pcm(media, start, end, out_path, timeout=300):
-    _run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-          "-ss", str(start), "-i", str(media), "-t", str(end - start),
-          "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", str(out_path)],
-         timeout=timeout)
+# ---------- 音频频谱分析（level / spectrum / spectrogram）----------
+_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
-def analyze_audio(media, start, end, out_dir=None):
+def audio_info(media):
+    """音轨原始采样率与声道数；无音轨返回空。"""
+    out = _run(["ffprobe", "-v", "error", "-select_streams", "a:0",
+                "-show_entries", "stream=sample_rate,channels",
+                "-of", "json", str(media)], timeout=60)
+    st = ((json.loads(out).get("streams")) or [{}])[0]
+    try:
+        sr = int(st.get("sample_rate") or 0)
+    except (TypeError, ValueError):
+        sr = 0
+    try:
+        ch = int(st.get("channels") or 0)
+    except (TypeError, ValueError):
+        ch = 0
+    return {"sample_rate": sr, "channels": ch}
+
+
+def freq_to_note(freq):
+    """频率 -> (音名, 音分偏差)。A4=440，十二平均律。"""
+    if not freq or freq <= 0:
+        return "", 0.0
+    midi = 69 + 12 * math.log2(float(freq) / 440.0)
+    n = int(round(midi))
+    cents = (midi - n) * 100.0
+    return _NOTE_NAMES[n % 12] + str(n // 12 - 1), cents
+
+
+def _peak_bin(mag):
+    """幅度谱峰值：抛物线插值，返回 (小数 bin, 峰值幅度)。"""
+    if mag.size < 3:
+        return 0, 0.0
+    k = int(np.argmax(mag[1:])) + 1
+    a, b = mag[k - 1], mag[k]
+    c = mag[k + 1] if k + 1 < mag.size else mag[k]
+    denom = (a - 2 * b + c)
+    delta = 0.5 * (a - c) / denom if abs(denom) > 1e-12 else 0.0
+    return k + float(np.clip(delta, -0.5, 0.5)), float(b)
+
+
+def analyze_spectrum(media, start, end, fft_size=2048, out_dir=None):
+    """窗口内的音频剖析：电平曲线 + 频谱 + 时频图。
+
+    采样率跟视频音轨走，不重采样。
+    """
     media = Path(media)
+    info = audio_info(media)
+    sr = info["sample_rate"]
+    if sr <= 0:
+        raise RuntimeError("没有音轨")
     if out_dir is None:
         out_dir = media.parent / (media.stem + "_audio")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = "a-%d-%d" % (round(start * 1000), round(end * 1000))
-    pcm_path = out_dir / (stem + ".pcm")
-    wav_path = out_dir / (stem + ".wav")
-    _extract_pcm(media, start, end, pcm_path)
-    pcm = open(pcm_path, "rb").read()
-    if not pcm or len(pcm) % 2:
-        raise RuntimeError("no complete pcm samples")
-    samples = len(pcm) // 2
-    arr = np.frombuffer(pcm, dtype="<i2").astype(np.float64) / 32768.0
-    sr = 16000
-    hop = int(sr * 0.02)
-    nframes = (samples + hop - 1) // hop
-    rms = np.zeros(nframes)
-    peak = 0.0
-    for i in range(nframes):
-        sl = arr[i*hop:(i+1)*hop]
-        if sl.size == 0:
+    pcm_path = out_dir / ("s-%d-%d.pcm" % (round(start * 1000), round(end * 1000)))
+    _run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+          "-ss", "%.3f" % float(start), "-i", str(media),
+          "-t", "%.3f" % max(0.0, float(end) - float(start)),
+          "-vn", "-ac", "1", "-ar", str(sr), "-f", "s16le", str(pcm_path)], timeout=300)
+    raw = open(pcm_path, "rb").read()
+    raw = raw[: len(raw) - (len(raw) % 2)]
+    if not raw:
+        raise RuntimeError("音频解码失败")
+    arr = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    if arr.size == 0:
+        raise RuntimeError("窗口内没有音频样本")
+    dur = arr.size / float(sr)
+
+    # 电平曲线：20ms 一帧的 RMS
+    hop = max(1, int(sr * 0.02))
+    nfr = arr.size // hop
+    if nfr < 1:
+        nfr, hop = 1, arr.size
+    frames = arr[: nfr * hop].reshape(nfr, hop).astype(np.float64)
+    rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    db = 20.0 * np.log10(np.maximum(rms, 1e-7))
+    lt = float(start) + np.arange(nfr) * (hop / float(sr))
+    peak_dbfs = 20.0 * math.log10(max(float(np.max(np.abs(arr))), 1e-7))
+
+    # 频谱：取最响的一帧做 FFT
+    size = int(min(max(64, fft_size), arr.size))
+    loud = int(np.argmax(rms)) * hop
+    lo = max(0, min(arr.size - size, loud - size // 2))
+    seg = arr[lo: lo + size].astype(np.float64)
+    win = np.hanning(seg.size)
+    spec = np.abs(np.fft.rfft(seg * win))
+    freqs = np.fft.rfftfreq(seg.size, 1.0 / sr)
+    k, _ = _peak_bin(spec)
+    peak_hz = float(k * sr / seg.size)
+    note, cents = freq_to_note(peak_hz)
+    mag_db = 20.0 * np.log10(np.maximum(spec, 1e-9))
+    if mag_db.size:
+        mag_db = mag_db - float(np.max(mag_db))
+
+    # 时频图：STFT
+    hop2 = max(1, size // 2)
+    ncol = max(1, (arr.size - size) // hop2 + 1) if arr.size >= size else 1
+    cols = np.empty((freqs.size, ncol), dtype=np.float32)
+    for i in range(ncol):
+        chunk = arr[i * hop2: i * hop2 + size].astype(np.float64)
+        if chunk.size < size:
+            chunk = np.pad(chunk, (0, size - chunk.size))
+        cols[:, i] = np.abs(np.fft.rfft(chunk * win))
+    smax = float(np.max(cols)) if cols.size else 0.0
+    floor = 20.0 * math.log10(max(smax, 1e-9))
+    spec_db = 20.0 * np.log10(np.maximum(cols, 1e-9)) - floor
+    st = float(start) + np.arange(ncol) * (hop2 / float(sr))
+    # 峰值轨迹：只在有说话的帧上取峰，静音段不跟噪底跑
+    frame_db = 20.0 * np.log10(np.maximum(np.sqrt(np.mean(cols.astype(np.float64) ** 2, axis=0)), 1e-9))
+    gate = max(-70.0, float(np.max(frame_db)) - 45.0) if frame_db.size else -70.0
+    track = []
+    for i in range(ncol):
+        if frame_db[i] < gate:
             continue
-        rms[i] = np.sqrt(np.mean(sl * sl))
-        peak = max(peak, float(np.max(np.abs(sl))))
-    def db(x):
-        return round(20 * math.log10(max(x, 1e-6)), 3)
-    duration = samples / sr
-    step = hop / sr
-    # quiet ranges
-    pauses = []
-    qstart = None
-    for i in range(nframes):
-        if db(rms[i]) < -45:
-            if qstart is None:
-                qstart = i
-        else:
-            if qstart is not None and (i - qstart) * step >= 0.3:
-                pauses.append({"start_seconds": round(start + qstart * step, 3),
-                               "end_seconds": round(start + i * step, 3)})
-            qstart = None
-    if qstart is not None and (duration - qstart * step) >= 0.3:
-        pauses.append({"start_seconds": round(start + qstart * step, 3),
-                       "end_seconds": round(start + duration, 3)})
-    # levels (every 50 frames)
-    levels = []
-    for i in range(0, nframes, 50):
-        sl = rms[i:i+50]
-        if sl.size == 0:
-            continue
-        v = np.sqrt(np.mean(sl * sl))
-        levels.append({"seconds": round(start + i * step, 3), "rms_dbfs": db(v)})
-    avg_rms = float(np.mean(rms)) if nframes else 0.0
-    modulation = (float(np.std(rms)) / max(avg_rms, 1e-6)) if nframes else 0.0
-    novelty = np.maximum(0, np.diff(rms, prepend=rms[0]))
-    mean_n = float(np.mean(novelty)) if nframes else 0.0
-    dev_n = float(np.std(novelty)) if nframes else 0.0
-    attacks = []
-    for i in range(2, max(2, nframes - 2)):
-        v = float(novelty[i])
-        if v <= max(0.001, avg_rms * 0.08, mean_n + dev_n * 0.5):
-            continue
-        window = novelty[max(0, i-2):i+3]
-        if v < float(np.max(window)):
-            continue
-        ev = {"seconds": round(start + i * step, 3), "strength": round(v, 6)}
-        if attacks and ev["seconds"] - attacks[-1]["seconds"] < 0.12:
-            if v > attacks[-1]["strength"]:
-                attacks[-1] = ev
-        else:
-            attacks.append(ev)
-    # tempo via autocorrelation on novelty
-    candidates = []
-    lags = range(max(1, int(60/(180*step))), int(60/(60*step)) + 1)
-    for lag in lags:
-        a = novelty[lag:] - mean_n
-        b = novelty[:-lag] - mean_n if lag > 0 else novelty - mean_n
-        # align lengths
-        n = min(len(a), len(b))
-        if n <= 0:
-            continue
-        a = a[:n]; b = b[:n]
-        denom = math.sqrt(float(np.sum(a*a)) * float(np.sum(b*b)))
-        score = float(np.sum(a*b)) / denom if denom > 0 else 0.0
-        if lag < len(correlations := []) :
-            pass
-        candidates.append((lag, score))
-    peaks = []
-    for i, (lag, score) in enumerate(candidates):
-        if score > 0.15 and score >= (candidates[i-1][1] if i > 0 else 0) and score >= (candidates[i+1][1] if i < len(candidates)-1 else 0):
-            peaks.append({"bpm": round(60/(lag*step), 1), "periodicity": round(score, 3)})
-    peaks.sort(key=lambda x: (-x["periodicity"], abs(x["bpm"] - 120)))
-    peaks = peaks[:3]
-    silent = db(float(np.sqrt(np.mean(arr*arr)))) < -60 if samples else True
-    periodic = (not silent and modulation >= 0.08 and duration >= 8 and
-                len(attacks) >= 8 and bool(peaks) and peaks[0]["periodicity"] >= 0.2)
-    strongest = sorted(attacks, key=lambda x: -x["strength"])[:32]
-    strongest.sort(key=lambda x: x["seconds"])
-    # write wav
-    import wave
-    with wave.open(str(wav_path), "wb") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
-        w.writeframes(pcm)
+        kk, _ = _peak_bin(cols[1:, i].astype(np.float64))
+        f = float((kk + 1) * sr / size)
+        if f > 0:
+            track.append([round(float(st[i]), 3), round(f, 2)])
+
     return {
-        "state": "available",
-        "source_kind": "embedded",
-        "clip_path": str(wav_path),
-        "analyzed_range_seconds": [round(start, 3), round(start + duration, 3)],
-        "next_start_seconds": (start + duration) if (start + duration) < (start + (end - start)) else None,
-        "analysis": {
-            "source": "decoded-audio-signal",
-            "method": "20ms RMS envelope and onset autocorrelation",
-            "start_seconds": round(start, 3),
-            "end_seconds": round(start + duration, 3),
-            "duration_seconds": round(duration, 3),
-            "sample_rate": sr,
-            "rms_dbfs": db(float(np.sqrt(np.mean(arr * arr)))),
-            "peak_dbfs": db(peak),
-            "silent": bool(silent),
-            "quiet_range_count": len(pauses),
-            "onset_count": len(attacks),
-            "tempo": {
-                "state": "estimated" if periodic else "no-stable-pulse",
-                "bpm": (peaks[0]["bpm"] if (periodic and peaks) else None),
-                "candidates": peaks if periodic else [],
-                "timing_resolution_seconds": step,
-                "interpretation": "Pulse estimates and audio attacks for editing; compare with frames.",
-            },
-            "level_timeline": levels,
-            "quiet_ranges": pauses[:32],
-            "prominent_onsets_seconds": [a["seconds"] for a in strongest],
+        "sample_rate": sr,
+        "channels": info["channels"],
+        "duration": round(dur, 3),
+        "fft_size": int(size),
+        "resolution_hz": round(sr / float(size), 2),
+        "period_ms": round(1000.0 * size / float(sr), 2),
+        "level": {
+            "db": round(float(db[-1]), 1),
+            "min": round(float(np.min(db)), 1),
+            "max": round(float(np.max(db)), 1),
+            "mean": round(float(np.mean(db)), 1),
+            "peak_dbfs": round(peak_dbfs, 1),
+            "times": lt, "values": db,
+        },
+        "spectrum": {
+            "freqs": freqs, "mag_db": mag_db,
+            "peak_freq_hz": round(peak_hz, 2),
+            "note": note, "cents": round(cents, 2),
+        },
+        "spectrogram": {
+            "spec_db": spec_db, "freqs": freqs, "times": st,
+            "peak_track": track,
         },
     }
 

@@ -3,6 +3,7 @@
 import argparse, base64, hashlib, json, math, os, re, shutil, sys, time, http.server, socketserver, threading
 from pathlib import Path
 import engine
+import audiochart
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CACHE = ".mvv-cache"
@@ -285,15 +286,68 @@ def tool_open(a):
 
 
 def tool_audio(a):
+    """音频剖析：电平曲线 / 频谱 / 时频图。可返回图片，也可只给数字。"""
     cwd = str(Path(__file__).resolve().parent)
     asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return _missing(a), []
-    start, end, note = _window(a, asset, default_span=30.0)
-    res = engine.analyze_audio(asset["media_path"], start, end, out_dir=asset.get("audio_dir"))
+    if not asset.get("has_audio"):
+        return (_dump({"ok": False, "error": "这条视频没有音轨"}), [])
+    view = str(a.get("view") or "all").lower()
+    views = ["level", "spectrum", "spectrogram"] if view == "all" else [view]
+    if any(v not in ("level", "spectrum", "spectrogram") for v in views):
+        return (_dump({"ok": False, "error": "unknown view: %s" % view}), [])
+    dur_total = float(asset.get("duration") or 0)
+    if dur_total > 0 and float(a.get("time") or 0) >= dur_total:
+        return (_dump({"ok": False,
+                       "error": "time=%.1f 超出时长 %.1f" % (float(a.get("time") or 0), dur_total)}), [])
+    start, end, note = _window(a, asset, default_span=10.0)
+    try:
+        d = engine.analyze_spectrum(asset["media_path"], start, end,
+                                    fft_size=2048, out_dir=asset.get("audio_dir"))
+    except RuntimeError as e:
+        return (_dump({"ok": False, "error": str(e)}), [])
+    d["_start"], d["_end"] = start, end
+
+    # 峰值轨迹抽稀，纯文本模式也够用
+    track = d["spectrogram"]["peak_track"]
+    step = max(1, len(track) // 60)
+    slim_track = [[t, f] for t, f in track[::step]]
+
+    summary = {
+        "ok": True,
+        "range": [round(start, 3), round(start + d["duration"], 3)],
+        "duration": d["duration"],
+        "sample_rate": d["sample_rate"],
+        "channels": d["channels"],
+        "level": {k: d["level"][k] for k in ("db", "min", "max", "mean", "peak_dbfs")},
+        "spectrum": {
+            "peak_freq_hz": d["spectrum"]["peak_freq_hz"],
+            "note": d["spectrum"]["note"],
+            "cents": d["spectrum"]["cents"],
+        },
+        "fft_size": d["fft_size"],
+        "resolution_hz": d["resolution_hz"],
+        "period_ms": d["period_ms"],
+        "peak_freq_track": slim_track,
+    }
     if note:
-        res = dict(res, note=note)
-    return (_dump(res), [])
+        summary["note"] = note
+
+    images = []
+    if _truthy(a.get("images", True)):
+        try:
+            out_dir = Path(asset.get("audio_dir") or (Path(asset["media_path"]).parent / "audio"))
+            stem = "a-%d-%d" % (round(start * 1000), round(end * 1000))
+            paths = audiochart.render(d, views, out_dir, stem=stem)
+            summary["images"] = {k: Path(v).name for k, v in paths.items()}
+            for v in paths.values():
+                im = _attach_png(v)
+                if im:
+                    images.append(im)
+        except Exception as e:
+            summary["image_error"] = "%s: %s" % (type(e).__name__, e)
+    return (_dump(summary), images)
 
 
 def _parse_band(v):
@@ -441,17 +495,19 @@ TOOLS = [
 
     {"name": "audio",
      "description": (
-         "Listen to the audio. levels: loudness profile. "
-         "transcribe: speech to text (silero-vad + SenseVoice)."
+         "Measure a window's audio: a loudness curve in dB, an FFT spectrum with peak "
+         "frequency / musical note / cents, and a time-frequency map. Sample rate follows "
+         "the video's own audio track. view picks which picture; images=false returns the "
+         "numbers only."
      ),
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["levels", "transcribe"],
-                    "description": "levels = loudness profile (default); transcribe = speech to text"},
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "window length in seconds"},
-         "language": {"type": "string", "description": "transcribe: zh / en / ja / ko, default zh"},
-         "max_speech": {"type": "number", "description": "transcribe: longest segment in seconds, default 20"}}}},
+         "seconds": {"type": "number", "description": "window length in seconds, default 10"},
+         "view": {"type": "string", "enum": ["all", "level", "spectrum", "spectrogram"],
+                  "description": "level = dB over time; spectrum = FFT; spectrogram = time-frequency; default all"},
+         "images": {"type": "boolean",
+                    "description": "attach the pictures; false = numbers only, default true"}}}},
 
     {"name": "subtitles",
      "description": (
@@ -575,6 +631,24 @@ def _attach(jpg):
         return []
 
 
+def _attach_png(png):
+    if not png:
+        return None
+    try:
+        blob = base64.b64encode(Path(png).read_bytes()).decode()
+        return {"type": "image", "data": blob, "mimeType": "image/png"}
+    except Exception:
+        return None
+
+
+def _truthy(v, default=True):
+    if v is None:
+        return default
+    if isinstance(v, str):
+        return v.strip().lower() not in ("0", "false", "no", "off", "")
+    return bool(v)
+
+
 def tool_video(a):
     """给窗口和张数：quantity=1 出一张单帧，多张拼成一页。"""
     cwd = str(Path(__file__).resolve().parent)
@@ -660,49 +734,6 @@ def dispatch_video(a):
     return tool_video(a)
 
 
-def tool_transcribe(a):
-    cwd = str(Path(__file__).resolve().parent)
-    asset = _load_asset(cwd, a.get("video_id"))
-    if asset is None:
-        return (_missing(a), [])
-    dur_total = float(asset.get("duration") or 0)
-    if dur_total > 0 and float(a.get("time") or 0) >= dur_total:
-        return (json.dumps({"ok": False,
-                            "error": "time=%.1f 超出时长 %.1f" % (float(a["time"]), dur_total)},
-                           ensure_ascii=False), [])
-    start, end, window_note = _window(a, asset)
-    language = str(a.get("language") or "zh")
-    max_speech = float(a.get("max_speech") or 20)
-    t0 = time.time()
-    try:
-        segs, dur = engine.transcribe(asset["media_path"], start, end,
-                                      language=language, max_speech=max_speech)
-    except RuntimeError as e:
-        return (json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False, indent=2), [])
-    out = {
-        "ok": True,
-        "engine": "silero-vad + sensevoice",
-        "range": [round(start, 2), round(start + dur, 2)],
-        "duration": round(dur, 2),
-        "segments": len(segs),
-        "cues": segs,
-        "text": "".join(x["text"] for x in segs),
-        "elapsed": round(time.time() - t0, 2),
-    }
-    if window_note:
-        out["note"] = window_note
-    return (json.dumps(out, ensure_ascii=False, indent=2), [])
-
-
-def dispatch_audio(a):
-    act = (a.get("action") or "levels").lower()
-    if act == "levels":
-        return tool_audio(a)
-    if act == "transcribe":
-        return tool_transcribe(a)
-    return ("unknown action: %s" % act, [])
-
-
 def dispatch_subtitles(a):
     # 单图 OCR 已删除：本工具只做一件事，读窗口里的字幕。
     return tool_subtitles(a)
@@ -711,7 +742,7 @@ def dispatch_subtitles(a):
 HANDLERS = {
     "workspace": dispatch_workspace,
     "video": dispatch_video,
-    "audio": dispatch_audio,
+    "audio": tool_audio,
     "subtitles": dispatch_subtitles,
 }
 
