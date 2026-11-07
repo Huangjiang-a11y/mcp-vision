@@ -294,8 +294,8 @@ def tool_audio(a):
     if not asset.get("has_audio"):
         return (_dump({"ok": False, "error": "这条视频没有音轨"}), [])
     view = str(a.get("view") or "all").lower()
-    views = ["level", "spectrum", "spectrogram", "peak"] if view == "all" else [view]
-    if any(v not in ("level", "spectrum", "spectrogram", "peak") for v in views):
+    views = ["level", "spectrum", "spectrogram", "peak", "wave"] if view == "all" else [view]
+    if any(v not in ("level", "spectrum", "spectrogram", "peak", "wave") for v in views):
         return (_dump({"ok": False, "error": "unknown view: %s" % view}), [])
     if a.get("seconds") is not None and float(a.get("seconds") or 0) <= 0:
         return (_dump({"ok": False, "error": "seconds 必须大于 0"}), [])
@@ -519,10 +519,10 @@ TOOLS = [
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number", "description": "window length in seconds, default 10, max 15"},
          "view": {"type": "string",
-                  "enum": ["all", "level", "spectrum", "spectrogram", "peak"],
+                  "enum": ["all", "level", "spectrum", "spectrogram", "peak", "wave"],
                   "description": ("level = dB over time; spectrum = FFT amplitude (full-scale sine = 1, auto range), log freq 10-Nyquist; "
                                   "spectrogram = time-frequency map, log freq 20-Nyquist, colour = FFT amplitude, auto range (full-scale sine = 1, top rounded up to a decade); "
-                                  "peak = peak-frequency track; default all")}}}},
+                                  "peak = peak-frequency track; wave = raw waveform, ~40ms at the loudest point; default all")}}}},
 
     {"name": "subtitles",
      "description": (

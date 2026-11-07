@@ -298,9 +298,25 @@ def _channel_metrics(x, sr, start, size):
     silent = bool(float(np.max(np.abs(x))) < lsb * 2)
     peak_dbfs = 20.0 * math.log10(max(float(np.max(np.abs(x))), lsb))
 
+    # 窗口比 FFT 还短（比如只切了 30ms）：补零到整帧，
+    # 否则窗函数长度和 STFT 分块长度对不上，下面会直接崩
+    if x.size < size:
+        x = np.pad(x, (0, size - x.size))
+
     # 频谱：取最响的一帧做 FFT
     loud = int(np.argmax(rms)) * hop
     lo = max(0, min(x.size - size, loud - size // 2))
+    # 原始波形：和上面这段 FFT 用的是同一处声音，40ms，方便对照着看
+    wn = min(x.size, max(16, int(sr * 0.040)))
+    w0 = max(0, min(x.size - wn, (lo + size // 2) - wn // 2))
+    wseg = x[w0: w0 + wn].astype(np.float64)
+    wave = {
+        "t0": round(float(start) + w0 / float(sr), 6),
+        "ms": round(1000.0 * wn / float(sr), 3),
+        "samples": [round(float(v), 8) for v in wseg],
+        "peak": round(float(np.max(np.abs(wseg))), 6) if wseg.size else 0.0,
+        "rms": round(float(np.sqrt(np.mean(wseg ** 2))), 6) if wseg.size else 0.0,
+    }
     seg = x[lo: lo + size].astype(np.float64)
     win = np.hanning(seg.size)
     spec = np.abs(np.fft.rfft(seg * win))
@@ -370,6 +386,7 @@ def _channel_metrics(x, sr, start, size):
             "peak_freq_hz": round(peak_hz, 2),
             "note": note, "cents": round(cents, 2),
         },
+        "wave": wave,
         "spectrogram": {
             "spec_db": spec_db, "freqs": freqs, "times": st,
             "peak_track": track,

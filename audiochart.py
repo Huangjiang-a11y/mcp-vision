@@ -488,8 +488,64 @@ def plot_peak(d, tag="", w=1024, h=512):
     return c
 
 
+def plot_wave(d, tag="", w=1024, h=512):
+    """原始波形：与频谱同一处声音，约 40ms。横轴毫秒，纵轴相对幅值（满幅 = 1）。"""
+    wv = (d or {}).get("wave") or {}
+    s = np.asarray(wv.get("samples") or [], dtype=float)
+    if s.size < 2:
+        s = np.zeros(2)
+    c = Canvas(w, h)
+    x0, y0, x1, y1 = 104, 62, w - 22, h - 58
+    peak = max(float(np.max(np.abs(s))), 1e-9)
+    step = _nice_step(peak * 2.0, 5)
+    hi = math.ceil(peak / step - 1e-9) * step
+    if hi < step:
+        hi = step
+    lo = -hi
+    def Y(a): return y1 - (min(hi, max(lo, a)) - lo) / (hi - lo) * (y1 - y0)
+    dec = 0 if step >= 1 else (1 if step >= 0.1 else (2 if step >= 0.01 else 3))
+    fmt = "%." + str(dec) + "f"
+    v = lo
+    while v <= hi + step * 1e-9:
+        yy = Y(v)
+        c.hline(yy, x0, x1, AXIS if abs(v) < step * 1e-9 else GRID)
+        lab = fmt % v
+        c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
+        v += step
+    ms = float(wv.get("ms") or 40.0)
+    xstep = _nice_step(ms, 5)
+    t = 0.0
+    while t <= ms + 1e-9:
+        xx = x0 + (x1 - x0) * (t / ms)
+        if t > 0:
+            c.vline(xx, y0, y1, GRID)
+        c.ctext(xx, y1 + 12, ("%.0f" % t) if xstep >= 1 else ("%.1f" % t), DIM, 2)
+        t += xstep
+    c.rect(x0, y0, x1, y1, AXIS)
+    W = x1 - x0
+    if s.size > 2 * W:
+        # 每像素列覆盖多个样本：取 min/max 画成竖线，才是真正的包络
+        idx = np.linspace(0, s.size, W + 1).astype(int)
+        for i in range(W):
+            a = idx[i]
+            b = max(a + 1, idx[i + 1])
+            seg = s[a:b]
+            if seg.size:
+                c.vline(x0 + i, Y(float(seg.max())), Y(float(seg.min())), FG, 1)
+    else:
+        xs = x0 + (x1 - x0) * np.linspace(0.0, 1.0, s.size)
+        c.curve(xs, np.array([Y(v) for v in s]), x0, y0, x1, y1)
+    c.text(x0, 12, _tag_title(tag, "WAVE"), TXT, 3)
+    c.text(x0, 48, "T %.3fS  %.0fMS" % (float(wv.get("t0") or 0.0), ms), DIM, 2)
+    c.vtext(8, y0 + 8, "AMP (REL)", DIM, 2)
+    cap = "PEAK %.3f  RMS %.3f" % (float(wv.get("peak") or 0.0), float(wv.get("rms") or 0.0))
+    c.text(x1 - c.tw(cap, 2), 30, cap, DIM, 2)
+    c.text(x1 - c.tw("TIME (MS)", 2), h - 14, "TIME (MS)", DIM, 2)
+    return c
+
+
 def render(d, views, out_dir, stem="audio"):
-    """views: level / spectrum / spectrogram 的子集。
+    """views: level / spectrum / spectrogram / peak / wave 的子集。
 
     每张图 1024x1024：上半 L、下半 R，中间一条分隔线。
     返回 {view: png 路径}。
@@ -516,6 +572,9 @@ def render(d, views, out_dir, stem="audio"):
         elif view == "peak":
             top = plot_peak(d["left"], tag=tl)
             bot = plot_peak(d["right"], tag=tr)
+        elif view == "wave":
+            top = plot_wave(d["left"], tag=tl)
+            bot = plot_wave(d["right"], tag=tr)
         else:
             continue
         c = Canvas(W, H)
