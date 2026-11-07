@@ -167,7 +167,7 @@ def plot_level(d, start, end, tag="", w=1024, h=512):
     step = max(1, len(v) // 900)
     t, v = t[::step], v[::step]
     c = Canvas(w, h)
-    x0, y0, x1, y1 = 92, 76, w - 26, h - 50
+    x0, y0, x1, y1 = 64, 72, w - 22, h - 42
     lo = math.floor(min(v.min(), lv["mean"] - 6) / 5.0) * 5.0
     hi = math.ceil(max(v.max(), lv["mean"] + 6) / 5.0) * 5.0
     if hi - lo < 6:
@@ -193,12 +193,12 @@ def plot_level(d, start, end, tag="", w=1024, h=512):
         c.line(X(i - 1), Y(v[i - 1]), X(i), Y(v[i]), FG, 2)
     big = "%.1f" % lv["db"]
     c.text(x0, 14, _tag_title(tag, "SOUND LEVEL"), TXT, 3)
-    bx = x1 - c.tw(big, 5) - 56
-    c.text(bx, 12, big, FG, 5)
-    c.text(bx + c.tw(big, 5) + 10, 38, "DB", DIM, 3)
-    c.text(x0, 46, "TIME (S)", DIM, 2)
+    bx = x1 - c.tw(big, 5) - 44
+    c.text(bx, 8, big, FG, 5)
+    c.text(bx + c.tw(big, 5) + 8, 30, "DB", DIM, 2)
+    c.text(x0, 48, "TIME (S)", DIM, 2)
     c.text(x0 + 6, y0 + 6, "DB", DIM, 2)
-    _caption(c, d, x1, 56)
+    _caption(c, d, x1, 52)
     return c
 
 
@@ -207,7 +207,7 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512):
     f = np.asarray(sp["freqs"], dtype=float)
     m = np.asarray(sp["mag_db"], dtype=float)
     c = Canvas(w, h)
-    x0, y0, x1, y1 = 96, 104, w - 26, h - 56
+    x0, y0, x1, y1 = 96, 92, w - 22, h - 40
     # 横轴对数，尾端固定 24000
     fmin = 10.0
     fmax = 24000.0
@@ -282,17 +282,16 @@ def plot_spectrogram(d, tag="", w=1024, h=512):
     times = np.asarray(sg["times"], dtype=float)
     freqs = np.asarray(sg["freqs"], dtype=float)
     c = Canvas(w, h)
-    x0, x1 = 96, w - 26
+    x0, x1 = 72, w - 22
     # 每半幅自己带一条 dB 色标：-70..0dB，和上面的映射一致
-    by, bh = 46, 12
+    by, bh = 40, 12
     ramp = np.repeat(np.linspace(0, 1, x1 - x0)[None, :], bh, axis=0)
     c.blit(_cmap(ramp), x0, by)
     c.rect(x0, by, x1, by + bh, AXIS)
-    c.text(x0, by + bh + 4, "-70", DIM, 2)
-    lab = "-70 .. 0 DB"
-    c.text(x1 - c.tw(lab, 2), by + bh + 4, "0 DB", DIM, 2)
-    c.ctext((x0 + x1) / 2.0, by + bh + 4, "LEVEL (DB)", DIM, 2)
-    y0, y1 = 84, h - 58
+    c.text(x0, by + bh + 2, "-70", DIM, 2)
+    c.text(x1 - c.tw("0 DB", 2), by + bh + 2, "0 DB", DIM, 2)
+    c.ctext((x0 + x1) / 2.0, by + bh + 2, "LEVEL (DB)", DIM, 2)
+    y0, y1 = 76, h - 38
     H, W = y1 - y0, x1 - x0
     nt, nf = spec.shape[1], spec.shape[0]
     if nt < 2:
@@ -338,8 +337,8 @@ def plot_peak(d, tag="", w=1024, h=512):
     times = np.asarray(sg["times"], dtype=float)
     tr = sg["peak_track"]
     c = Canvas(w, h)
-    x0, x1 = 110, w - 26
-    y0, y1 = 88, h - 76
+    x0, x1 = 84, w - 22
+    y0, y1 = 62, h - 42
     fs = [float(f) for _, f in tr] or [1.0]
     lo, hi = min(fs), max(fs)
     step = _nice_step(max(hi - lo, 1.0), 5)
@@ -377,7 +376,7 @@ def plot_peak(d, tag="", w=1024, h=512):
                 for b2 in range(-2, 3):
                     if a2 * a2 + b2 * b2 <= 4:
                         c.px(xx + a2, yy + b2, FG)
-    c.text(x1 - c.tw("TIME (S)", 2), h - 30, "TIME (S)", DIM, 2)
+    c.text(x1 - c.tw("TIME (S)", 2), h - 18, "TIME (S)", DIM, 2)
     _caption(c, d, x1, 40)
     return c
 
