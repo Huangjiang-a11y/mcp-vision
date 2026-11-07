@@ -89,6 +89,18 @@ check("标签空值", engine._tag(None), "")
 check("标签 NONE", engine._tag("<|NONE|>"), "")
 check("标签普通字符串", engine._tag("zh"), "zh")
 
+# --- 声学字段的边界 ---
+# emotion / event / lang 来自 SenseVoice，只有 stt 模式有。
+# OCR 读像素，原理上取不到——这条边界要是破了，就是编造数据。
+import inspect
+src_ocr = inspect.getsource(M._subs_ocr)
+src_stt = inspect.getsource(M._subs_stt)
+check("OCR 不写 emotion", "emotion" in src_ocr, False)
+check("OCR 不写 event", '"event"' in src_ocr, False)
+check("OCR 标注 acoustic_fields=False", 'acoustic_fields": False' in src_ocr, True)
+check("STT 标注 acoustic_fields=True", 'acoustic_fields": True' in src_stt, True)
+check("STT 确实带 emotion", '"emotion"' in src_stt, True)
+
 print("\nRESULT", "ALL OK" if not fails else "HAS FAIL (%d)" % len(fails))
 for f in fails:
     print(" -", f)
