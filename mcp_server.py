@@ -394,7 +394,7 @@ def tool_subtitles(a):
             band=band if band == "auto" else (float(band[0]), float(band[1])),
             width=int(a["width"]) if a.get("width") else None,
             skip_th=float(a.get("skip_th", 1.0)),
-            text_th=float(a.get("text_th", 220)),
+            text_th=float(a.get("text_th", 223)),
             engine=ocrmod.get_engine())
     except Exception as e:
         return ("字幕提取失败: %s" % e, [])
@@ -468,7 +468,7 @@ TOOLS = [
          "step": {"type": "number", "description": "采样间隔秒，默认 1.0"},
          "band": {"description": "字幕带高度比例，默认 'auto'"},
          "skip_th": {"type": "number", "description": "跳帧阈值（带内文字块变化百分比），默认 1.0；设 -1 关闭跳帧"},
-         "text_th": {"type": "number", "description": "文字高亮阈值，默认 220"},
+         "text_th": {"type": "number", "description": "文字高亮阈值，默认 223"},
          "width": {"type": "integer", "description": "缩放宽度；不传按源分辨率，裁完直接输出不缩放"},
          }}},
 ]
