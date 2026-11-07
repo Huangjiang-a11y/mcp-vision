@@ -438,7 +438,8 @@ TOOLS = [
          "start_seconds": {"type": "number", "description": "从哪个时间戳开始，默认 0"},
          "seconds": {"type": "number", "description": "看多久（秒）；不传则为 15 分钟上限内全长"},
          "max_seconds": {"type": "number", "description": "单次上限秒数，默认 900（15 分钟）"},
-         "crop": {"type": "string", "description": "frame 裁剪：WxH+X+Y，如 720x300+0+880"},
+         "crop": {"type": "string", "description": "frame 裁剪：WxH+X+Y，如 720x300+0+880；按裁剪后的尺寸算缩放，不失真"},
+        "attach": {"type": "boolean", "description": "analyze 是否把网格页作为图片一并返回，默认 true；只要路径时传 false"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
                      "description": "像素上限（数值平方=最大像素数）：low=512 medium=1024 high=1536 max=2048"}}}},
     {"name": "audio", "description": "音频：levels 电平分析 / extract 导出 / transcribe 转写（silero-vad 自动断句 + SenseVoice）。",
@@ -554,6 +555,7 @@ def tool_analyze(a):
                                  title=asset.get("title"))
         except Exception:
             sheet_path = None
+    images = []
     out = {
         "ok": True,
         "title": asset.get("title"),
@@ -564,10 +566,27 @@ def tool_analyze(a):
         "frames": len(frames),
         "timeline": [{"t": f["seconds"], "path": f["path"]} for f in frames],
         "sheet": sheet_path,
+        "sheetJpg": None,
+        "attached": False,
         "videoDir": asset.get("video_dir"),
         "nextStep": "描述画面前先看 sheet 或 timeline 里的图；细节用 action=frame 取原帧。",
     }
-    return (json.dumps(out, ensure_ascii=False, indent=2), [])
+    if sheet_path and a.get("attach", True) is not False:
+        jp = Path(sheet_path).with_suffix(".jpg")
+        try:
+            if (not jp.exists()) or jp.stat().st_mtime < Path(sheet_path).stat().st_mtime:
+                engine._run(["ffmpeg", "-y", "-v", "error", "-i", sheet_path,
+                             "-q:v", "4", str(jp)], timeout=120)
+            if jp.exists():
+                out["sheetJpg"] = str(jp)
+                out["attached"] = True
+                out["sheetKB"] = int(round(jp.stat().st_size / 1024))
+                images.append({"type": "image",
+                               "data": base64.b64encode(jp.read_bytes()).decode(),
+                               "mimeType": "image/jpeg"})
+        except Exception:
+            out["attached"] = False
+    return (json.dumps(out, ensure_ascii=False, indent=2), images)
 
 
 def tool_frame(a):
