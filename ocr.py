@@ -479,9 +479,18 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
                 c["y0"], c["y1"], c["count"], sum(c["hs"])/len(c["hs"]),
                 max(c["ws"]) if c["ws"] else 0, score(c), list(c["texts"])[:3]))
     best = max(clusters, key=score)
-    # 至少在 1 个采样点明确检出，且高宽比合理
-    y0_band = max(0.0, best["y0"] - pad)
-    y1_band = min(1.0, best["y1"] + pad)
+    # 字幕有时一句、有时两行，纵向差 3~5%，只留最高分那一簇会把矮的那行切掉。
+    # 紧挨着（间隔 ≤2%）就并成一条带；并出来不能高过画面的 1/5，免得连水印一起吞。
+    y0, y1 = best["y0"], best["y1"]
+    for c in sorted(clusters, key=lambda c: c["y0"]):
+        if c is best:
+            continue
+        if c["y0"] - y1 <= 0.02 or y0 - c["y1"] <= 0.02:
+            ny0, ny1 = min(y0, c["y0"]), max(y1, c["y1"])
+            if ny1 - ny0 <= 0.2:
+                y0, y1 = ny0, ny1
+    y0_band = max(0.0, y0 - pad)
+    y1_band = min(1.0, y1 + pad)
     if (y1_band - y0_band) < 0.03:
         return None
     return (round(y0_band, 4), round(y1_band, 4))
