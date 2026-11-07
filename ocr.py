@@ -552,7 +552,11 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
                             "conf": round(sum(r["conf"] for r in prev_res) / len(prev_res), 4) if prev_res else 0.0,
                             "lines": [r["text"] for r in prev_res]})
                 continue
-        res = _keep_wide(engine.ocr_image(arr, min_conf=min_conf), W)
+        # 带边太窄时字会贴着上下边，识别器会把贴边的字吞掉（"…夜送客"→"…夜送"）。
+        # 纵向补一圈边缘像素再识别，不改判定用的原图。
+        pad = max(4, int(round(H * 0.10)))
+        img = np.pad(arr, ((pad, pad), (0, 0), (0, 0)), mode="edge") if pad else arr
+        res = _keep_wide(engine.ocr_image(img, min_conf=min_conf), W)
         n_ocr += 1
         prev, prev_res = arr, res
         conf = round(sum(r["conf"] for r in res) / len(res), 4) if res else 0.0
