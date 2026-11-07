@@ -455,121 +455,76 @@ def tool_list(a):
 
 TOOLS = [
     {"name": "workspace",
-     "description": (
-         "Workspace: open/download a video from a URL or a local path, and list already-opened videos. "
-         "Pure Python, no Node."
-     ),
+     "description": "Workspace: open or download a video from a URL or local path; list opened videos.",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["open", "list"],
                     "description": "open = download and open (default); list = show opened videos"},
          "source": {"type": "string",
                     "description": "Video path or URL; use the file:// scheme for local files"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                     "description": "low=480p medium=720p high=1080p max=source. Filtered by the short edge, "
-                                    "so portrait video is not over-rejected"},
-         "cookies": {"type": "boolean",
-                     "description": "true = use cookies.txt from the repo root (needed by some sites)"}}}},
+                     "description": "low=480p medium=720p high=1080p max=source, filtered by the short edge"},
+         "cookies": {"type": "boolean", "description": "true = use cookies.txt from the repo root"}}}},
 
     {"name": "video",
      "description": (
-         "Look at the picture, in two layers: analyze for a whole-clip overview, frame for single-frame detail.\n"
-         "analyze: samples `quantity` frames evenly across the window and tiles them into a grid page whose "
-         "shape stays close to the source aspect ratio. Returns timeline (time + jpg path per frame), "
-         "frameSize (actual pixels of each tile) and sheet (the grid page png). The grid auto-picks cols x rows "
-         "to stay near-square and allows up to 3 empty cells, so the frame count can exceed `quantity` "
-         "(ask for 12, get 15). The grid page is attached as an image by default; pass attach=false for paths only.\n"
-         "frame: grabs one frame at `time`, optionally cropped first, then scaled. Crop is applied before the "
-         "pixel cap, so nothing is distorted. Use it to read small text, board writing or the exact subtitle wording.\n"
-         "Artifacts land in workspace/<video>/video/ as t<ms>-<w>x<h>.jpg and are reused on repeat calls."
+         "Look at the picture. analyze samples the clip into a near-square grid page "
+         "(timeline + sheet path, attached as an image by default). "
+         "frame grabs one frame, optionally cropped, for reading small text."
      ),
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["analyze", "frame"],
-                    "description": "analyze = sample the clip into a grid page (default); frame = one frame"},
-         "video_id": {"type": "string",
-                      "description": "Folder name under workspace/, i.e. workspace/<name>; defaults to the most recently opened video"},
-         "time": {"type": "number", "description": "frame: timestamp in seconds (alias: t)"},
-         "quantity": {"type": "integer",
-                      "description": "analyze: number of sampled frames, default 15, max 30; grid rounding can add 1-3 more"},
+                    "description": "analyze = grid page for the clip (default); frame = one frame"},
+         "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
+         "time": {"type": "number", "description": "frame: timestamp in seconds"},
+         "quantity": {"type": "integer", "description": "analyze: sampled frames, default 15, max 30"},
          "start_seconds": {"type": "number", "description": "analyze: window start in seconds, default 0"},
-         "seconds": {"type": "number",
-                     "description": "analyze: window length in seconds; defaults to max_seconds or the end of the clip"},
-         "max_seconds": {"type": "number",
-                         "description": "Per-call window cap in seconds, default 900 (15 min); a longer request is clamped and reported in note"},
-         "crop": {"type": "string",
-                  "description": "frame: crop as WxH+X+Y, e.g. 720x300+0+880; crop is applied before scaling to the quality cap"},
-         "attach": {"type": "boolean",
-                    "description": "analyze: attach the grid page as an image, default true; false = paths only"},
+         "seconds": {"type": "number", "description": "analyze: window length in seconds; default: up to the cap or the end"},
+         "max_seconds": {"type": "number", "description": "window cap in seconds, default 900"},
+         "crop": {"type": "string", "description": "frame: crop as WxH+X+Y, e.g. 720x300+0+880"},
+         "attach": {"type": "boolean", "description": "analyze: attach the grid page image, default true"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                     "description": "Pixel cap (value squared = max pixels): low=512 medium=1024 high=1536 max=2048. "
-                                    "Applies to the whole grid page for analyze, to the cropped frame for frame. Scales down only"}}}},
+                     "description": "pixel cap: low=512^2 medium=1024^2 high=1536^2 max=2048^2; scales down only"}}}},
 
     {"name": "audio",
      "description": (
-         "Audio: levels (loudness scan), extract (export a clip), transcribe (silero-vad segmentation + SenseVoice).\n"
-         "levels: returns a level profile so you can tell speech from silence or music without listening.\n"
-         "extract: writes a clip in the requested format (wav / mp3) under workspace/<video>/audio/.\n"
-         "transcribe: segments speech with silero-vad and runs SenseVoice on each segment; returns cues with "
-         "from/to/text plus the joined text."
+         "Listen to the audio. levels: loudness profile. extract: export a clip. "
+         "transcribe: speech to text (silero-vad + SenseVoice)."
      ),
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["levels", "extract", "transcribe"],
-                    "description": "levels = loudness scan (default); extract = export a clip; transcribe = speech to text"},
-         "video_id": {"type": "string",
-                      "description": "Folder name under workspace/; defaults to the most recently opened video"},
-         "start_seconds": {"type": "number", "description": "Window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "Window length in seconds; takes precedence over end_seconds"},
-         "end_seconds": {"type": "number", "description": "Window end in seconds (legacy; prefer seconds)"},
-         "max_seconds": {"type": "number", "description": "Per-call window cap in seconds, default 900 (15 min)"},
+                    "description": "levels = loudness profile (default); extract = export a clip; transcribe = speech to text"},
+         "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
+         "start_seconds": {"type": "number", "description": "window start in seconds, default 0"},
+         "seconds": {"type": "number", "description": "window length in seconds; takes precedence over end_seconds"},
+         "end_seconds": {"type": "number", "description": "window end in seconds (legacy; prefer seconds)"},
+         "max_seconds": {"type": "number", "description": "window cap in seconds, default 900"},
          "format": {"type": "string", "description": "extract: output format, e.g. wav / mp3"},
-         "language": {"type": "string",
-                      "description": "transcribe: zh / en / ja / ko, default zh"},
-         "max_speech": {"type": "number",
-                        "description": "transcribe: longest single segment in seconds, default 20 (longer speech is split)"}}}},
+         "language": {"type": "string", "description": "transcribe: zh / en / ja / ko, default zh"},
+         "max_speech": {"type": "number", "description": "transcribe: longest segment in seconds, default 20"}}}},
 
     {"name": "subtitles",
      "description": (
-         "Read on-screen text. Two paths.\n"
-         "ocr: OCR a single image (image=<path>). Returns each line's text, box and confidence. "
-         "Handy after frame + crop to read small text.\n"
-         "band: OCR a window frame by frame and fold the result into a subtitle track. It first locates the "
-         "subtitle band from 8 sample frames (two-stage: OCR the bottom 40% first, then the upper half if nothing "
-         "subtitle-like turns up), then samples frames every `step` seconds, skips frames whose in-band text has "
-         "not changed, and folds OCR jitter of the same cue into one segment. Returns segments (from/to/text/conf) "
-         "plus ocr_runs / skipped, i.e. how many frames were really OCRed and how many were skipped.\n"
-         "Pass band=\"0.10,0.27\" to pin the band by hand: captions hard against the top edge, captions in "
-         "mid-screen, or auto detection clearly picking the wrong place. When band=auto finds nothing, the response "
-         "carries a hint on how to check.\n"
-         "format=srt also writes a subtitle file; timing is second-precision with .000 milliseconds (no fake precision).\n"
-         "Not applicable: videos that are text all over the screen (handwritten pages, wall-of-text edits). The band "
-         "is then full of body text rather than captions, and no band reads cleanly."
+         "Read on-screen text. ocr reads one image; band OCRs a window frame by frame and folds the "
+         "result into cues (from/to/text/conf). Pass band=\"0.10,0.27\" to pin the band manually."
      ),
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["ocr", "band"],
-                    "description": "ocr = one image (default); band = subtitle track for a video window"},
-         "video_id": {"type": "string",
-                      "description": "Folder name under workspace/; defaults to the most recently opened video"},
-         "image": {"type": "string", "description": "ocr: path to the image (alias: path)"},
+                    "description": "ocr = one image (default); band = subtitle cues for a window"},
+         "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
+         "image": {"type": "string", "description": "ocr: path to the image"},
          "start_seconds": {"type": "number", "description": "band: window start in seconds, default 0"},
          "seconds": {"type": "number", "description": "band: window length in seconds; takes precedence over end_seconds"},
          "end_seconds": {"type": "number", "description": "band: window end in seconds (legacy; prefer seconds)"},
-         "max_seconds": {"type": "number", "description": "Per-call window cap in seconds, default 900 (15 min)"},
-         "step": {"type": "number",
-                  "description": "band: sampling interval in seconds, default 1.0; cost is driven by the number of cues, "
-                                 "dense sampling only adds cheap skip comparisons"},
+         "max_seconds": {"type": "number", "description": "window cap in seconds, default 900"},
+         "step": {"type": "number", "description": "band: sampling interval in seconds, default 1.0"},
          "band": {"type": "string",
-                  "description": "band: vertical range of the subtitle band, 'auto' (default) or ratios like "
-                                 "\"0.10,0.27\"; [0.10, 0.27] is accepted too"},
+                  "description": "band range: 'auto' (default) or ratios like \"0.10,0.27\""},
          "skip_th": {"type": "number",
-                     "description": "band: skip threshold as percent change of the in-band text mask, default 1.0; "
-                                    "-1 disables skipping"},
-         "text_th": {"type": "number",
-                     "description": "band: highlight threshold on grayscale, default 223; raise it for light backgrounds"},
-         "format": {"type": "string", "enum": ["json", "srt"],
-                    "description": "srt = also write a subtitle file"},
-         "save_to": {"type": "string",
-                     "description": "srt output path, default workspace/<video>/out/subtitles.srt"},
-         "width": {"type": "integer",
-                   "description": "Resize the band to this width before OCR; default keeps the source resolution"}}}},
+                     "description": "skip threshold as percent change of the in-band text mask, default 1.0; -1 disables"},
+         "text_th": {"type": "number", "description": "highlight threshold on grayscale, default 223"},
+         "format": {"type": "string", "enum": ["json", "srt"], "description": "srt = also write a subtitle file"},
+         "save_to": {"type": "string", "description": "srt output path, default workspace/<video>/out/subtitles.srt"},
+         "width": {"type": "integer", "description": "resize the band before OCR; default: source resolution"}}}},
 
 ]
 
