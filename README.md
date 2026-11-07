@@ -38,7 +38,7 @@
 ## 快速开始
 
 ```sh
-python3 check.sh
+sh check.sh
 python3 mcp_server.py            # stdio
 python3 mcp_server.py --http 8765
 ```
@@ -53,8 +53,12 @@ python3 mcp_server.py --http 8765
 - `workspace`：`open`（打开/下载）/ `list`
 - `video`：给窗口 + 张数，抽帧拼成一页网格；`quantity=1` 时不出页，直接给单帧原图（可 `crop`）
   - `quantity` 抽帧数（默认 15，上限 30；1 = 单帧）；`quality` 像素上限：low=512² medium=1024² high=1536² max=2048²（拼页时管整页，单帧时管裁剪后那张）
-- `audio`：`levels` / `transcribe`（silero-vad 自动断句 + SenseVoice，模型路径由环境变量指定）
-- `subtitles`：`ocr` / `band`
+- `audio`：按 `view` 出图 —— `level`（20ms RMS 电平）/ `spectrum`（FFT 幅度谱）/
+  `spectrogram`（时频图）/ `peak`（峰值频率轨迹）/ `wave`（原始波形），`all` 一次全给
+- `subtitles`：`mode=ocr` 识字幕（`band` 可指范围）/ `mode=stt` 语音转写
+  （silero-vad 自动断句 + SenseVoice，模型路径由环境变量指定）
+
+音频图一律 1024×1024，上半 L、下半 R。读数口径见「音频图的读数口径」。
 
 视频固定在工作区 `workspace/<文件夹名>/`。
 `video` / `audio` / `subtitles` 默认作用于最近打开的那个，可用 `video_id` 传文件夹名指定。
@@ -84,32 +88,43 @@ python3 ocr.py out/ocr_test.png      # 单图
 | 参数 | 含义 |
 |---|---|
 | `time` | 从哪个时间戳开始，默认 0（frame 里是第一帧的时刻） |
-| `seconds` | 看多久；不传则看到上限或结尾 |
-| `end_seconds` | 兼容用，等价于 `seconds = end - start` |
-| `max_seconds` | 单次上限，默认 **900 秒（15 分钟）**（audio / subtitles 用；video 用 `seconds` 自身限制 900） |
+| `seconds` | 看多久；不传则用该工具的默认值 |
+
+各工具的上限：`audio` **15 秒**（不传默认 10 秒）、`video` / `subtitles` **900 秒**（15 分钟）。
 
 超过上限会被夹住，并在返回里带 `note` 说明夹到了哪里。长视频靠 `time` 翻页，
 不会一次跑到底。
 
 ```jsonc
-{"action":"transcribe","time":1200,"seconds":600}   // 从 20 分开始，转 10 分钟
+{"mode":"stt","time":1200,"seconds":600}   // 从 20 分开始，转 10 分钟
 ```
+
+## 音频图的读数口径
+
+五张图共用一套标定，跨窗口、跨文件都能横向比：
+
+| 项 | 口径 |
+|---|---|
+| FFT 点数 | 4096；44.1k 下分辨率 **10.77 Hz**，窗长 92.9 ms |
+| 幅度 | 满幅正弦 = 1（`2·|X| / sum(win)`），不按窗口峰值归一 |
+| 峰值频率 | 对数域抛物线插值，幅度再除以汉宁窗在偏移处的增益（扇贝损失）|
+| 电平 | 20 ms 不重叠帧的 RMS，单位 dBFS |
+| 纵轴 / 色标范围 | 顶端 = 峰值**向上取整到 10 的整数次幂**，底端退 3~6 个十进位档 |
+| 时频图峰值格 | 每列单独补扇贝损失，纯音不论落在 bin 哪个位置都读准 |
+
+频域图横轴对数 10 Hz–Nyquist，时频图 20 Hz–Nyquist，波形取的就是那 4096 点。
+
+已知偏差（有意保留）：时频图的噪声底比读数低 1.76 dB，这是纯音标定 + 汉宁窗
+ENBW=1.5 的必然结果；全局减 1.76 dB 会让纯音偏低，所以不动。
 
 ## 输出不裁剪
 
 `_dump()` 默认**不截断**。之前 8000 字符上限会把 97 段字幕砍成 55 段还不显眼，
 现在整份返回；确实要塞小响应时才显式传 `limit`。
 
-字幕可直接出 SRT：
-
-```jsonc
-{"action":"band","time":0,"seconds":900,"format":"srt"}
-```
-
-落盘到 `workspace/<视频>/out/subtitles.srt`，也可用 `save_to` 指定。
-时间轴只有秒级精度，毫秒位固定补 `000`——不伪造精度。
-
-=======
+字幕段统一是 `{"from": "MM:SS.mmm", "to": …, "text": …}`，OCR 与语音转写同形，
+折叠后整份返回；要 SRT 直接拿三个字段拼，工具本身不落盘。
+时间精度取决于来源：OCR 精确到采样点，转写精确到毫秒——都按实际算出来的给，不凑整。
 
 ## 性能
 
@@ -120,7 +135,7 @@ python3 ocr.py out/ocr_test.png      # 单图
 
 **加速器**：`CPU` 实测最快，`XNNPACK` 反而更慢，`NNAPI` 初始化贵。默认 `cpu`，可用 `MVV_ORT_PROVIDERS` 改。
 
-**字幕带 + 跳帧**（`action=subtitles`）是最有效的一刀。
+**字幕带 + 跳帧**（`subtitles` 的 `mode=ocr`）是最有效的一刀。
 
 30 秒测试片（15 条字幕，每条 2 秒）：
 
@@ -132,7 +147,7 @@ python3 ocr.py out/ocr_test.png      # 单图
 原理：只裁一条字幕带（不是整个下半屏），字幕没变的帧直接复用上次结果。
 带高由自动检测给出，1280×720 上实测 84–129px，占整幅 12–18%。
 
-**字幕带是怎么定的**（`action=subtitles` 不传 `band` 时）：
+**字幕带是怎么定的**（`mode=ocr` 且 `band=auto` 时）：
 
 - 两段式：先只 OCR 下方 40%（多数片子的字幕在那儿，只花 0.4 屏）；找不到够像的簇，
   再补扫上半屏。两段共用同一批已解码的帧，整幅只扫一遍、不重复解码
@@ -253,8 +268,8 @@ python3 ocr.py out/ocr_test.png      # 单图
 
 ## 状态
 
-v0.3 已通：`workspace`（open / list）、`video`、
-`audio`（levels / transcribe）、`subtitles`（ocr / band）。
+v0.4 已通：`workspace`（open / list）、`video`、
+`audio`（level / spectrum / spectrogram / peak / wave）、`subtitles`（ocr / stt）。
 
 转写链路：ffmpeg 直出 16k 单声道 → silero-vad 自动断句（阈值/静音/最长段交给模型，
 不写死时间网格）→ 逐段 SenseVoice 解码 → 丢弃纯语气词片段。

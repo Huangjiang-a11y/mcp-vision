@@ -178,7 +178,7 @@ sh check.sh
 ```
 workspace open  "file:///path/to/a.mp4"
 video     analyze quantity=15
-audio     transcribe start_seconds=0 end_seconds=30
+audio     view=all time=0 seconds=10
 ```
 
 ## 6. 目录约定
@@ -189,8 +189,8 @@ mcp-vision/
 ├── workspace/         产物：每个视频一个文件夹（gitignore）
 │   └── <标题>/
 │       ├── video/     probe.json / frame_*.jpg / sheet_*.png
-│       ├── audio/     levels.json / audio.wav
-│       └── subtitles/ cues.json / cues.srt
+│       ├── audio/     a-<窗口>.wav / .pcm，以及 level/spectrum/spectrogram/peak/wave 的 png
+│       └── subtitles/ 字幕段直接写在返回里，不落盘
 ├── cookies.txt        B 站登录态（gitignore，**绝不要提交**）
 └── out/               实验产物（gitignore）
 ```
