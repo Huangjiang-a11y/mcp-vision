@@ -300,8 +300,21 @@ v0.4 已通：`workspace`（open / list）、`video`、
 - [dsh-video-vision](https://github.com/Tests4gptplay/dsh-video-vision) — 链接规范化（`lib/ytdlp.js` 的 `normalizeSource`）、按时间点取原帧。
 - [dsh-bili-watch](https://github.com/ppppiii/dsh-bili-watch) — B 站下载与登录态（cookies）处理的经验。
 
-也感谢 ffmpeg、yt-dlp、numpy、onnxruntime 与 PP-OCRv4 的作者。
+也感谢 ffmpeg、yt-dlp、numpy、onnxruntime 的作者。
+
+模型与依赖：
+
+- **PP-OCRv4**，来自 [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)（Apache-2.0）
+- **SenseVoice**，来自 [FunAudioLLM / FunASR](https://github.com/FunAudioLLM/SenseVoice)，
+  模型权重遵循 FunASR Model Open Source License v1.1
+- **Silero VAD**（MIT）、**sherpa-onnx**（Apache-2.0）
 
 ## 许可证
 
-MIT，见 [LICENSE](LICENSE)。© 2026 Huangjiang-a11y
+本仓库代码：MIT，见 [LICENSE](LICENSE)。© 2026 Huangjiang-a11y
+
+**LICENSE 只覆盖本仓库的代码。** 模型权重不随仓库分发，遵循各自的上游许可；
+ffmpeg 是以子进程调用的外部程序（不链接、不捆绑）；
+经由本工具处理的音视频与字幕，版权归原权利人。
+
+各组件许可、ffmpeg 的分发注意事项、模型署名的要求，见 **[THIRD_PARTY.md](THIRD_PARTY.md)**。

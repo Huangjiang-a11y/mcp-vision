@@ -264,14 +264,19 @@ Termux 上 `pkg install python-onnxruntime` 后再 `pip install sherpa-onnx`；�
 OCR 与语音转写的输出**可能有错**，尤其在唱腔、方言、强背景音乐、低分辨率画面上。
 结果仅供辅助理解，不应作为证据、字幕成品或正式记录使用。
 
-**六、模型许可**
+**六、模型与依赖许可**
 
 各模型遵循其上游许可，使用前请自行查阅：
 
 - PP-OCRv4（PaddleOCR）：Apache-2.0
-- SenseVoice：见 [FunAudioLLM/SenseVoice](https://github.com/FunAudioLLM/SenseVoice)
+- SenseVoice（FunAudioLLM / FunASR）：FunASR Model Open Source License v1.1，
+  **须保留模型名 SenseVoice 并署名来源**
 - Silero VAD：MIT
 - sherpa-onnx：Apache-2.0
+
+ffmpeg / ffprobe 是以**子进程**调用的外部程序，本仓库不链接、不捆绑；
+若你要在自己的分发物里附带 ffmpeg 二进制，需遵守其 LGPL/GPL 条款。
+完整的第三方许可清单见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
 **七、模型分发**
 
