@@ -342,9 +342,17 @@ def plot_spectrogram(d, tag="", w=1024, h=512, fmax=None):
     ramp = np.repeat(np.linspace(0, 1, x1 - x0)[None, :], bh, axis=0)
     c.blit(_cmap(ramp), x0, by)
     c.rect(x0, by, x1, by + bh, AXIS)
-    c.text(x0, by + bh + 2, "-70", DIM, 2)
-    c.text(x1 - c.tw("0 DB", 2), by + bh + 2, "0 DB", DIM, 2)
-    c.ctext((x0 + x1) / 2.0, by + bh + 2, "LEVEL (DB)", DIM, 2)
+    # 色标标 FFT 幅度相对值（1 / 0.1 / 0.01 / 0.001），不写 dB
+    for amp, lab in ((1.0, "1"), (0.1, "0.1"), (0.01, "0.01"), (0.001, "0.001")):
+        frac = (70.0 + 20.0 * math.log10(amp)) / 70.0
+        if not 0.0 <= frac <= 1.0:
+            continue
+        xx = x0 + frac * (x1 - x0)
+        c.vline(xx, by + 1, by + bh - 2, GRID, 1)      # 刻度刺
+        if frac > 0.97:
+            c.text(x1 - c.tw(lab, 2), by + bh + 2, lab, DIM, 2)
+        else:
+            c.ctext(xx, by + bh + 2, lab, DIM, 2)
     y0, y1 = 76, h - 38
     H, W = y1 - y0, x1 - x0
     nt, nf = spec.shape[1], spec.shape[0]
@@ -367,7 +375,9 @@ def plot_spectrogram(d, tag="", w=1024, h=512, fmax=None):
     v = np.clip((mat + 70.0) / 70.0, 0, 1)
     c.blit(_cmap(v), x0, y0)
     c.rect(x0, y0, x1, y1, AXIS)
-    c.text(x0, 12, _tag_title(tag, "SPECTROGRAM"), TXT, 3)
+    title = _tag_title(tag, "SPECTROGRAM")
+    c.text(x0, 12, title, TXT, 3)
+    c.text(x0 + c.tw(title, 3) + 14, 17, "FFT AMP (REL)", DIM, 2)
     c.text(x1 - c.tw("FREQ (HZ, LOG)", 2), 14, "FREQ (HZ, LOG)", DIM, 2)
     c.vtext(8, y0 + 8, "TIME (S)", DIM, 2)
     ticks = _freq_ticks(fmax)

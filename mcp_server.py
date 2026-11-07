@@ -521,7 +521,7 @@ TOOLS = [
          "view": {"type": "string",
                   "enum": ["all", "level", "spectrum", "spectrogram", "peak"],
                   "description": ("level = dB over time; spectrum = FFT, log freq 10-Nyquist; "
-                                  "spectrogram = time-frequency map, log freq 20-Nyquist; "
+                                  "spectrogram = time-frequency map, log freq 20-Nyquist, colour = FFT amplitude (relative, 1..0.001); "
                                   "peak = peak-frequency track; default all")}}}},
 
     {"name": "subtitles",
