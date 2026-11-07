@@ -374,6 +374,29 @@ def _to_srt(segs):
     return "\n".join(lines)
 
 
+def _parse_band(v):
+    """band 可以是 auto / [y0,y1] / "0.10,0.27" / "[0.10, 0.27]"。
+
+    schema 里这个参数没锁类型，客户端送过来的多半是字符串，
+    原来直接 band[0] 取下标，传 "0.10,0.27" 就成了 float("[") 报错。
+    """
+    if v is None or str(v).strip() in ("", "auto"):
+        return "auto"
+    if isinstance(v, (list, tuple)):
+        if len(v) != 2:
+            raise ValueError("band 需要两个数：[y0, y1]")
+        y0, y1 = float(v[0]), float(v[1])
+    else:
+        txt = str(v).strip().strip("[](){}")
+        parts = [p for p in re.split(r"[,;\s]+", txt) if p]
+        if len(parts) != 2:
+            raise ValueError("band 要写成 auto 或 \"0.10,0.27\"（纵向起止比例）")
+        y0, y1 = float(parts[0]), float(parts[1])
+    if not (0.0 <= y0 < y1 <= 1.0):
+        raise ValueError("band 需满足 0 ≤ y0 < y1 ≤ 1")
+    return (y0, y1)
+
+
 def tool_subtitles(a):
     """字幕带 OCR：裁下 30% 画面 + 变帧跳过，输出折叠后的字幕段。"""
     cwd = str(Path(__file__).resolve().parent)
@@ -386,12 +409,15 @@ def tool_subtitles(a):
         return (_missing(a), [])
     media = asset["media_path"]
     start, end, window_note = _window(a, asset)
-    band = a.get("band", "auto")
+    try:
+        band = _parse_band(a.get("band", "auto"))
+    except ValueError as e:
+        return (str(e), [])
     try:
         res = ocrmod.ocr_subtitles(
             media, start, end,
             step=float(a.get("step", 1.0)),
-            band=band if band == "auto" else (float(band[0]), float(band[1])),
+            band=band,
             width=int(a["width"]) if a.get("width") else None,
             skip_th=float(a.get("skip_th", 1.0)),
             text_th=float(a.get("text_th", 223)),
@@ -401,6 +427,11 @@ def tool_subtitles(a):
     segs = ocrmod.fold_segments(res["results"], step=float(a.get("step", 1.0)))
     out = {"frames": res["frames"], "ocr_runs": res["ocr_runs"], "skipped": res["skipped"], "band": res.get("band"), "band_auto": res.get("band_auto"),
            "band_px": res["band_px"], "segment_count": len(segs), "segments": segs}
+    if not segs and band == "auto":
+        # 自动检测只搜下方 40%；一个字的没有时，多半是字幕根本不在下面，别让人以为这片子没字幕
+        out["hint"] = ("自动检测在下方 40%% 没找到字幕（band=%s）。"
+                       "字幕可能在上方或画面中部：先 video action=frame 看一眼位置，"
+                       "再用 band=\"y0,y1\" 手动指定，例如 \"0.10,0.27\"。" % (res.get("band"),))
     if window_note:
         out["note"] = window_note
     fmt = str(a.get("format") or "json").lower()
@@ -466,7 +497,7 @@ TOOLS = [
          "format": {"type": "string", "enum": ["json", "srt"], "description": "srt 额外写字幕文件"},
          "save_to": {"type": "string", "description": "srt 落盘路径，默认 workspace/<视频>/out/subtitles.srt"},
          "step": {"type": "number", "description": "采样间隔秒，默认 1.0"},
-         "band": {"description": "字幕带高度比例，默认 'auto'"},
+         "band": {"type": "string", "description": "字幕带纵向范围：'auto'（默认，自动检测）或 \"0.10,0.27\" 这样的起止比例"},
          "skip_th": {"type": "number", "description": "跳帧阈值（带内文字块变化百分比），默认 1.0；设 -1 关闭跳帧"},
          "text_th": {"type": "number", "description": "文字高亮阈值，默认 223"},
          "width": {"type": "integer", "description": "缩放宽度；不传按源分辨率，裁完直接输出不缩放"},
