@@ -320,7 +320,45 @@ def _parse_band(v):
 
 
 def tool_subtitles(a):
-    """字幕带 OCR：裁下 30% 画面 + 变帧跳过，输出折叠后的字幕段。"""
+    """识字幕：mode=ocr 走画面逐帧 OCR，mode=stt 走语音转写。"""
+    mode = str(a.get("mode") or "ocr").lower()
+    if mode not in ("ocr", "stt"):
+        return ("mode 只能是 ocr 或 stt", [])
+    if mode == "stt":
+        return _subs_stt(a)
+    return _subs_ocr(a)
+
+
+def _subs_stt(a):
+    """stt 模式：窗口内语音转写，输出与 ocr 同形的 cues。"""
+    cwd = str(Path(__file__).resolve().parent)
+    asset = _load_asset(cwd, a.get("video_id"))
+    if asset is None:
+        return (_missing(a), [])
+    start, end, window_note = _window(a, asset)
+    language = str(a.get("language") or "zh")
+    try:
+        segs, dur = engine.transcribe(asset["media_path"], start, end, language=language)
+    except RuntimeError as e:
+        return (_dump({"ok": False, "mode": "stt", "error": str(e)}), [])
+    cues = [{"from": _tc(x["s"]), "to": _tc(x["e"]), "text": x["text"]} for x in segs]
+    out = {"mode": "stt", "engine": "silero-vad + sensevoice",
+           "range": [round(start, 2), round(start + dur, 2)],
+           "segment_count": len(cues), "segments": cues,
+           "text": "".join(x["text"] for x in cues)}
+    if window_note:
+        out["note"] = window_note
+    return (_dump(out), [])
+
+
+def _tc(sec):
+    """秒 -> MM:SS.mmm（与 ocr 段的时间格式一致）。"""
+    t = max(0.0, float(sec))
+    return "%02d:%02d.%03d" % (int(t // 60), int(t % 60), int(round((t % 1) * 1000)))
+
+
+def _subs_ocr(a):
+    """ocr 模式：裁字幕带 + 逐帧识别，输出折叠后的字幕段。"""
     cwd = str(Path(__file__).resolve().parent)
     try:
         import ocr as ocrmod
@@ -344,7 +382,8 @@ def tool_subtitles(a):
     except Exception as e:
         return ("字幕提取失败: %s" % e, [])
     segs = ocrmod.fold_segments(res["results"], step=1.0)
-    out = {"frames": res["frames"], "ocr_runs": res["ocr_runs"], "skipped": res["skipped"], "band": res.get("band"), "band_auto": res.get("band_auto"),
+    out = {"mode": "ocr", "frames": res["frames"], "ocr_runs": res["ocr_runs"],
+           "skipped": res["skipped"], "band": res.get("band"), "band_auto": res.get("band_auto"),
            "band_px": res["band_px"], "segment_count": len(segs), "segments": segs}
     if not segs and band == "auto":
         # 自动检测只搜下方 40%；一个字的没有时，多半是字幕根本不在下面，别让人以为这片子没字幕
@@ -417,15 +456,20 @@ TOOLS = [
 
     {"name": "subtitles",
      "description": (
-         "Read on-screen subtitles: OCR the subtitle band frame by frame over a window and return "
-         "cues. band=\"0.10,0.27\" pins the band manually."
+         "Get a window's text, as cues (from/to/text). mode=ocr (default) reads on-screen "
+         "subtitles by OCRing the subtitle band frame by frame - use it for burned-in subtitles, "
+         "songs and any text on screen. mode=stt transcribes the audio with speech recognition - "
+         "use it when the speech is not written on screen. band=\"0.10,0.27\" pins the OCR band manually."
      ),
      "inputSchema": {"type": "object", "properties": {
+         "mode": {"type": "string", "enum": ["ocr", "stt"],
+                  "description": "ocr = read on-screen subtitles (default); stt = speech to text"},
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "band: window length in seconds"},
+         "seconds": {"type": "number", "description": "window length in seconds"},
+         "language": {"type": "string", "description": "stt: zh / en / ja / ko, default zh"},
          "band": {"type": "string",
-                  "description": "band range: 'auto' (default) or ratios like \"0.10,0.27\""}}}},
+                  "description": "ocr: band range, 'auto' (default) or ratios like \"0.10,0.27\""}}}},
 
 ]
 
