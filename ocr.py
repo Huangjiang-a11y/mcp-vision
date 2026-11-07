@@ -359,11 +359,11 @@ def _is_static(c):
     return top >= STATIC_RATIO * c["count"]
 
 
-def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
+def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
                          lower_from=0.6, pad=0.02, engine=None):
     """利用少量采样点按 OCR 框坐标聚类，秒级自动锁定字幕带 (y0_ratio, y1_ratio)。
 
-    - samples 默认 10 点；短窗口一次解码取帧，长窗口逐点 seek
+    - samples 默认 8 点；短窗口一次解码取帧，长窗口逐点 seek
     - 只搜画面下方十分之四（> lower_from=0.6）：再往上是画面主体和水印
     - 采样点按窗口时长均匀分布（span/(samples+1)），覆盖整段
     """
@@ -389,10 +389,9 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
     H -= H % 2
     crop_y = int(H * lower_from)
 
-    # 一次解码拿全部采样帧：原来每个采样点单开一个 ffmpeg -ss，10 次要开 10 次容器。
-    # 窗口超过 3 分钟时顺序解码到末尾反而比 seek 贵，那种情况退回逐帧抓。
+    # 一次解码拿全部采样帧：逐点单开 ffmpeg -ss，8 点就要开 8 次容器。
     # 顺序解码约 13 倍速：45 秒窗口 3.5 秒解完，10 分钟要 46 秒。
-    # 超过 45 秒改成逐点 seek：每次约 0.35 秒，与片子多长无关，10 点 3.5 秒。
+    # 所以只有 ≤45 秒的窗口走解码，更长的逐点 seek（每次约 0.35 秒，与片长无关）。
     lowers = []
     if span <= 45.0:
         step = span / float(samples + 1)
@@ -582,7 +581,7 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
     band_used = band
     band_auto = None
     if band in (None, "auto"):
-        band_auto = detect_subtitle_band(media, samples=10, start=start, end=end, engine=engine)
+        band_auto = detect_subtitle_band(media, samples=8, start=start, end=end, engine=engine)
         if band_auto is None:
             # 下半截、两种分辨率、最多 16 个采样点都没找到字：判为无字幕。
             # 不再拿默认带白跑一遍逐帧识别。
