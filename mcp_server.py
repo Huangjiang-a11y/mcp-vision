@@ -520,8 +520,8 @@ TOOLS = [
          "seconds": {"type": "number", "description": "window length in seconds, default 10, max 15"},
          "view": {"type": "string",
                   "enum": ["all", "level", "spectrum", "spectrogram", "peak"],
-                  "description": ("level = dB over time; spectrum = FFT, log freq 10-24000; "
-                                  "spectrogram = time-frequency map, log freq 20-24000; "
+                  "description": ("level = dB over time; spectrum = FFT, log freq 10-Nyquist; "
+                                  "spectrogram = time-frequency map, log freq 20-Nyquist; "
                                   "peak = peak-frequency track; default all")}}}},
 
     {"name": "subtitles",

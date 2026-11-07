@@ -227,15 +227,31 @@ def plot_level(d, start, end, tag="", w=1024, h=512):
     return c
 
 
-def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512):
+def _nyq(d, override=None):
+    """横轴右端：优先用调用方传的（由采样率算出的 Nyquist），缺省退回 24k。"""
+    if override and override > 0:
+        return float(override)
+    sr = float((d or {}).get("sample_rate") or 0)
+    return sr / 2.0 if sr > 0 else 24000.0
+
+
+def _freq_ticks(fmax):
+    base = [f for f in (50, 100, 500, 1000, 5000, 10000, 24000) if f < fmax * 0.98]
+    ticks = list(base)
+    if not ticks or fmax > ticks[-1] * 1.05:
+        ticks.append(fmax)
+    return ticks
+
+
+def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512, fmax=None):
     sp = d["spectrum"]
     f = np.asarray(sp["freqs"], dtype=float)
     m = np.asarray(sp["mag_db"], dtype=float)
     c = Canvas(w, h)
     x0, y0, x1, y1 = 96, 92, w - 22, h - 40
-    # 横轴对数，尾端固定 24000
+    # 横轴对数，尾端取实际 Nyquist（44.1k 素材是 22050）
     fmin = 10.0
-    fmax = 24000.0
+    fmax = _nyq(d, fmax)
     dmin = max(-60.0, float(np.min(m)))   # 画到 0.001 就够，谷底不再拉低坐标
     if dmin > -30:
         dmin = -30.0
@@ -251,7 +267,7 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512):
         c.hline(yy, x0, x1, GRID)
         lab = ("%g" % amp)
         c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
-    for fr in (50, 100, 500, 1000, 5000, 10000, 24000):
+    for fr in _freq_ticks(fmax):
         xx = X(fr)
         c.vline(xx, y0, y1, GRID)
         c.ctext(xx, y1 + 12, "%g" % fr, DIM, 2)
@@ -313,8 +329,8 @@ def _time_ticks(t0, t1, want=5):
     return ticks
 
 
-def plot_spectrogram(d, tag="", w=1024, h=512):
-    """时频图：横轴对数频率 20..24000，纵轴时间（向上）。"""
+def plot_spectrogram(d, tag="", w=1024, h=512, fmax=None):
+    """时频图：横轴对数频率 20..Nyquist，纵轴时间（向上）。"""
     sg = d["spectrogram"]
     spec = np.asarray(sg["spec_db"], dtype=float)   # (nfreq, ntime)
     times = np.asarray(sg["times"], dtype=float)
@@ -334,7 +350,8 @@ def plot_spectrogram(d, tag="", w=1024, h=512):
     nt, nf = spec.shape[1], spec.shape[0]
     if nt < 2:
         spec = np.repeat(spec, 2, axis=1); nt = 2
-    fmin, fmax = 20.0, 24000.0            # 尾端固定 24k，采样率不够的部分留黑
+    fmin = 20.0
+    fmax = max(_nyq(d, fmax), fmin * 2)    # 尾端就是 Nyquist，不再留黑带
     def X(fr): return x0 + math.log10(max(fr, fmin) / fmin) / math.log10(fmax / fmin) * (x1 - x0)
     fcols = fmin * (fmax / fmin) ** (np.arange(W) / float(max(1, W - 1)))
     yt = np.linspace(nt - 1, 0, H).astype(int)      # 时间向上
@@ -353,9 +370,7 @@ def plot_spectrogram(d, tag="", w=1024, h=512):
     c.text(x0, 12, _tag_title(tag, "SPECTROGRAM"), TXT, 3)
     c.text(x1 - c.tw("FREQ (HZ, LOG)", 2), 14, "FREQ (HZ, LOG)", DIM, 2)
     c.vtext(8, y0 + 8, "TIME (S)", DIM, 2)
-    ticks = [f for f in (50, 100, 500, 1000, 5000, 10000, 24000) if f < fmax]
-    if not ticks or fmax > ticks[-1] * 1.05:
-        ticks.append(fmax)
+    ticks = _freq_ticks(fmax)
     for fr in ticks:
         xx = X(fr)
         c.vline(xx, y0, y1, (0, 0, 0), 1)
@@ -431,6 +446,8 @@ def render(d, views, out_dir, stem="audio"):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     W, H = 1024, 1024
+    sr = float(d.get("sample_rate") or 0)
+    nyq = sr / 2.0 if sr > 0 else 24000.0
     tl = "L (MONO)" if d.get("mono") else "L"
     tr = "R (MONO)" if d.get("mono") else "R"
     for view in views:
@@ -438,11 +455,11 @@ def render(d, views, out_dir, stem="audio"):
             top = plot_level(d["left"], d["_start"], d["_end"], tag=tl)
             bot = plot_level(d["right"], d["_start"], d["_end"], tag=tr)
         elif view == "spectrum":
-            top = plot_spectrum(d["left"], tag=tl, resolution_hz=d["resolution_hz"])
-            bot = plot_spectrum(d["right"], tag=tr, resolution_hz=d["resolution_hz"])
+            top = plot_spectrum(d["left"], tag=tl, resolution_hz=d["resolution_hz"], fmax=nyq)
+            bot = plot_spectrum(d["right"], tag=tr, resolution_hz=d["resolution_hz"], fmax=nyq)
         elif view == "spectrogram":
-            top = plot_spectrogram(d["left"], tag=tl)
-            bot = plot_spectrogram(d["right"], tag=tr)
+            top = plot_spectrogram(d["left"], tag=tl, fmax=nyq)
+            bot = plot_spectrogram(d["right"], tag=tr, fmax=nyq)
         elif view == "peak":
             top = plot_peak(d["left"], tag=tl)
             bot = plot_peak(d["right"], tag=tr)
