@@ -305,32 +305,6 @@ def tool_audio(a):
     return (_dump(res), [])
 
 
-def tool_ocr(a):
-    """单图 OCR。没有 image 就直说，不再偷偷去 OCR 最近打开的视频。"""
-    cwd = str(Path(__file__).resolve().parent)
-    try:
-        import ocr as ocrmod
-    except Exception as e:
-        return ("OCR 不可用: %s（先 pkg install python-onnxruntime，并把 PP-OCRv4 放进 models/，见 INSTALL.md）" % e, [])
-    src = a.get("image")
-    if not src:
-        return ("ocr 需要 image（图片路径）。要读视频里的字幕/文字，用 action=band，"
-                "或者先 video action=frame 取一帧再喂进来", [])
-    p = Path(str(src))
-    if not p.is_absolute():
-        p = (Path(cwd) / p).resolve()
-    if not p.exists():
-        return ("找不到图片: %s" % p, [])
-    try:
-        rgb = ocrmod.load_rgb(p)
-        o = ocrmod.get_ppocr()
-        res = o.ocr_image(rgb)
-    except Exception as e:
-        return ("OCR 失败: %s" % e, [])
-    return (json.dumps({"image": str(p), "providers": o.providers,
-                        "count": len(res), "results": res}, ensure_ascii=False), [])
-
-
 def _to_srt(segs):
     """字幕段 → SRT。时间轴只有秒级精度，毫秒位一律补 000，不伪造精度。"""
     def to_sec(v):
@@ -411,7 +385,7 @@ def tool_subtitles(a):
     if not segs and band == "auto":
         # 自动检测只搜下方 40%；一个字的没有时，多半是字幕根本不在下面，别让人以为这片子没字幕
         out["hint"] = ("自动检测在下方 40%% 没找到字幕（band=%s）。"
-                       "字幕可能在上方或画面中部：先 video action=frame 看一眼位置，"
+                       "字幕可能在上方或画面中部：先用 video（quantity=1）看一眼位置，"
                        "再用 band=\"y0,y1\" 手动指定，例如 \"0.10,0.27\"。" % (res.get("band"),))
     if window_note:
         out["note"] = window_note
@@ -489,14 +463,11 @@ TOOLS = [
 
     {"name": "subtitles",
      "description": (
-         "Read on-screen text. ocr reads one image; band OCRs a window frame by frame and folds the "
-         "result into cues (from/to/text/conf). Pass band=\"0.10,0.27\" to pin the band manually."
+         "Identify subtitles: OCR a subtitle band window frame by frame and fold the frames into "
+         "cues (from/to/text/conf). Pass band=\"0.10,0.27\" to pin the band manually."
      ),
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["ocr", "band"],
-                    "description": "ocr = one image (default); band = subtitle cues for a window"},
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
-         "image": {"type": "string", "description": "ocr: path to the image"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number", "description": "band: window length in seconds; takes precedence over end_seconds"},
          "end_seconds": {"type": "number", "description": "band: window end in seconds (legacy; prefer seconds)"},
@@ -753,12 +724,8 @@ def dispatch_audio(a):
 
 
 def dispatch_subtitles(a):
-    act = (a.get("action") or "band").lower()
-    if act == "ocr":
-        return tool_ocr(a)
-    if act == "band":
-        return tool_subtitles(a)
-    return ("unknown action: %s" % act, [])
+    # 单图 OCR 已删除：本工具只做一件事，读窗口里的字幕。
+    return tool_subtitles(a)
 
 
 HANDLERS = {
