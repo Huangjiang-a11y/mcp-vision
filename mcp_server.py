@@ -91,12 +91,12 @@ def _dump(obj, limit=0):
 MAX_ANALYZE_SECONDS = 900.0   # 单次分析硬上限 15 分钟
 
 
-def _window(a, asset, default_span=None):
+def _window(a, asset, default_span=None, allow_end=False):
     """统一的取窗：先定时间戳 start_seconds，再定看多久 seconds。
 
     - start_seconds：从哪开始（默认 0）
-    - seconds / analyze_seconds：看多久；不给则看满 default_span 或上限
-    - end_seconds：仍兼容，等价于 sec = end - start
+    - seconds：看多久；不给则看满 default_span 或上限
+    - end_seconds：只有 schema 里声明了它的工具才认（audio / subtitles）；video 传了也不生效
     - max_seconds：单次上限，默认 900（15 分钟）
     返回 (start, end, note)，note 非空表示被夹过。
     """
@@ -109,9 +109,7 @@ def _window(a, asset, default_span=None):
     span = None
     if a.get("seconds") is not None:
         span = float(a["seconds"])
-    elif a.get("analyze_seconds") is not None:
-        span = float(a["analyze_seconds"])
-    elif a.get("end_seconds") is not None:
+    elif allow_end and a.get("end_seconds") is not None:
         span = max(0.0, float(a["end_seconds"]) - start)
     elif default_span:
         span = float(default_span)
@@ -225,7 +223,7 @@ def _QUALITY_MAP(q):
 
 
 def tool_open(a):
-    src = (a.get("source") or a.get("file") or "").strip()
+    src = (a.get("source") or "").strip()
     if not src:
         return "要给 source（视频路径或链接）", []
     # 本地文件用 file:// 协议
@@ -234,7 +232,7 @@ def tool_open(a):
         if not src.startswith("/"):
             src = "/" + src
     src = _normalize_source(src)
-    cwd = Path(a.get("cwd") or (Path(__file__).resolve().parent))
+    cwd = Path(__file__).resolve().parent
     # 本地文件
     pth = Path(src)
     if not pth.is_absolute():
@@ -297,7 +295,7 @@ def tool_audio(a):
     asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return _missing(a), []
-    start, end, note = _window(a, asset, default_span=30.0)
+    start, end, note = _window(a, asset, default_span=30.0, allow_end=True)
     res = engine.analyze_audio(asset["media_path"], start, end, out_dir=asset.get("audio_dir"))
     if note:
         res = dict(res, note=note)
@@ -305,49 +303,29 @@ def tool_audio(a):
 
 
 def tool_ocr(a):
+    """单图 OCR。没有 image 就直说，不再偷偷去 OCR 最近打开的视频。"""
     cwd = str(Path(__file__).resolve().parent)
     try:
         import ocr as ocrmod
     except Exception as e:
         return ("OCR 不可用: %s（先 pkg install python-onnxruntime，并把 PP-OCRv4 放进 models/，见 INSTALL.md）" % e, [])
-    src = a.get("image") or a.get("path")
-    if src:
-        p = Path(src)
-        if not p.is_absolute():
-            p = (Path(cwd) / p).resolve()
-        if not p.exists():
-            return ("找不到图片: %s" % p, [])
-        try:
-            rgb = ocrmod.load_rgb(p)
-            o = ocrmod.get_ppocr()
-            res = o.ocr_image(rgb)
-        except Exception as e:
-            return ("OCR 失败: %s" % e, [])
-        return (json.dumps({"image": str(p), "providers": o.providers, "count": len(res), "results": res}), [])
-    asset = engine.load_latest(cwd)
-    if asset is None:
-        return ("先 open 一个视频，或给 image 参数", [])
-    media = asset["media_path"]
-    if a.get("timestamps"):
-        ts = [float(x) for x in a["timestamps"]]
-    else:
-        start = float(a.get("start_seconds", 0))
-        end = float(a.get("end_seconds", min(start + 30, asset["duration"])))
-        ts = engine.sample_times(start, end, max(1, int(a.get("frames", 5))))
+    src = a.get("image")
+    if not src:
+        return ("ocr 需要 image（图片路径）。要读视频里的字幕/文字，用 action=band，"
+                "或者先 video action=frame 取一帧再喂进来", [])
+    p = Path(str(src))
+    if not p.is_absolute():
+        p = (Path(cwd) / p).resolve()
+    if not p.exists():
+        return ("找不到图片: %s" % p, [])
     try:
+        rgb = ocrmod.load_rgb(p)
         o = ocrmod.get_ppocr()
+        res = o.ocr_image(rgb)
     except Exception as e:
-        return ("OCR 不可用: %s" % e, [])
-    frames = engine.extract_frames(media, ts, width=int(a.get("width") or 1280), duration=asset["duration"])
-    out = []
-    for f in frames:
-        try:
-            res = o.ocr_image(ocrmod.load_rgb(f["path"]))
-        except Exception:
-            res = []
-        out.append({"seconds": f["seconds"], "timestamp": f["timestamp"],
-                    "lines": [r["text"] for r in res]})
-    return (_dump({"frames": len(out), "providers": o.providers, "results": out}), [])
+        return ("OCR 失败: %s" % e, [])
+    return (json.dumps({"image": str(p), "providers": o.providers,
+                        "count": len(res), "results": res}, ensure_ascii=False), [])
 
 
 def _to_srt(segs):
@@ -408,7 +386,7 @@ def tool_subtitles(a):
     if asset is None:
         return (_missing(a), [])
     media = asset["media_path"]
-    start, end, window_note = _window(a, asset)
+    start, end, window_note = _window(a, asset, allow_end=True)
     try:
         band = _parse_band(a.get("band", "auto"))
     except ValueError as e:
@@ -435,13 +413,13 @@ def tool_subtitles(a):
     if window_note:
         out["note"] = window_note
     fmt = str(a.get("format") or "json").lower()
-    if fmt in ("srt", "subrip") or a.get("save_srt"):
+    if fmt == "srt":
         srt = _to_srt(segs)
         dest = Path(a.get("save_to") or (Path(asset["video_dir"]).parent / "out" / "subtitles.srt"))
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(srt, encoding="utf-8")
         out["srt_path"] = str(dest)
-        out["srt"] = srt if fmt in ("srt", "subrip") else None
+        out["srt"] = srt
     return (_dump(out), [])
 
 
@@ -487,18 +465,17 @@ TOOLS = [
 
     {"name": "audio",
      "description": (
-         "Listen to the audio. levels: loudness profile. extract: export a clip. "
+         "Listen to the audio. levels: loudness profile. "
          "transcribe: speech to text (silero-vad + SenseVoice)."
      ),
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["levels", "extract", "transcribe"],
-                    "description": "levels = loudness profile (default); extract = export a clip; transcribe = speech to text"},
+         "action": {"type": "string", "enum": ["levels", "transcribe"],
+                    "description": "levels = loudness profile (default); transcribe = speech to text"},
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "start_seconds": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number", "description": "window length in seconds; takes precedence over end_seconds"},
          "end_seconds": {"type": "number", "description": "window end in seconds (legacy; prefer seconds)"},
          "max_seconds": {"type": "number", "description": "window cap in seconds, default 900"},
-         "format": {"type": "string", "description": "extract: output format, e.g. wav / mp3"},
          "language": {"type": "string", "description": "transcribe: zh / en / ja / ko, default zh"},
          "max_speech": {"type": "number", "description": "transcribe: longest segment in seconds, default 20"}}}},
 
@@ -659,7 +636,7 @@ def tool_frame(a):
     asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return (_missing(a), [])
-    t = a.get("time", a.get("t"))
+    t = a.get("time")
     if t is None:
         return ("frame 需要 time（秒）", [])
     t = float(t)
@@ -720,7 +697,7 @@ def tool_transcribe(a):
         return (json.dumps({"ok": False,
                             "error": "start_seconds=%.1f 超出时长 %.1f" % (float(a["start_seconds"]), dur_total)},
                            ensure_ascii=False), [])
-    start, end, window_note = _window(a, asset)
+    start, end, window_note = _window(a, asset, allow_end=True)
     language = str(a.get("language") or "zh")
     max_speech = float(a.get("max_speech") or 20)
     t0 = time.time()
@@ -746,11 +723,7 @@ def tool_transcribe(a):
 
 def dispatch_audio(a):
     act = (a.get("action") or "levels").lower()
-    # 不接 "analyze"：那个词在 video 里是整片抽帧，落到 audio 上却成了电平分析，
-    # 传错工具不会报错，只会拿到一份看起来正常的别的结果
     if act == "levels":
-        return tool_audio(a)
-    if act == "extract":
         return tool_audio(a)
     if act == "transcribe":
         return tool_transcribe(a)
