@@ -446,7 +446,7 @@ def _subs_stt(a):
         return (_dump({"ok": False, "mode": "stt", "error": err}), [])
     start, end, window_note = _window(a, asset)
     try:
-        segs, dur = engine.transcribe(asset["media_path"], start, end, language="auto")
+        segs, _dur = engine.transcribe(asset["media_path"], start, end, language="auto")
     except RuntimeError as e:
         return (_dump({"ok": False, "mode": "stt", "error": str(e)}), [])
     cues = []
@@ -457,10 +457,10 @@ def _subs_stt(a):
             if x.get(k):
                 c[k] = x[k]
         cues.append(c)
-    out = {"mode": "stt", "engine": "silero-vad + sensevoice",
-           "range": [round(start, 2), round(start + dur, 2)],
-           "segment_count": len(cues), "segments": cues,
-           "text": "".join(x["text"] for x in cues)}
+    # 不写 engine（stt 只有一种引擎，属已知事实，见 schema）
+    # 不写 range（就是调用方传的 time/seconds；真被夹了，note 会说）
+    # 不写 text（等于把 segments 的文本再拼一遍，实测占响应 13%）
+    out = {"mode": "stt", "segment_count": len(cues), "segments": cues}
     # 汇总：一眼看出这首歌有没有 BGM、几处在笑/鼓掌、语种混没混。
     agg = {}
     for k in ("emotion", "event", "lang"):
@@ -518,8 +518,9 @@ def _subs_ocr(a):
     except Exception as e:
         return ("字幕提取失败: %s" % e, [])
     segs = ocrmod.fold_segments(res["results"], step=1.0)
+    # band_auto 恒等于 band（自动检测时两者同源，显式指定时它必为 None），零额外信息
     out = {"mode": "ocr", "frames": res["frames"], "ocr_runs": res["ocr_runs"],
-           "skipped": res["skipped"], "band": res.get("band"), "band_auto": res.get("band_auto"),
+           "skipped": res["skipped"], "band": res.get("band"),
            "band_px": res["band_px"], "segment_count": len(segs), "segments": segs}
     if res.get("page_like"):
         # 幻灯片 / 截图 / 作文纸：一屏几十行字，各自成行，没有「字幕带」这回事。

@@ -102,6 +102,19 @@ check("OCR 不重复声明字段缺失", "acoustic_fields" in src_ocr, False)
 check("STT 不重复声明字段存在", "acoustic_fields" in src_stt, False)
 check("STT 确实带 emotion", '"emotion"' in src_stt, True)
 
+# --- 响应里不许回显已知事实 ---
+# schema 是「调用前读一次」，响应是「每次调用都读」。
+# 已知不变的东西进前者；把已知事实塞回响应，等于每次付费买一遍废话。
+for bad, why in [
+    ('"engine"', "stt 只有一种引擎，属 schema"),
+    ('"range"', "就是调用方传的 time/seconds；被夹了 note 会说"),
+    ('"text": "".join', "等于把 segments 再拼一遍"),
+    ('band_auto', "恒等于 band，零额外信息"),
+]:
+    check("STT 不回显 %s" % bad, bad in src_stt, False)
+# 查 JSON 键而不是裸词——注释里提到字段名是合法的，写进输出才是问题
+check("OCR 不输出 band_auto 键", '"band_auto":' in src_ocr, False)
+
 print("\nRESULT", "ALL OK" if not fails else "HAS FAIL (%d)" % len(fails))
 for f in fails:
     print(" -", f)
