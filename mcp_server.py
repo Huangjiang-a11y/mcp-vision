@@ -202,11 +202,15 @@ def tool_open(a):
     max_h = _QUALITY_MAP(a.get("quality"))
     # yt-dlp 的 format 表达式里没有 min()，竖屏也不能只看 height（那是长边）。
     # 所以不写死过滤条件，改成 bv*+ba 全拿，再用 format_sort 把分辨率往上限上靠。
+    # 编码优先 h264：同分辨率下 CPU 软解最快（720p 实测 0.12 秒/帧，hevc 0.20，av1 0.27）。
     fmt = "bv*+ba/b"
+    _sort = ["vcodec:h264"]
+    if max_h:
+        _sort.insert(0, "res:%d" % max_h)
     ydl_opts = {
         "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
         "format": fmt,
-        "format_sort": ["res:%d" % max_h] if max_h else None,
+        "format_sort": _sort,
         "merge_output_format": "mp4",
         "quiet": True, "no_warnings": True, "noplaylist": True,
         "retries": 3, "fragment_retries": 3,
@@ -391,7 +395,7 @@ def tool_subtitles(a):
             media, start, end,
             step=float(a.get("step", 1.0)),
             band=band if band == "auto" else (float(band[0]), float(band[1])),
-            width=int(a.get("width") or 960),
+            width=int(a["width"]) if a.get("width") else None,
             skip_th=float(a.get("skip_th", 1.0)),
             text_th=float(a.get("text_th", 220)),
             engine=ocrmod.get_engine())
@@ -479,7 +483,7 @@ TOOLS = [
          "band": {"description": "字幕带高度比例，默认 'auto'"},
          "skip_th": {"type": "number", "description": "跳帧阈值（带内文字块变化百分比），默认 1.0；设 -1 关闭跳帧"},
          "text_th": {"type": "number", "description": "文字高亮阈值，默认 220"},
-         "width": {"type": "integer"},
+         "width": {"type": "integer", "description": "缩放宽度；不传按源分辨率，裁完直接输出不缩放"},
          }}},
 ]
 
