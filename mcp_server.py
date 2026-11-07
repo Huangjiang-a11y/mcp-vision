@@ -119,7 +119,10 @@ def _window(a, asset, default_span=None, allow_end=False):
     notes = []
     if span > cap:
         span = cap
-        notes.append("单次上限 %.0f 秒（max_seconds 可调）" % cap)
+        if a.get("max_seconds") is not None:
+            notes.append("单次上限 %.0f 秒（max_seconds 可调）" % cap)
+        else:
+            notes.append("单次上限 %.0f 秒" % cap)
     end = start + span
     if dur > 0 and end > dur:
         end = dur
@@ -455,17 +458,16 @@ TOOLS = [
          "\n"
          "The page has no timestamps burned in; cell order matches timeline order 1:1. `quality` is an "
          "area cap that only scales down: it caps the whole "
-         "page for a sheet and the cropped area for a single frame. The window is capped by `max_seconds` "
-         "(900) and clamped to the clip, with a note in the reply when that happens. Outputs land in "
+         "page for a sheet and the cropped area for a single frame. The window is capped at 900 seconds "
+         "and clamped to the clip, with a note in the reply when that happens. Outputs land in "
          "workspace/<video>/video/ and repeat calls reuse them."
      ),     "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number",
-                     "description": "window length; default: to the clip end, capped by max_seconds"},
+                     "description": "window length; default: to the clip end, capped at 900"},
          "quantity": {"type": "integer",
                       "description": "frames to sample, default 15, max 30; 1 returns a single full-detail frame instead of a page"},
-         "max_seconds": {"type": "number", "description": "window cap in seconds, default 900"},
          "crop": {"type": "string",
                   "description": "crop before scaling, WxH+X+Y (e.g. 720x300+0+880); applies to every cell"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],

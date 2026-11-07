@@ -86,7 +86,7 @@ python3 ocr.py out/ocr_test.png      # 单图
 | `time` | 从哪个时间戳开始，默认 0（frame 里是第一帧的时刻） |
 | `seconds` | 看多久；不传则看到上限或结尾 |
 | `end_seconds` | 兼容用，等价于 `seconds = end - start` |
-| `max_seconds` | 单次上限，默认 **900 秒（15 分钟）** |
+| `max_seconds` | 单次上限，默认 **900 秒（15 分钟）**（audio / subtitles 用；video 用 `seconds` 自身限制 900） |
 
 超过上限会被夹住，并在返回里带 `note` 说明夹到了哪里。长视频靠 `time` 翻页，
 不会一次跑到底。
