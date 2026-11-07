@@ -227,6 +227,20 @@ def plot_level(d, start, end, tag="", w=1024, h=512):
     return c
 
 
+# 颜色/纵轴统一按 FFT 幅度相对值：1e-5 .. 10（-100 .. +20 dBFS）
+AMP_MIN, AMP_MAX = 1e-5, 10.0
+_AMP_TICKS = (10.0, 1.0, 0.1, 0.01, 0.001, 0.0001)
+
+
+def _amp_ticks():
+    return [(a, ("%g" % a)) for a in _AMP_TICKS if AMP_MIN <= a <= AMP_MAX]
+
+
+def _amp_frac(a):
+    """幅度 -> 0..1 的归一化位置（对数）。"""
+    return (math.log10(a) - math.log10(AMP_MIN)) / (math.log10(AMP_MAX) - math.log10(AMP_MIN))
+
+
 def _nyq(d, override=None):
     """横轴右端：优先用调用方传的（由采样率算出的 Nyquist），缺省退回 24k。"""
     if override and override > 0:
@@ -252,20 +266,20 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512, fmax=None):
     # 横轴对数，尾端取实际 Nyquist（44.1k 素材是 22050）
     fmin = 10.0
     fmax = _nyq(d, fmax)
-    dmin = max(-60.0, float(np.min(m)))   # 画到 0.001 就够，谷底不再拉低坐标
-    if dmin > -30:
-        dmin = -30.0
+    # 顶格固定到 1（满幅正弦），只有素材真的超过 1 才往上放一档
+    pk = 10.0 ** (float(np.max(m)) / 20.0) if m.size else 0.0
+    top = max(1.0, 10.0 ** math.ceil(math.log10(max(pk, 1e-9))))
+    dmin = 20.0 * math.log10(AMP_MIN)
+    dmax = 20.0 * math.log10(min(top, AMP_MAX))
     def X(fr): return x0 + math.log10(max(fr, fmin) / fmin) / math.log10(fmax / fmin) * (x1 - x0)
-    def Y(db):
-        return y1 - (min(0.0, max(dmin, db)) - dmin) / (0.0 - dmin) * (y1 - y0)
-    # 纵轴按「相对幅值」标，与参考图一致（对数刻度：1 / 0.1 / 0.01 / 0.001）
-    for amp in (1.0, 0.1, 0.01, 0.001, 0.0001):
+    def Y(db): return y1 - (min(dmax, max(dmin, db)) - dmin) / (dmax - dmin) * (y1 - y0)
+    # 纵轴按绝对 FFT 幅度标（满幅正弦 = 1），跨窗口可比
+    for amp, lab in _amp_ticks():
         db = 20.0 * math.log10(amp)
-        if db < dmin:
+        if db > dmax + 1e-6:
             continue
         yy = Y(db)
         c.hline(yy, x0, x1, GRID)
-        lab = ("%g" % amp)
         c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
     for fr in _freq_ticks(fmax):
         xx = X(fr)
@@ -342,11 +356,9 @@ def plot_spectrogram(d, tag="", w=1024, h=512, fmax=None):
     ramp = np.repeat(np.linspace(0, 1, x1 - x0)[None, :], bh, axis=0)
     c.blit(_cmap(ramp), x0, by)
     c.rect(x0, by, x1, by + bh, AXIS)
-    # 色标标 FFT 幅度相对值（1 / 0.1 / 0.01 / 0.001），不写 dB
-    for amp, lab in ((1.0, "1"), (0.1, "0.1"), (0.01, "0.01"), (0.001, "0.001")):
-        frac = (70.0 + 20.0 * math.log10(amp)) / 70.0
-        if not 0.0 <= frac <= 1.0:
-            continue
+    # 色标标 FFT 幅度相对值（满幅正弦 = 1），跨窗口可比
+    for amp, lab in _amp_ticks():
+        frac = _amp_frac(amp)
         xx = x0 + frac * (x1 - x0)
         c.vline(xx, by + 1, by + bh - 2, GRID, 1)      # 刻度刺
         if frac > 0.97:
@@ -371,8 +383,10 @@ def plot_spectrogram(d, tag="", w=1024, h=512, fmax=None):
     src = spec[:, yt]
     for j in range(H):
         mat[j, :] = np.interp(lfq, lf, src[:, j])
-    mat[:, fcols > freqs[-1]] = -70.0               # 超过 Nyquist 的部分没有数据
-    v = np.clip((mat + 70.0) / 70.0, 0, 1)
+    mat[:, fcols > freqs[-1]] = 20.0 * math.log10(AMP_MIN)   # 超过 Nyquist 的部分没有数据
+    dmin = 20.0 * math.log10(AMP_MIN)
+    dmax = 20.0 * math.log10(AMP_MAX)
+    v = np.clip((mat - dmin) / (dmax - dmin), 0, 1)
     c.blit(_cmap(v), x0, y0)
     c.rect(x0, y0, x1, y1, AXIS)
     title = _tag_title(tag, "SPECTROGRAM")

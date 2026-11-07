@@ -285,9 +285,11 @@ def _channel_metrics(x, sr, start, size):
     k, _ = _peak_bin(spec)
     peak_hz = float(k * sr / seg.size)
     note, cents = freq_to_note(peak_hz)
-    mag_db = 20.0 * np.log10(np.maximum(spec, 1e-9))
-    if mag_db.size:
-        mag_db = mag_db - float(np.max(mag_db))
+    # 幅度谱取绝对值：满幅正弦 = 1（2|X|/sum(win)），不再按窗口峰值归一化，
+    # 这样不同时间窗之间能横向比较，超过 1 也不奇怪（方波基波就有 1.27）
+    wsum = float(np.sum(win))
+    mag = 2.0 * spec / wsum
+    mag_db = 20.0 * np.log10(np.maximum(mag, 1e-9))
 
     # 时频图：STFT
     # 87.5% 重叠：时频图在 1024 宽的画布上放大好几倍，
@@ -300,9 +302,8 @@ def _channel_metrics(x, sr, start, size):
         if chunk.size < size:
             chunk = np.pad(chunk, (0, size - chunk.size))
         cols[:, i] = np.abs(np.fft.rfft(chunk * win))
-    smax = float(np.max(cols)) if cols.size else 0.0
-    floor = 20.0 * math.log10(max(smax, 1e-9))
-    spec_db = 20.0 * np.log10(np.maximum(cols, 1e-9)) - floor
+    amp = 2.0 * cols / wsum
+    spec_db = 20.0 * np.log10(np.maximum(amp, 1e-9))   # dBFS，满幅正弦 = 0dB
     st = float(start) + np.arange(ncol) * (hop2 / float(sr))
     # 峰值轨迹：只在有说话的帧上取峰，静音段不跟噪底跑
     frame_db = 20.0 * np.log10(np.maximum(np.sqrt(np.mean(cols.astype(np.float64) ** 2, axis=0)), 1e-9))
