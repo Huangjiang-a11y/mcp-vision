@@ -445,9 +445,19 @@ TOOLS = [
 
     {"name": "video",
      "description": (
-         "Look at the picture. analyze samples the clip into a near-square grid page "
-         "(timeline + sheet path, attached as an image by default). "
-         "frame grabs one frame, optionally cropped, for reading small text."
+         "Look at the picture, in two layers.\n"
+         "analyze: samples `quantity` frames evenly across the window, tiles them into a grid page whose "
+         "aspect stays close to the source, and auto-picks cols x rows so the page stays near-square "
+         "(up to 3 empty cells, so the returned count can exceed `quantity`). Returns title, duration, "
+         "width/height, frameSize, frames, timeline (t + jpg path per frame), sheet (png), sheetJpg, "
+         "attached, videoDir, and note when the window was clamped. attach=true (default) sends the page "
+         "as an image; false returns paths only.\n"
+         "frame: one frame at `time`. crop (WxH+X+Y) runs before scaling, so the pixel cap applies to the "
+         "cropped size and nothing is distorted. Returns t, save, size, and the image itself.\n"
+         "Window: start_seconds + seconds, capped by max_seconds (900) and clamped to the clip with a note. "
+         "quality is a pixel cap (area), not a resolution: it applies to the whole page for analyze and to "
+         "the cropped frame for frame, and scales down only. Artifacts go to workspace/<video>/video/ and "
+         "repeat calls reuse them."
      ),
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["analyze", "frame"],
