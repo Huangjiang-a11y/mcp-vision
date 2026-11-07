@@ -2,7 +2,8 @@
 依赖：onnxruntime + numpy + ffmpeg（读图）。不依赖 OpenCV / Pillow / pyclipper。
 模型：路径由 MVV_OCR_DET / MVV_OCR_REC / MVV_OCR_KEYS 指定（默认 models/ 下的 PP-OCRv4）
 """
-import os, sys, json, subprocess, math
+from collections import Counter
+import os, re, sys, json, subprocess, math
 from pathlib import Path
 import threading
 import numpy as np
@@ -342,12 +343,25 @@ def _stream_frames(media, start=0.0, end=None, step=1.0, width=None, crop=None):
             proc.kill()
 
 
+def _norm_text(t):
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]", "", (t or "").lower())
+
+
+def _is_static(c):
+    """同一簇里出现最多的那串字占比 ≥60%，且至少出现 2 次 → 判为静态标。"""
+    txts = c.get("texts") or []
+    if c.get("count", 0) < 2 or not txts:
+        return False
+    top = Counter(_norm_text(t) for t in txts).most_common(1)[0][1]
+    return top >= 0.6 * c["count"]
+
+
 def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
-                         lower_from=0.6667, pad=0.02, engine=None):
+                         lower_from=0.5, pad=0.02, engine=None):
     """利用少量采样点按 OCR 框坐标聚类，秒级自动锁定字幕带 (y0_ratio, y1_ratio)。
 
     - samples 默认 10 点；短窗口一次解码取帧，长窗口逐点 seek
-    - 先只搜画面底部三分之一（> lower_from≈2/3）；那里没字再放宽到下半截
+    - 只搜画面下半截（> lower_from=0.5）：更上面的区域是水印和画面主体，不可能是字幕
     - 只看开头 3 分钟：3 分钟还没字幕，基本就是没有字幕轨
     """
     if engine is None:
@@ -417,10 +431,6 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
                           (r.get("text") or "").strip()))
 
     if not boxes:
-        # 退路一：底部三分之一没字 → 字幕位置更靠上，放宽到下半截
-        if lower_from > 0.5:
-            return detect_subtitle_band(media, samples=max(samples, 10), start=start, end=end,
-                                        width=width, lower_from=0.45, pad=pad, engine=engine)
         # 退路二：加密采样点（短窗口里字幕可能恰好不在前几个时刻）
         if samples < 16:
             return detect_subtitle_band(media, samples=16, start=start, end=end, width=width,
@@ -442,7 +452,7 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
                 break
         if hit is None:
             clusters.append({"y0": y0, "y1": y1, "count": 1, "hs": [y1 - y0], "ws": [wr],
-                             "texts": {txt} if txt else set()})
+                             "texts": [txt] if txt else []})
         else:
             hit["y0"] = min(hit["y0"], y0)
             hit["y1"] = max(hit["y1"], y1)
@@ -450,7 +460,7 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
             hit["hs"].append(y1 - y0)
             hit["ws"].append(wr)
             if txt:
-                hit["texts"].add(txt)
+                hit["texts"].append(txt)
 
     # 选簇不能只看框数：手写正文一行行的小字框永远比字幕多。
     # 字幕的特征是「字大、横向长、位置靠下」，所以按字号×宽度×位置打分。
@@ -459,11 +469,17 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
         w = max(c["ws"]) if c["ws"] else 0.0
         lower = max(0.0, c["y0"] - 0.5)     # 0.5 以下才算加分
         s = (h ** 1.5) * (0.3 + w) * (1.0 + lower * 3.0)
-        # 常驻水印/台标：多次采样文字一字不变，判为静态标，不参与竞争
-        if c["count"] >= 3 and len(c.get("texts") or ()) <= 1:
+        # 常驻水印/台标：同一位置反复出现同一段字。字幕每句都变，水印不变。
+        # 用「出现最多的那串字占比」判断，容忍 OCR 抖动（动画：长相思APP / App / 相思APT）
+        if _is_static(c):
             s *= 0.25
         return s
 
+    if os.environ.get("BAND_DEBUG"):
+        for c in sorted(clusters, key=score, reverse=True):
+            print("  簇 y=%.3f-%.3f n=%d h=%.3f w=%.2f 分=%.5f 文字=%s" % (
+                c["y0"], c["y1"], c["count"], sum(c["hs"])/len(c["hs"]),
+                max(c["ws"]) if c["ws"] else 0, score(c), list(c["texts"])[:3]))
     best = max(clusters, key=score)
     # 至少在 1 个采样点明确检出，且高宽比合理
     y0_band = max(0.0, best["y0"] - pad)
@@ -560,7 +576,13 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
     band_auto = None
     if band in (None, "auto"):
         band_auto = detect_subtitle_band(media, samples=10, start=start, end=end, engine=engine)
-        band_used = band_auto or (0.70, 1.0)
+        if band_auto is None:
+            # 下半截、两种分辨率、最多 16 个采样点都没找到字：判为无字幕。
+            # 不再拿默认带白跑一遍逐帧识别。
+            return {"frames": 0, "ocr_runs": 0, "skipped": 0, "band": None,
+                    "band_auto": None, "band_px": [0, 0], "step": float(step),
+                    "results": [], "note": "下半截未检出文字，判为无字幕"}
+        band_used = band_auto
     y0r, y1r = float(band_used[0]), float(band_used[1])
     out, prev, prev_res = [], None, None
     n_ocr = n_skip = 0
