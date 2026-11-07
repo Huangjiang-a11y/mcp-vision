@@ -200,12 +200,14 @@ def plot_level(d, start, end, tag="", w=1024, h=512):
     n = len(v) if len(v) > 1 else 2
     def X(i): return x0 + (x1 - x0) * (i / float(n - 1))
     def Y(db): return y1 - (db - lo) / (hi - lo) * (y1 - y0)
-    for k in range(5):
-        db = lo + (hi - lo) * k / 4.0
-        yy = Y(db)
+    dstep = _nice_step(hi - lo, 5)              # 刻度落在 1/2/2.5/5 的整倍数上
+    dv = math.ceil(lo / dstep - 1e-9) * dstep
+    while dv <= hi + 1e-9:
+        yy = Y(dv)
         c.hline(yy, x0, x1, GRID)
-        lab = _nice_db(round(db, 1))
+        lab = _nice_db(round(dv, 1))
         c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
+        dv += dstep
     for k in range(5):
         frac = k / 4.0
         tt = start + (end - start) * frac
@@ -254,7 +256,7 @@ def _amp_range(db):
 def _amp_ticks(lo, hi):
     """整十进位刻度：跨度大就抽稀，最多 5 条，跟应用一样只标几个。"""
     n = int(round((hi - lo) / 20.0))
-    step = 1 if n <= 3 else (2 if n <= 5 else 3)
+    step = 1 if n <= 3 else (2 if n <= 6 else 3)
     out = []
     for i in range(n + 1):
         if i % step:
@@ -332,7 +334,10 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512, fmax=None):
     if below.size:
         Wn = max(2, int(below[0]) + 1)
     Wn = max(2, min(Wn, W))
-    c.curve(np.arange(Wn) + x0, np.array([Y(v) for v in vals[:Wn]]), x0, y0, x1, y1)
+    # 注意 curve() 内部按 x0..x1 铺满整条轴、范围外沿用端点值，
+    # 所以右界要传实际画到的列，否则截断的那段会被一条平线补回去
+    c.curve(np.arange(Wn) + x0, np.array([Y(v) for v in vals[:Wn]]),
+            x0, y0, x0 + max(1, Wn - 1), y1)
     pk = sp["peak_freq_hz"]
     if pk > fmin:
         c.vline(X(pk), y0, y1, (255, 255, 255), 1)
@@ -476,8 +481,9 @@ def plot_peak(d, tag="", w=1024, h=512):
             frac = (tt - t0) / span
             pts.append((x0 + (x1 - x0) * min(1.0, max(0.0, frac)), Y(ff)))
         if len(pts) > 1:
-            c.curve(np.array([p[0] for p in pts]), np.array([p[1] for p in pts]),
-                    x0, y0, x1, y1, GRID, lw=1.0)
+            xs = np.array([p[0] for p in pts])
+            c.curve(xs, np.array([p[1] for p in pts]),
+                    x0, y0, float(xs.max()), y1, GRID, lw=1.0)
         for xx, yy in pts:
             for a2 in range(-2, 3):
                 for b2 in range(-2, 3):

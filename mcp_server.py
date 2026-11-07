@@ -324,6 +324,8 @@ def tool_audio(a):
                 "cents": c["spectrum"]["cents"],
             },
             "peak_freq_track": [[t, f] for t, f in track[::step]],
+            # 波形只报统计量，4096 个采样点留给画图
+            "wave": {k: c["wave"][k] for k in ("t0", "ms", "peak", "rms")},
         }
 
     summary = {
@@ -508,7 +510,8 @@ TOOLS = [
     {"name": "audio",
      "description": (
          "Measure a window's audio: a loudness curve in dB, an FFT spectrum with peak "
-         "frequency / musical note / cents, and a time-frequency map. Sample rate follows "
+         "frequency / musical note / cents, a time-frequency map, a peak-frequency track "
+         "and the raw waveform of the analysed frame. Sample rate follows "
          "the video's own audio track. L and R are always measured separately: every "
          "picture is 1024x1024, L on the upper half, R on the lower half, each half "
          "labelled and captioned with its own peak frequency / note / max level. "
@@ -520,9 +523,9 @@ TOOLS = [
          "seconds": {"type": "number", "description": "window length in seconds, default 10, max 15"},
          "view": {"type": "string",
                   "enum": ["all", "level", "spectrum", "spectrogram", "peak", "wave"],
-                  "description": ("level = dB over time; spectrum = FFT amplitude (full-scale sine = 1, auto range), log freq 10-Nyquist; "
+                  "description": ("level = dB over time (20ms RMS); spectrum = FFT amplitude (full-scale sine = 1, auto range), log freq 10-Nyquist; "
                                   "spectrogram = time-frequency map, log freq 20-Nyquist, colour = FFT amplitude, auto range (full-scale sine = 1, top rounded up to a decade); "
-                                  "peak = peak-frequency track; wave = raw waveform, ~40ms at the loudest point; default all")}}}},
+                                  "peak = peak-frequency track; wave = raw waveform of the analysed 4096-sample frame; default all")}}}},
 
     {"name": "subtitles",
      "description": (
