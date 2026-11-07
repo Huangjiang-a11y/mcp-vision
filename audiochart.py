@@ -229,43 +229,40 @@ def plot_level(d, start, end, tag="", w=1024, h=512):
 
 # 色标/纵轴按「相对值」自动伸缩：顶端恒为 1（本窗口最大值），
 # 底端退到整十档，跟那个应用一样按数据自己找范围。
-AMP_FLOOR_DECADES = 4          # 最多往下退 4 档（80dB）；再宽整张图就糊成一片
+AMP_MIN_DECADES, AMP_MAX_DECADES = 3, 6     # 色带往下 3~6 档（60~120dB）
 
 
 def _amp_range(db):
-    """绝对 dB 谱 -> (相对 dB 谱, 下界 dB, 上界 dB)。
+    """绝对 dB 谱 -> (谱, 下界 dB, 上界 dB)。
 
-    顶端对齐到本窗口最大值（相对值 = 1），底端 20dB 一档往下退。
+    顶端 = 峰值向上取整到 10 的整数次幂（那个应用就是这样：峰值 3 → 顶格 10），
+    底端按 2% 分位往下退 3~6 档，避免个别极暗 bin 把整条带子拉长。
     """
     a = np.asarray(db, dtype=float)
     if a.size == 0:
-        return a, -80.0, 0.0
-    rel = a - float(np.max(a))          # 峰值对齐到 0dB，也就是相对值 1
-    # 下界取 1% 分位再退到整十档：用 min() 会被个别极暗 bin 一路拖到 -160dB，
-    # 整张图糊成一片；用分位数是量「有效动态范围」。
-    lo = float(np.percentile(rel, 2.0))
-    k = min(int(math.floor(lo / 20.0)), 0)
-    k = max(min(k, -2), -AMP_FLOOR_DECADES)   # 2..4 档（40..80dB）
-    return rel, k * 20.0, 0.0
+        return a, -100.0, 0.0
+    peak = float(np.max(a))
+    hi = 20.0 * math.ceil(peak / 20.0 - 1e-9)        # 升到 10 的整数次幂
+    if hi < peak:
+        hi = peak
+    lo_pct = float(np.percentile(a, 2.0)) if a.size > 20 else peak - 60.0
+    n = int(math.ceil((hi - lo_pct) / 20.0))
+    n = max(AMP_MIN_DECADES, min(AMP_MAX_DECADES, n))
+    return a, hi - 20.0 * n, hi
 
 
 def _amp_ticks(lo, hi):
-    """在 [lo, hi] 里出刻度，最多 6 条，按 10 倍一档、必要时抽稀。"""
-    span = (hi - lo) / 20.0
-    step = 1
-    while span / step > 5:
-        step += 1
+    """整十进位刻度：跨度大就抽稀，最多 5 条，跟应用一样只标几个。"""
+    n = int(round((hi - lo) / 20.0))
+    step = 1 if n <= 3 else (2 if n <= 5 else 3)
     out = []
-    k = 0
-    while True:
-        db = -20.0 * k
-        if db < lo - 1e-6:
-            break
-        if k % step == 0:
-            amp = 10.0 ** (db / 20.0)
-            lab = "%g" % amp if amp >= 0.01 else ("1e-%02d" % (k if k % 2 == 0 else k))
-            out.append((amp, lab))
-        k += 1
+    for i in range(n + 1):
+        if i % step:
+            continue
+        db = hi - 20.0 * i
+        amp = 10.0 ** (db / 20.0)
+        lab = "%.0e" % amp if amp < 0.01 else ("%g" % amp)
+        out.append((amp, lab))
     return out
 
 
@@ -299,7 +296,7 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512, fmax=None):
     # 横轴对数，尾端取实际 Nyquist（44.1k 素材是 22050）
     fmin = 10.0
     fmax = _nyq(d, fmax)
-    rel, dmin, dmax = _amp_range(m)     # 顶端 = 本窗口最大值 = 1，底端自动退整十档
+    rel, dmin, dmax = _amp_range(m)     # 顶端 = 峰值向上取整到 10 的幂，底端退 3~6 档
     def X(fr): return x0 + math.log10(max(fr, fmin) / fmin) / math.log10(fmax / fmin) * (x1 - x0)
     def Y(db): return y1 - (min(dmax, max(dmin, db)) - dmin) / (dmax - dmin) * (y1 - y0)
     # 纵轴按绝对 FFT 幅度标（满幅正弦 = 1），跨窗口可比
@@ -307,7 +304,8 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512, fmax=None):
         db = 20.0 * math.log10(amp)
         yy = Y(db)
         c.hline(yy, x0, x1, GRID)
-        c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
+        ty = yy + 5 if yy < y0 + 16 else yy - 7   # 顶格那条往下写，别压标题行
+        c.text(x0 - c.tw(lab) - 10, ty, lab, DIM, 2)
     for fr in _freq_ticks(fmax):
         xx = X(fr)
         c.vline(xx, y0, y1, GRID)
@@ -326,9 +324,13 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512, fmax=None):
     band = 10.0 * np.log10(np.maximum((cs[hi] - cs[lo]) / cnt, 1e-12))
     smooth = np.interp(np.log(fe[:-1]), np.log(np.maximum(f, 1.0)), rel)
     vals = np.where(cnt > 1, band, smooth)
-    # 超过 Nyquist 的列没有数据，别拖一条假平线到右端
+    # 超过 Nyquist 的列没有数据；跌到纵轴下限以下的列也别画，
+    # 否则会沿底边拖出一条假的平线
     fnyq = float(f[-1])
     Wn = int(np.searchsorted(fe[:-1], fnyq, side="right"))
+    below = np.where(vals[:max(2, Wn)] < dmin - 1.5)[0]
+    if below.size:
+        Wn = max(2, int(below[0]) + 1)
     Wn = max(2, min(Wn, W))
     c.curve(np.arange(Wn) + x0, np.array([Y(v) for v in vals[:Wn]]), x0, y0, x1, y1)
     pk = sp["peak_freq_hz"]
@@ -378,7 +380,7 @@ def plot_spectrogram(d, tag="", w=1024, h=512, fmax=None):
     times = np.asarray(sg["times"], dtype=float)
     freqs = np.asarray(sg["freqs"], dtype=float)
     # 全程按「相对值」处理：顶端 = 本窗口峰值 = 1，底端自动退到整十档
-    rel, alo, ahi = _amp_range(spec)
+    rel, alo, ahi = _amp_range(spec)   # 顶端 = 峰值向上取整到 10 的幂
     c = Canvas(w, h)
     x0, x1 = 72, w - 22
     # 每半幅一条色标，范围和绘图用的 alo..ahi 一一对应

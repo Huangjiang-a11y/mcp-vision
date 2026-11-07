@@ -520,8 +520,8 @@ TOOLS = [
          "seconds": {"type": "number", "description": "window length in seconds, default 10, max 15"},
          "view": {"type": "string",
                   "enum": ["all", "level", "spectrum", "spectrogram", "peak"],
-                  "description": ("level = dB over time; spectrum = FFT amplitude (full-scale sine = 1), log freq 10-Nyquist; "
-                                  "spectrogram = time-frequency map, log freq 20-Nyquist, colour = FFT amplitude 1e-5..10 (full-scale sine = 1); "
+                  "description": ("level = dB over time; spectrum = FFT amplitude (full-scale sine = 1, auto range), log freq 10-Nyquist; "
+                                  "spectrogram = time-frequency map, log freq 20-Nyquist, colour = FFT amplitude, auto range (full-scale sine = 1, top rounded up to a decade); "
                                   "peak = peak-frequency track; default all")}}}},
 
     {"name": "subtitles",
