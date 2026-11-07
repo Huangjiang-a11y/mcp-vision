@@ -454,82 +454,122 @@ def tool_list(a):
 
 
 TOOLS = [
-    {"name": "workspace", "description": "工作区：打开/下载视频、列出已打开视频。纯 Python，无 Node。",
+    {"name": "workspace",
+     "description": (
+         "Workspace: open/download a video from a URL or a local path, and list already-opened videos. "
+         "Pure Python, no Node."
+     ),
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["open", "list"]},
-         "source": {"type": "string", "description": "视频路径或链接；本地用 file:// 协议"},
-         "quality": {"type": "string", "enum": ["low", "medium", "high", "max"], "description": "low=480p medium=720p high=1080p max=源最大；按短边筛选，竖屏不误杀"},
-         "cookies": {"type": "boolean", "description": "true 时使用仓库根目录的 cookies.txt"}}}},
+         "action": {"type": "string", "enum": ["open", "list"],
+                    "description": "open = download and open (default); list = show opened videos"},
+         "source": {"type": "string",
+                    "description": "Video path or URL; use the file:// scheme for local files"},
+         "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
+                     "description": "low=480p medium=720p high=1080p max=source. Filtered by the short edge, "
+                                    "so portrait video is not over-rejected"},
+         "cookies": {"type": "boolean",
+                     "description": "true = use cookies.txt from the repo root (needed by some sites)"}}}},
+
     {"name": "video",
      "description": (
-         "看视频画面，分两层：analyze 出整片概览，frame 出单帧细节。\n"
-         "analyze：在窗口内均匀抽 quantity 帧，拼成接近源画幅比例的网格页，"
-         "返回 timeline（每帧时间点与 jpg 路径）、frameSize（每帧实际像素）、sheet（网格页 png）。"
-         "网格为了让整页近似正方形会自动选 cols×rows，空格最多 3 个，"
-         "所以返回的帧数可能略多于 quantity（例如要 12 帧给 15 帧）。"
-         "默认把网格页转成 jpg 作为图片一并返回；只要路径就传 attach=false。\n"
-         "frame：取某个时间点的单帧，可先 crop 再缩放，裁剪后按裁剪尺寸算像素上限，不失真。"
-         "用于核对小字、看清板书/字幕原文。\n"
-         "产物都落在 workspace/<视频>/video/，抽帧文件名 t<毫秒>-<宽>x<高>.jpg，"
-         "同片重复调用会复用已抽的帧。"
+         "Look at the picture, in two layers: analyze for a whole-clip overview, frame for single-frame detail.\n"
+         "analyze: samples `quantity` frames evenly across the window and tiles them into a grid page whose "
+         "shape stays close to the source aspect ratio. Returns timeline (time + jpg path per frame), "
+         "frameSize (actual pixels of each tile) and sheet (the grid page png). The grid auto-picks cols x rows "
+         "to stay near-square and allows up to 3 empty cells, so the frame count can exceed `quantity` "
+         "(ask for 12, get 15). The grid page is attached as an image by default; pass attach=false for paths only.\n"
+         "frame: grabs one frame at `time`, optionally cropped first, then scaled. Crop is applied before the "
+         "pixel cap, so nothing is distorted. Use it to read small text, board writing or the exact subtitle wording.\n"
+         "Artifacts land in workspace/<video>/video/ as t<ms>-<w>x<h>.jpg and are reused on repeat calls."
      ),
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["analyze", "frame"],
-                    "description": "analyze=整片抽帧拼图（默认）；frame=单帧"},
-         "video_id": {"type": "string", "description": "工作区里的视频文件夹名（workspace/<名>），不传用最近打开的那个"},
-         "time": {"type": "number", "description": "frame 的时间点（秒），也接受别名 t"},
-         "quantity": {"type": "integer", "description": "analyze 抽帧数，默认 15，上限 30；网格凑整实际可能多给 1~3 帧"},
-         "start_seconds": {"type": "number", "description": "analyze 从哪个时间戳开始取窗，默认 0"},
-         "seconds": {"type": "number", "description": "analyze 看多久（秒）；不传则看到 max_seconds 上限或片尾"},
-         "max_seconds": {"type": "number", "description": "单次窗口上限秒数，默认 900（15 分钟）；超了会夹住并在 note 里说明"},
-         "crop": {"type": "string", "description": "frame 裁剪：WxH+X+Y，如 720x300+0+880；先裁再按裁剪尺寸缩放到 quality 上限"},
-         "attach": {"type": "boolean", "description": "analyze 是否把网格页作为图片一并返回，默认 true；只要路径时传 false"},
+                    "description": "analyze = sample the clip into a grid page (default); frame = one frame"},
+         "video_id": {"type": "string",
+                      "description": "Folder name under workspace/, i.e. workspace/<name>; defaults to the most recently opened video"},
+         "time": {"type": "number", "description": "frame: timestamp in seconds (alias: t)"},
+         "quantity": {"type": "integer",
+                      "description": "analyze: number of sampled frames, default 15, max 30; grid rounding can add 1-3 more"},
+         "start_seconds": {"type": "number", "description": "analyze: window start in seconds, default 0"},
+         "seconds": {"type": "number",
+                     "description": "analyze: window length in seconds; defaults to max_seconds or the end of the clip"},
+         "max_seconds": {"type": "number",
+                         "description": "Per-call window cap in seconds, default 900 (15 min); a longer request is clamped and reported in note"},
+         "crop": {"type": "string",
+                  "description": "frame: crop as WxH+X+Y, e.g. 720x300+0+880; crop is applied before scaling to the quality cap"},
+         "attach": {"type": "boolean",
+                    "description": "analyze: attach the grid page as an image, default true; false = paths only"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                     "description": "像素上限（数值平方=最大像素数）：low=512 medium=1024 high=1536 max=2048。"
-                                    "analyze 是整页网格的上限，frame 是单帧（裁剪后）的上限；只缩不放"}}}},
-    {"name": "audio", "description": "音频：levels 电平分析 / extract 导出 / transcribe 转写（silero-vad 自动断句 + SenseVoice）。",
+                     "description": "Pixel cap (value squared = max pixels): low=512 medium=1024 high=1536 max=2048. "
+                                    "Applies to the whole grid page for analyze, to the cropped frame for frame. Scales down only"}}}},
+
+    {"name": "audio",
+     "description": (
+         "Audio: levels (loudness scan), extract (export a clip), transcribe (silero-vad segmentation + SenseVoice).\n"
+         "levels: returns a level profile so you can tell speech from silence or music without listening.\n"
+         "extract: writes a clip in the requested format (wav / mp3) under workspace/<video>/audio/.\n"
+         "transcribe: segments speech with silero-vad and runs SenseVoice on each segment; returns cues with "
+         "from/to/text plus the joined text."
+     ),
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["levels", "extract", "transcribe"]},
-         "video_id": {"type": "string", "description": "工作区里的视频文件夹名，不传用最近打开"},
-         "start_seconds": {"type": "number", "description": "起始秒，默认 0"},
-         "seconds": {"type": "number", "description": "看多久（秒）；优先于 end_seconds"},
-         "end_seconds": {"type": "number", "description": "结束秒（兼容用）"},
-         "max_seconds": {"type": "number", "description": "单次上限秒数，默认 900（15 分钟）"},
-         "format": {"type": "string", "description": "extract 的输出格式，如 wav / mp3"},
-         "language": {"type": "string", "description": "transcribe 语言：zh / en / ja / ko，默认 zh"},
-         "max_speech": {"type": "number", "description": "transcribe 单段上限秒数，默认 20"},
-         }}},
+         "action": {"type": "string", "enum": ["levels", "extract", "transcribe"],
+                    "description": "levels = loudness scan (default); extract = export a clip; transcribe = speech to text"},
+         "video_id": {"type": "string",
+                      "description": "Folder name under workspace/; defaults to the most recently opened video"},
+         "start_seconds": {"type": "number", "description": "Window start in seconds, default 0"},
+         "seconds": {"type": "number", "description": "Window length in seconds; takes precedence over end_seconds"},
+         "end_seconds": {"type": "number", "description": "Window end in seconds (legacy; prefer seconds)"},
+         "max_seconds": {"type": "number", "description": "Per-call window cap in seconds, default 900 (15 min)"},
+         "format": {"type": "string", "description": "extract: output format, e.g. wav / mp3"},
+         "language": {"type": "string",
+                      "description": "transcribe: zh / en / ja / ko, default zh"},
+         "max_speech": {"type": "number",
+                        "description": "transcribe: longest single segment in seconds, default 20 (longer speech is split)"}}}},
+
     {"name": "subtitles",
      "description": (
-         "读画面上的文字，两条路。\n"
-         "ocr：单张图片 OCR。传 image（图片路径），返回每行文字、框坐标、置信度。"
-         "适合先 frame 截一块再放大读小字。\n"
-         "band：把一段窗口逐帧 OCR 再折叠成字幕轨。流程是——"
-         "先用 8 个采样点自动定位字幕带（两段式：先 OCR 下方 40%，不够像字幕再补扫上半屏），"
-         "再按 step 采帧，跳过条内文字没变化的帧，最后把同一条 cue 的 OCR 抖动折叠成一段。"
-         "返回 segments（from/to/text/conf）与 ocr_runs/skipped（真的识别了几帧、跳过了几帧）。\n"
-         "字幕带手动指定 band=\"0.10,0.27\"：字幕贴顶、在画面中部，或自动检测明显选错时用。"
-         "band=auto 且一段都没读到时，返回里会带 hint 提示怎么查。\n"
-         "format=srt 会额外落一份字幕文件，时间轴为秒级精度、毫秒位补 000（不伪造精度）。\n"
-         "不适用：整屏都是字的片子（手写稿、大字报、全屏文字版），"
-         "带子里全是正文而不是字幕，任何 band 都读不干净。"
+         "Read on-screen text. Two paths.\n"
+         "ocr: OCR a single image (image=<path>). Returns each line's text, box and confidence. "
+         "Handy after frame + crop to read small text.\n"
+         "band: OCR a window frame by frame and fold the result into a subtitle track. It first locates the "
+         "subtitle band from 8 sample frames (two-stage: OCR the bottom 40% first, then the upper half if nothing "
+         "subtitle-like turns up), then samples frames every `step` seconds, skips frames whose in-band text has "
+         "not changed, and folds OCR jitter of the same cue into one segment. Returns segments (from/to/text/conf) "
+         "plus ocr_runs / skipped, i.e. how many frames were really OCRed and how many were skipped.\n"
+         "Pass band=\"0.10,0.27\" to pin the band by hand: captions hard against the top edge, captions in "
+         "mid-screen, or auto detection clearly picking the wrong place. When band=auto finds nothing, the response "
+         "carries a hint on how to check.\n"
+         "format=srt also writes a subtitle file; timing is second-precision with .000 milliseconds (no fake precision).\n"
+         "Not applicable: videos that are text all over the screen (handwritten pages, wall-of-text edits). The band "
+         "is then full of body text rather than captions, and no band reads cleanly."
      ),
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["ocr", "band"],
-                    "description": "ocr=单图识别（默认）；band=视频逐帧字幕轨"},
-         "video_id": {"type": "string", "description": "工作区里的视频文件夹名，不传用最近打开的那个"},
-         "image": {"type": "string", "description": "ocr 用的图片路径；也可用 path"},
-         "start_seconds": {"type": "number", "description": "band 从哪个时间戳开始，默认 0"},
-         "seconds": {"type": "number", "description": "band 看多久（秒）；优先于 end_seconds"},
-         "end_seconds": {"type": "number", "description": "结束秒，兼容用，等价于 seconds = end - start"},
-         "max_seconds": {"type": "number", "description": "单次窗口上限秒数，默认 900（15 分钟）"},
-         "step": {"type": "number", "description": "采帧间隔秒，默认 1.0；耗时主要由字幕条数决定，密集采样只多出便宜的跳帧比对"},
-         "band": {"type": "string", "description": "字幕带纵向范围：'auto'（默认，自动检测）或 \"0.10,0.27\" 这样的起止比例；也接受 [0.10, 0.27]"},
-         "skip_th": {"type": "number", "description": "跳帧阈值：条内高亮文字掩码变化百分比低于它就沿用上一帧，默认 1.0；设 -1 关闭跳帧"},
-         "text_th": {"type": "number", "description": "文字高亮阈值（灰度），默认 223；浅色背景可调高"},
-         "format": {"type": "string", "enum": ["json", "srt"], "description": "srt 额外写一份字幕文件"},
-         "save_to": {"type": "string", "description": "srt 落盘路径，默认 workspace/<视频>/out/subtitles.srt"},
-         "width": {"type": "integer", "description": "识别前把带子缩到这个宽度；不传按源分辨率，裁完直接识别不缩放"}}}},
+                    "description": "ocr = one image (default); band = subtitle track for a video window"},
+         "video_id": {"type": "string",
+                      "description": "Folder name under workspace/; defaults to the most recently opened video"},
+         "image": {"type": "string", "description": "ocr: path to the image (alias: path)"},
+         "start_seconds": {"type": "number", "description": "band: window start in seconds, default 0"},
+         "seconds": {"type": "number", "description": "band: window length in seconds; takes precedence over end_seconds"},
+         "end_seconds": {"type": "number", "description": "band: window end in seconds (legacy; prefer seconds)"},
+         "max_seconds": {"type": "number", "description": "Per-call window cap in seconds, default 900 (15 min)"},
+         "step": {"type": "number",
+                  "description": "band: sampling interval in seconds, default 1.0; cost is driven by the number of cues, "
+                                 "dense sampling only adds cheap skip comparisons"},
+         "band": {"type": "string",
+                  "description": "band: vertical range of the subtitle band, 'auto' (default) or ratios like "
+                                 "\"0.10,0.27\"; [0.10, 0.27] is accepted too"},
+         "skip_th": {"type": "number",
+                     "description": "band: skip threshold as percent change of the in-band text mask, default 1.0; "
+                                    "-1 disables skipping"},
+         "text_th": {"type": "number",
+                     "description": "band: highlight threshold on grayscale, default 223; raise it for light backgrounds"},
+         "format": {"type": "string", "enum": ["json", "srt"],
+                    "description": "srt = also write a subtitle file"},
+         "save_to": {"type": "string",
+                     "description": "srt output path, default workspace/<video>/out/subtitles.srt"},
+         "width": {"type": "integer",
+                   "description": "Resize the band to this width before OCR; default keeps the source resolution"}}}},
 
 ]
 
@@ -703,16 +743,16 @@ def dispatch_workspace(a):
         return tool_open(a)
     if act == "list":
         return tool_list(a)
-    return ("未知 action: %s" % act, [])
+    return ("unknown action: %s" % act, [])
 
 
 def dispatch_video(a):
     act = (a.get("action") or "analyze").lower()
-    if act in ("analyze", "frames", "watch", "probe", "sheet"):
+    if act == "analyze":
         return tool_analyze(a)
-    if act in ("frame", "peek"):
+    if act == "frame":
         return tool_frame(a)
-    return ("未知 action: %s" % act, [])
+    return ("unknown action: %s" % act, [])
 
 
 def tool_transcribe(a):
@@ -755,39 +795,20 @@ def dispatch_audio(a):
     # 传错工具不会报错，只会拿到一份看起来正常的别的结果
     if act == "levels":
         return tool_audio(a)
-    if act in ("extract",):
+    if act == "extract":
         return tool_audio(a)
-    if act in ("transcribe", "transcript", "stt"):
+    if act == "transcribe":
         return tool_transcribe(a)
-    return ("未知 action: %s" % act, [])
+    return ("unknown action: %s" % act, [])
 
 
 def dispatch_subtitles(a):
     act = (a.get("action") or "band").lower()
     if act == "ocr":
         return tool_ocr(a)
-    if act in ("band", "subtitles"):
+    if act == "band":
         return tool_subtitles(a)
-    return ("未知 action: %s" % act, [])
-
-
-def dispatch(a):
-    # 兼容旧入口：按 action 或 source 推断
-    act = (a.get("action") or "").lower()
-    if not act:
-        return dispatch_workspace(a) if a.get("source") else dispatch_workspace(a)
-    # 旧 action 名映射
-    if act in ("open", "list", "status", "clean"):
-        return dispatch_workspace(a)
-    if act in ("probe", "frames", "sheet", "peek", "watch"):
-        return dispatch_video(a)
-    if act == "analyze":                 # 旧入口里 analyze 一直是电平分析
-        return dispatch_audio(dict(a, action="levels"))
-    if act in ("levels", "extract", "transcribe", "transcript", "audio"):
-        return dispatch_audio(a)
-    if act in ("ocr", "band", "subtitles"):
-        return dispatch_subtitles(a)
-    return ("未知 action: %s" % act, [])
+    return ("unknown action: %s" % act, [])
 
 
 HANDLERS = {
@@ -795,8 +816,6 @@ HANDLERS = {
     "video": dispatch_video,
     "audio": dispatch_audio,
     "subtitles": dispatch_subtitles,
-    # 兼容旧名
-    "video_vision": dispatch,
 }
 
 
