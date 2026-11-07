@@ -459,9 +459,13 @@ TOOLS = [
          "timeline order 1:1, which is how you tell which moment a thumbnail is. The page is always sent as an "
          "image, with sheetJpg / sheetKB describing the file.\n"
          "\n"
-         "frame - one moment at full detail.\n"
-         "Example: time=123.5, crop=1280x260+0+440 returns that slice as an image plus its saved path. "
-         "Use it when the page is too small to read a board, a scoreboard or a subtitle line.\n"
+         "frame - one moment, or a short burst after it.\n"
+         "Without `seconds` you get the single frame at `time`. With `seconds` (and optionally `quantity`, "
+         "default 1) it becomes a burst: `quantity` frames evenly spaced from `time` to `time`+`seconds`, each "
+         "cropped the same way, returned as separate images plus items[{t,path}].\n"
+         "Example: time=123.5, crop=1280x260+0+440 returns that slice as an image plus its saved path; "
+         "time=42, seconds=2, quantity=4 returns frames at 42.0 / 42.667 / 43.333 / 44.0. Use frame when the "
+         "page is too small to read a board, a scoreboard or a subtitle line.\n"
          "\n"
          "Shared: quality is an area cap, not a resolution - medium means about one megapixel total. For "
          "analyze it caps the whole page (cells get smaller as the grid grows); for frame it caps the "
@@ -474,9 +478,12 @@ TOOLS = [
          "action": {"type": "string", "enum": ["analyze", "frame"],
                     "description": "analyze = grid page for the clip (default); frame = one frame"},
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
-         "time": {"type": "number", "description": "frame: the moment, in seconds; analyze: window start, default 0"},
-         "quantity": {"type": "integer", "description": "analyze: sampled frames, default 15, max 30"},
-         "seconds": {"type": "number", "description": "analyze: window length in seconds; default: up to the cap or the end"},
+         "time": {"type": "number",
+                  "description": "frame: the moment, or the start of a burst; analyze: window start, default 0"},
+         "quantity": {"type": "integer",
+                      "description": "analyze: sampled frames, default 15, max 30; frame: burst size, default 1"},
+         "seconds": {"type": "number",
+                     "description": "analyze: window length; frame: burst length starting at time (omit for a single frame)"},
          "max_seconds": {"type": "number", "description": "window cap in seconds, default 900"},
          "crop": {"type": "string", "description": "frame: crop as WxH+X+Y, e.g. 720x300+0+880"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
@@ -652,6 +659,7 @@ def tool_analyze(a):
 
 
 def tool_frame(a):
+    """单帧；给了 seconds 就是「从 time 起这段范围」里的连拍。"""
     cwd = str(Path(__file__).resolve().parent)
     asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
@@ -673,20 +681,41 @@ def tool_frame(a):
         sh = float(asset.get("height") or 9)
     tw, th = _fit(sw, sh, _max_pixels(a))
     vf = ([crop] if crop else []) + ["scale=%d:%d" % (tw, th)]
+
+    # 窗口：不给 seconds 就是 time 那一帧；给了就是 time → time+seconds 里等距取 quantity 张
+    span = a.get("seconds")
+    n = max(1, min(int(a.get("quantity") or 1), 30))
+    if span:
+        cap = float(a.get("max_seconds") or MAX_ANALYZE_SECONDS)
+        span = min(float(span), cap if cap > 0 else MAX_ANALYZE_SECONDS)
+        ts = engine.sample_times(t, t + span, n)
+    else:
+        ts = [t]
+
     out_dir = Path(asset.get("video_dir") or ".")
     out_dir.mkdir(parents=True, exist_ok=True)
     tag = hashlib.md5(",".join(vf).encode()).hexdigest()[:6]
-    dest = out_dir / ("frame_%s-%s.jpg" % (engine.timecode(t).replace(":", ""), tag))
-    cmd = ["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % t, "-i", asset["media_path"],
-           "-frames:v", "1", "-vf", ",".join(vf), str(dest)]
-    r = engine._run(cmd, timeout=120)
-    if not dest.exists():
-        return ("取帧失败: %s" % (r or "ffmpeg 无输出"), [])
-    data = base64.b64encode(dest.read_bytes()).decode()
-    return (json.dumps({"ok": True, "t": round(t, 3), "save": str(dest),
-                        "size": [tw, th], "quality": a.get("quality") or "medium"},
-                       ensure_ascii=False),
-            [{"type": "image", "data": data, "mimeType": "image/jpeg"}])
+    items, images = [], []
+    for tt in ts:
+        dest = out_dir / ("frame_%s-%s.jpg" % (engine.timecode(tt).replace(":", ""), tag))
+        if not dest.exists():
+            r = engine._run(["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % tt, "-i", asset["media_path"],
+                             "-frames:v", "1", "-vf", ",".join(vf), str(dest)], timeout=120)
+            if not dest.exists():
+                return ("取帧失败 @%.3fs: %s" % (tt, r or "ffmpeg 无输出"), [])
+        items.append({"t": round(tt, 3), "path": str(dest)})
+        images.append({"type": "image",
+                       "data": base64.b64encode(dest.read_bytes()).decode(),
+                       "mimeType": "image/jpeg"})
+
+    if len(items) == 1:
+        return (json.dumps({"ok": True, "t": items[0]["t"], "save": items[0]["path"],
+                            "size": [tw, th], "quality": a.get("quality") or "medium"},
+                           ensure_ascii=False), images[:1])
+    out = {"ok": True, "frames": len(items), "range": [round(ts[0], 3), round(ts[-1], 3)],
+           "size": [tw, th], "quality": a.get("quality") or "medium",
+           "crop": spec or None, "items": items}
+    return (json.dumps(out, ensure_ascii=False, indent=2), images)
 
 
 def dispatch_workspace(a):
