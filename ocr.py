@@ -4,6 +4,7 @@
 """
 import os, sys, json, subprocess, math
 from pathlib import Path
+import threading
 import numpy as np
 
 APP_DIR = Path(__file__).resolve().parent
@@ -217,12 +218,21 @@ class PPOCR:
 _CACHE = {}
 
 
+_CACHE_LOCK = threading.Lock()
+
+
 def get_ppocr(model_dir=None, providers=None):
-    """懒加载 + 复用：第一次真正用到 OCR 时建会话，之后一直复用。"""
+    """懒加载 + 复用：第一次真正用到 OCR 时建会话，之后一直复用。
+
+    并发调用时必须双检：两个线程同时进来会各建一个会话，手机上直接爆内存。
+    """
     if model_dir is None and providers is None:
-        if "default" not in _CACHE:
-            _CACHE["default"] = PPOCR()
-        return _CACHE["default"]
+        if "default" in _CACHE:
+            return _CACHE["default"]
+        with _CACHE_LOCK:
+            if "default" not in _CACHE:
+                _CACHE["default"] = PPOCR()
+            return _CACHE["default"]
     return PPOCR(model_dir=model_dir, providers=providers)
 
 

@@ -732,6 +732,20 @@ HANDLERS = {
 }
 
 
+# 同一个工具在没跑完之前不重入；不同工具之间互不阻塞。
+# 手机内存有限：video 和 audio 同时跑 ffmpeg + 模型，两路就够，别放成四路。
+_TOOL_LOCKS = {}
+_TOOL_LOCKS_GUARD = threading.Lock()
+
+
+def _tool_lock(name):
+    with _TOOL_LOCKS_GUARD:
+        lk = _TOOL_LOCKS.get(name)
+        if lk is None:
+            lk = _TOOL_LOCKS[name] = threading.Lock()
+        return lk
+
+
 def handle(req):
     if not isinstance(req, dict):
         return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
@@ -754,7 +768,8 @@ def handle(req):
         if not handler:
             return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown tool %s" % name}}
         try:
-            text, images = handler(args)
+            with _tool_lock(name):
+                text, images = handler(args)
         except Exception as e:
             return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32000, "message": str(e)}}
         content = [{"type": "text", "text": text}]
@@ -791,7 +806,11 @@ def serve_http(port, host="127.0.0.1"):
                 req = json.loads(body)
             except Exception:
                 self.send_response(400); self.end_headers(); return
-            resp = handle(req)
+            try:
+                resp = handle(req)
+            except Exception as e:      # 别让一个请求炸掉整条连接线程
+                resp = {"jsonrpc": "2.0", "id": None,
+                        "error": {"code": -32603, "message": "internal: %s" % e}}
             if resp is None:
                 self.send_response(204); self.end_headers(); return
             data = json.dumps(resp, ensure_ascii=False).encode()
@@ -802,8 +821,11 @@ def serve_http(port, host="127.0.0.1"):
             self.wfile.write(data)
         def log_message(self, *a):
             pass
-    socketserver.TCPServer.allow_reuse_address = True   # 重启不用等端口释放
-    httpd = socketserver.TCPServer((host, port), H)
+    class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True               # 主线程退出时不等长请求
+        allow_reuse_address = True          # 重启不用等端口释放
+
+    httpd = Server((host, port), H)
     httpd.serve_forever()
 
 
