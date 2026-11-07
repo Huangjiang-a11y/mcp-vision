@@ -227,18 +227,51 @@ def plot_level(d, start, end, tag="", w=1024, h=512):
     return c
 
 
-# 颜色/纵轴统一按 FFT 幅度相对值：1e-5 .. 10（-100 .. +20 dBFS）
-AMP_MIN, AMP_MAX = 1e-5, 10.0
-_AMP_TICKS = (10.0, 1.0, 0.1, 0.01, 0.001, 0.0001)
+# 色标/纵轴按「相对值」自动伸缩：顶端恒为 1（本窗口最大值），
+# 底端退到整十档，跟那个应用一样按数据自己找范围。
+AMP_FLOOR_DECADES = 4          # 最多往下退 4 档（80dB）；再宽整张图就糊成一片
 
 
-def _amp_ticks():
-    return [(a, ("%g" % a)) for a in _AMP_TICKS if AMP_MIN <= a <= AMP_MAX]
+def _amp_range(db):
+    """绝对 dB 谱 -> (相对 dB 谱, 下界 dB, 上界 dB)。
+
+    顶端对齐到本窗口最大值（相对值 = 1），底端 20dB 一档往下退。
+    """
+    a = np.asarray(db, dtype=float)
+    if a.size == 0:
+        return a, -80.0, 0.0
+    rel = a - float(np.max(a))          # 峰值对齐到 0dB，也就是相对值 1
+    # 下界取 1% 分位再退到整十档：用 min() 会被个别极暗 bin 一路拖到 -160dB，
+    # 整张图糊成一片；用分位数是量「有效动态范围」。
+    lo = float(np.percentile(rel, 2.0))
+    k = min(int(math.floor(lo / 20.0)), 0)
+    k = max(min(k, -2), -AMP_FLOOR_DECADES)   # 2..4 档（40..80dB）
+    return rel, k * 20.0, 0.0
 
 
-def _amp_frac(a):
-    """幅度 -> 0..1 的归一化位置（对数）。"""
-    return (math.log10(a) - math.log10(AMP_MIN)) / (math.log10(AMP_MAX) - math.log10(AMP_MIN))
+def _amp_ticks(lo, hi):
+    """在 [lo, hi] 里出刻度，最多 6 条，按 10 倍一档、必要时抽稀。"""
+    span = (hi - lo) / 20.0
+    step = 1
+    while span / step > 5:
+        step += 1
+    out = []
+    k = 0
+    while True:
+        db = -20.0 * k
+        if db < lo - 1e-6:
+            break
+        if k % step == 0:
+            amp = 10.0 ** (db / 20.0)
+            lab = "%g" % amp if amp >= 0.01 else ("1e-%02d" % (k if k % 2 == 0 else k))
+            out.append((amp, lab))
+        k += 1
+    return out
+
+
+def _amp_frac(a, lo, hi):
+    db = 20.0 * math.log10(max(a, 1e-12))
+    return (db - lo) / max(1e-9, hi - lo)
 
 
 def _nyq(d, override=None):
@@ -262,22 +295,16 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512, fmax=None):
     f = np.asarray(sp["freqs"], dtype=float)
     m = np.asarray(sp["mag_db"], dtype=float)
     c = Canvas(w, h)
-    x0, y0, x1, y1 = 96, 92, w - 22, h - 40
+    x0, y0, x1, y1 = 112, 92, w - 22, h - 40
     # 横轴对数，尾端取实际 Nyquist（44.1k 素材是 22050）
     fmin = 10.0
     fmax = _nyq(d, fmax)
-    # 顶格固定到 1（满幅正弦），只有素材真的超过 1 才往上放一档
-    pk = 10.0 ** (float(np.max(m)) / 20.0) if m.size else 0.0
-    top = max(1.0, 10.0 ** math.ceil(math.log10(max(pk, 1e-9))))
-    dmin = 20.0 * math.log10(AMP_MIN)
-    dmax = 20.0 * math.log10(min(top, AMP_MAX))
+    rel, dmin, dmax = _amp_range(m)     # 顶端 = 本窗口最大值 = 1，底端自动退整十档
     def X(fr): return x0 + math.log10(max(fr, fmin) / fmin) / math.log10(fmax / fmin) * (x1 - x0)
     def Y(db): return y1 - (min(dmax, max(dmin, db)) - dmin) / (dmax - dmin) * (y1 - y0)
     # 纵轴按绝对 FFT 幅度标（满幅正弦 = 1），跨窗口可比
-    for amp, lab in _amp_ticks():
+    for amp, lab in _amp_ticks(dmin, dmax):
         db = 20.0 * math.log10(amp)
-        if db > dmax + 1e-6:
-            continue
         yy = Y(db)
         c.hline(yy, x0, x1, GRID)
         c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
@@ -294,14 +321,15 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512, fmax=None):
     lo = np.clip(np.searchsorted(f, fe[:-1]), 0, len(f) - 1)
     hi = np.clip(np.searchsorted(f, fe[1:]), lo + 1, len(f))
     cnt = hi - lo
-    pw = 10.0 ** (m / 10.0)
+    pw = 10.0 ** (rel / 10.0)
     cs = np.concatenate([[0.0], np.cumsum(pw)])
     band = 10.0 * np.log10(np.maximum((cs[hi] - cs[lo]) / cnt, 1e-12))
-    smooth = np.interp(np.log(fe[:-1]), np.log(np.maximum(f, 1.0)), m)
+    smooth = np.interp(np.log(fe[:-1]), np.log(np.maximum(f, 1.0)), rel)
     vals = np.where(cnt > 1, band, smooth)
-    # 超过 Nyquist 的列没有数据，别拖一条假平线到 24000
-    lim = np.searchsorted(f, np.maximum(fe[1:], 1.0))
-    Wn = int(np.argmax((lim >= len(f) - 0.5)) or W) if np.any(lim >= len(f) - 0.5) else W
+    # 超过 Nyquist 的列没有数据，别拖一条假平线到右端
+    fnyq = float(f[-1])
+    Wn = int(np.searchsorted(fe[:-1], fnyq, side="right"))
+    Wn = max(2, min(Wn, W))
     c.curve(np.arange(Wn) + x0, np.array([Y(v) for v in vals[:Wn]]), x0, y0, x1, y1)
     pk = sp["peak_freq_hz"]
     if pk > fmin:
@@ -349,16 +377,17 @@ def plot_spectrogram(d, tag="", w=1024, h=512, fmax=None):
     spec = np.asarray(sg["spec_db"], dtype=float)   # (nfreq, ntime)
     times = np.asarray(sg["times"], dtype=float)
     freqs = np.asarray(sg["freqs"], dtype=float)
+    # 全程按「相对值」处理：顶端 = 本窗口峰值 = 1，底端自动退到整十档
+    rel, alo, ahi = _amp_range(spec)
     c = Canvas(w, h)
     x0, x1 = 72, w - 22
-    # 每半幅自己带一条 dB 色标：-70..0dB，和上面的映射一致
+    # 每半幅一条色标，范围和绘图用的 alo..ahi 一一对应
     by, bh = 40, 12
     ramp = np.repeat(np.linspace(0, 1, x1 - x0)[None, :], bh, axis=0)
     c.blit(_cmap(ramp), x0, by)
     c.rect(x0, by, x1, by + bh, AXIS)
-    # 色标标 FFT 幅度相对值（满幅正弦 = 1），跨窗口可比
-    for amp, lab in _amp_ticks():
-        frac = _amp_frac(amp)
+    for amp, lab in _amp_ticks(alo, ahi):
+        frac = _amp_frac(amp, alo, ahi)
         xx = x0 + frac * (x1 - x0)
         c.vline(xx, by + 1, by + bh - 2, GRID, 1)      # 刻度刺
         if frac > 0.97:
@@ -367,9 +396,9 @@ def plot_spectrogram(d, tag="", w=1024, h=512, fmax=None):
             c.ctext(xx, by + bh + 2, lab, DIM, 2)
     y0, y1 = 76, h - 38
     H, W = y1 - y0, x1 - x0
-    nt, nf = spec.shape[1], spec.shape[0]
+    nt, nf = rel.shape[1], rel.shape[0]
     if nt < 2:
-        spec = np.repeat(spec, 2, axis=1); nt = 2
+        rel = np.repeat(rel, 2, axis=1); nt = 2
     fmin = 20.0
     fmax = max(_nyq(d, fmax), fmin * 2)    # 尾端就是 Nyquist，不再留黑带
     def X(fr): return x0 + math.log10(max(fr, fmin) / fmin) / math.log10(fmax / fmin) * (x1 - x0)
@@ -380,13 +409,11 @@ def plot_spectrogram(d, tag="", w=1024, h=512, fmax=None):
     lf = np.log(np.maximum(freqs, 1e-3))
     lfq = np.log(fcols)
     mat = np.empty((H, W), dtype=np.float64)
-    src = spec[:, yt]
+    src = rel[:, yt]
     for j in range(H):
         mat[j, :] = np.interp(lfq, lf, src[:, j])
-    mat[:, fcols > freqs[-1]] = 20.0 * math.log10(AMP_MIN)   # 超过 Nyquist 的部分没有数据
-    dmin = 20.0 * math.log10(AMP_MIN)
-    dmax = 20.0 * math.log10(AMP_MAX)
-    v = np.clip((mat - dmin) / (dmax - dmin), 0, 1)
+    mat[:, fcols > freqs[-1]] = alo            # 超过 Nyquist 的部分没有数据
+    v = np.clip((mat - alo) / max(1e-9, ahi - alo), 0, 1)
     c.blit(_cmap(v), x0, y0)
     c.rect(x0, y0, x1, y1, AXIS)
     title = _tag_title(tag, "SPECTROGRAM")
