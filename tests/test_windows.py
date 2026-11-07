@@ -129,6 +129,15 @@ for bad, why in [
 # 查 JSON 键而不是裸词——注释里提到字段名是合法的，写进输出才是问题
 check("OCR 不输出 band_auto 键", '"band_auto":' in src_ocr, False)
 
+# --- 输出里不许有绝对路径 ---
+# 图片走 image 内容块，模型读不了本地路径。绝对路径前缀（workspace/<标题>/video/）
+# 每处 55 字符，quantity=9 时 12 处 = 1333 字符，占文本 63%。
+src_video = inspect.getsource(M.tool_video)
+check("video 不输出绝对路径", '"save": f["path"]' in src_video, False)
+check("video 不输出 videoDir", '"videoDir"' in src_video, False)
+check("video 的 timeline 只放时间", '"path": f["path"]' in src_video, False)
+check("video 用 file 给文件名", '"file": Path(f["path"]).name' in src_video, True)
+
 print("\nRESULT", "ALL OK" if not fails else "HAS FAIL (%d)" % len(fails))
 for f in fails:
     print(" -", f)

@@ -818,10 +818,12 @@ def tool_video(a):
         if not got:
             return ("取帧失败 @%.3fs" % win_start, [])
         f = got[0]
+        # 路径只留文件名：图片本身走 image 内容块，模型读不了本地路径。
+        # 绝对路径前缀（workspace/<标题>/video/）每处 55 字符，纯重复。
         out = {"ok": True, "mode": "single", "title": asset.get("title"),
-               "duration": round(duration, 2), "t": f["seconds"], "save": f["path"],
+               "duration": round(duration, 2), "t": f["seconds"], "file": Path(f["path"]).name,
                "size": [tw, th], "crop": spec or None,
-               "quality": a.get("quality") or "medium", "videoDir": out_dir}
+               "quality": a.get("quality") or "medium"}
         if note:
             out["note"] = note
         return (json.dumps(out, ensure_ascii=False, indent=2), _attach(f["path"]))
@@ -843,8 +845,10 @@ def tool_video(a):
            "range": [round(min(ts), 3), round(max(ts), 3)],
            "grid": [cols, rows], "cellSize": [cell_w, cell_h], "crop": spec or None,
            "quality": a.get("quality") or "medium",
-           "timeline": [{"t": f["seconds"], "path": f["path"]} for f in frames],
-           "sheet": sheet_path, "sheetJpg": jpg, "videoDir": out_dir}
+           # 每格的时间点有用（对上是第几张），每格的路径没用——
+           # 模型看的是拼好的整页，它打不开单帧文件。
+           "timeline": [f["seconds"] for f in frames],
+           "file": Path(jpg).name if jpg else (Path(sheet_path).name if sheet_path else None)}
     if note:
         out["note"] = note
     if jpg:
