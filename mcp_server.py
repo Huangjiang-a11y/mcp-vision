@@ -802,6 +802,7 @@ def serve_http(port, host="127.0.0.1"):
             self.wfile.write(data)
         def log_message(self, *a):
             pass
+    socketserver.TCPServer.allow_reuse_address = True   # 重启不用等端口释放
     httpd = socketserver.TCPServer((host, port), H)
     httpd.serve_forever()
 
@@ -811,10 +812,14 @@ def main():
     ap.add_argument("--http", type=int, default=0)
     ap.add_argument("--host", default="127.0.0.1")
     args = ap.parse_args()
-    if args.http:
-        serve_http(args.http, args.host)
-    else:
-        serve_stdio()
+    try:
+        if args.http:
+            serve_http(args.http, args.host)
+        else:
+            serve_stdio()
+    except KeyboardInterrupt:
+        # Ctrl+C 正常退出，不打 traceback
+        sys.stderr.write("\n[mcp-vision] 已停止\n")
 
 
 if __name__ == "__main__":
