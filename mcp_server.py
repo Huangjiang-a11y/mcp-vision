@@ -296,30 +296,6 @@ def tool_audio(a):
     return (_dump(res), [])
 
 
-def _to_srt(segs):
-    """字幕段 → SRT。时间轴只有秒级精度，毫秒位一律补 000，不伪造精度。"""
-    def to_sec(v):
-        # 段里的时间既可能是秒数，也可能是 "00:06.000" / "1:02:03.000"
-        if isinstance(v, (int, float)):
-            return float(v)
-        parts = [float(x) for x in str(v).replace(",", ".").split(":")]
-        sec = 0.0
-        for p in parts:
-            sec = sec * 60 + p
-        return sec
-
-    def tc(sec):
-        t = int(round(max(0.0, to_sec(sec))))
-        return "%02d:%02d:%02d,000" % (t // 3600, t // 60 % 60, t % 60)
-    lines = []
-    for i, g in enumerate(segs, 1):
-        lines.append("%d" % i)
-        lines.append("%s --> %s" % (tc(g["from"]), tc(g["to"])))
-        lines.append(g["text"])
-        lines.append("")
-    return "\n".join(lines)
-
-
 def _parse_band(v):
     """band 可以是 auto / [y0,y1] / "0.10,0.27" / "[0.10, 0.27]"。
 
@@ -364,9 +340,6 @@ def tool_subtitles(a):
             media, start, end,
             step=float(a.get("step", 1.0)),
             band=band,
-            width=int(a["width"]) if a.get("width") else None,
-            skip_th=float(a.get("skip_th", 1.0)),
-            text_th=float(a.get("text_th", 223)),
             engine=ocrmod.get_engine())
     except Exception as e:
         return ("字幕提取失败: %s" % e, [])
@@ -380,14 +353,6 @@ def tool_subtitles(a):
                        "再用 band=\"y0,y1\" 手动指定，例如 \"0.10,0.27\"。" % (res.get("band"),))
     if window_note:
         out["note"] = window_note
-    fmt = str(a.get("format") or "json").lower()
-    if fmt == "srt":
-        srt = _to_srt(segs)
-        dest = Path(a.get("save_to") or (Path(asset["video_dir"]).parent / "out" / "subtitles.srt"))
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(srt, encoding="utf-8")
-        out["srt_path"] = str(dest)
-        out["srt"] = srt
     return (_dump(out), [])
 
 
@@ -461,13 +426,7 @@ TOOLS = [
          "seconds": {"type": "number", "description": "band: window length in seconds"},
          "step": {"type": "number", "description": "band: sampling interval in seconds, default 1.0"},
          "band": {"type": "string",
-                  "description": "band range: 'auto' (default) or ratios like \"0.10,0.27\""},
-         "skip_th": {"type": "number",
-                     "description": "skip threshold as percent change of the in-band text mask, default 1.0; -1 disables"},
-         "text_th": {"type": "number", "description": "highlight threshold on grayscale, default 223"},
-         "format": {"type": "string", "enum": ["json", "srt"], "description": "srt = also write a subtitle file"},
-         "save_to": {"type": "string", "description": "srt output path, default workspace/<video>/out/subtitles.srt"},
-         "width": {"type": "integer", "description": "resize the band before OCR; default: source resolution"}}}},
+                  "description": "band range: 'auto' (default) or ratios like \"0.10,0.27\""}}}},
 
 ]
 
