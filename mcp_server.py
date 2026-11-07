@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """mcp-vision MCP 服务器（stdio 或 --http PORT）。手写 JSON-RPC，无 mcp SDK 依赖。"""
-import argparse, base64, hashlib, json, math, os, re, shutil, sys, http.server, socketserver, threading
+import argparse, base64, hashlib, json, math, os, re, shutil, sys, time, http.server, socketserver, threading
 from pathlib import Path
 import engine
 import audiochart
@@ -44,9 +44,17 @@ def _prune_workspaces(root, keep=None):
     if keep <= 0 or not root.exists():
         return []
     def _mt(d):
-        m = d / "meta.json"
+        # 优先读 meta.json 里的 opened_at，而不是文件的 mtime。
+        # mtime 会被任何一次写 meta 的操作刷新（改 cursor 之类），
+        # 和「用户什么时候打开过」不是一回事。
         try:
-            return m.stat().st_mtime
+            at = json.loads((d / "meta.json").read_text()).get("opened_at") or ""
+            if at:
+                return time.mktime(time.strptime(at, "%Y-%m-%dT%H:%M:%S"))
+        except Exception:
+            pass
+        try:
+            return (d / "meta.json").stat().st_mtime
         except Exception:
             return d.stat().st_mtime
     dirs = sorted((d for d in root.iterdir() if d.is_dir()), key=_mt, reverse=True)
@@ -251,6 +259,23 @@ def _QUALITY_MAP(q):
     return {"low": 480, "medium": 720, "high": 1080, "max": None}.get((q or "medium").lower(), 720)
 
 
+def _opened(asset):
+    """打开成功后的统一收尾：报一句状态，并按保留数清理旧工作区。
+
+    清理要放在这里，不能只定义 _prune_workspaces 就完事——
+    它之前一直是死代码（定义在 line 40，全项目零调用），
+    于是 MVV_KEEP_WORKSPACES=5 从来没有生效过，目录只增不减。
+    """
+    gone = _prune_workspaces(engine.workspace_root(Path(__file__).resolve().parent))
+    msg = ("已打开 %s\n时长 %.2fs  %sx%s  音频=%s" % (
+        asset["title"], asset["duration"], asset["width"], asset["height"],
+        "有" if asset["has_audio"] else "无"))
+    if gone:
+        msg += "\n（按 MVV_KEEP_WORKSPACES=%d 清理了 %d 个旧工作区：%s）" % (
+            KEEP_WORKSPACES, len(gone), "、".join(gone))
+    return msg
+
+
 def tool_open(a):
     src = (a.get("source") or "").strip()
     if not src:
@@ -269,9 +294,7 @@ def tool_open(a):
         if not pth.exists():
             return "本地文件不存在: %s" % pth, []
         asset = engine.open_local(str(Path(__file__).resolve().parent), str(pth))
-        return ("已打开 %s\n时长 %.2fs  %sx%s  音频=%s" % (
-            asset["title"], asset["duration"], asset["width"], asset["height"],
-            "有" if asset["has_audio"] else "无"), [])
+        return _opened(asset), []
     src = _normalize_source(src)
     cwd = Path(__file__).resolve().parent
     # 本地文件
@@ -280,9 +303,7 @@ def tool_open(a):
         pth = (Path(cwd) / pth).resolve()
     if pth.exists():
         asset = engine.open_local(cwd, str(pth))
-        return ("已打开 %s\n时长 %.2fs  %sx%s  音频=%s" % (
-            asset["title"], asset["duration"], asset["width"], asset["height"],
-            "有" if asset["has_audio"] else "无"), [])
+        return _opened(asset), []
     # 链接：用 yt-dlp 下载
     try:
         import yt_dlp
@@ -327,8 +348,7 @@ def tool_open(a):
     except Exception as e:
         return ("下载失败: %s" % str(e)[:300], [])
     asset = engine.open_local(cwd, fname, title=info.get("title"), url=src)
-    return ("已下载并打开 %s\n时长 %.2fs  %sx%s" % (
-        asset["title"], asset["duration"], asset["width"], asset["height"]), [])
+    return _opened(asset), []
 
 
 def tool_audio(a):

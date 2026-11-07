@@ -129,6 +129,38 @@ for bad, why in [
 # 查 JSON 键而不是裸词——注释里提到字段名是合法的，写进输出才是问题
 check("OCR 不输出 band_auto 键", '"band_auto":' in src_ocr, False)
 
+# --- 工作区清理 ---
+# _prune_workspaces 曾经定义了但零调用，MVV_KEEP_WORKSPACES 从来没生效，
+# 目录只增不减。这里既测排序，也测它确实被接进了打开流程。
+import tempfile, json as _json, os as _os, time as _time
+with tempfile.TemporaryDirectory() as _td:
+    for i in range(1, 8):
+        d = _os.path.join(_td, "ws%d" % i)
+        _os.makedirs(d)
+        with open(_os.path.join(d, "meta.json"), "w") as f:
+            _json.dump({"id": "ws%d" % i,
+                        "opened_at": _time.strftime("2026-11-0%dT10:00:00" % i)}, f)
+    gone = M._prune_workspaces(_td, keep=5)
+    left = sorted(_os.listdir(_td))
+    check("清理删掉最旧的 2 个", sorted(gone), ["ws1", "ws2"])
+    check("清理后只剩 5 个", len(left), 5)
+    check("清理保留最新的", left, ["ws3", "ws4", "ws5", "ws6", "ws7"])
+    check("keep 大于总数时不删", M._prune_workspaces(_td, keep=99), [])
+
+# opened_at 优先于文件 mtime：meta 被别的操作重写过，mtime 就不是打开时间了
+with tempfile.TemporaryDirectory() as _td:
+    for name, at in (("old", "2026-01-01T00:00:00"), ("new", "2026-06-01T00:00:00")):
+        d = _os.path.join(_td, name)
+        _os.makedirs(d)
+        with open(_os.path.join(d, "meta.json"), "w") as f:
+            _json.dump({"id": name, "opened_at": at}, f)
+    _os.utime(_os.path.join(_td, "old", "meta.json"), None)  # 旧目录反而 mtime 更新
+    check("按 opened_at 排序而非 mtime", M._prune_workspaces(_td, keep=1), ["old"])
+
+# 清理必须接在打开成功之后，不能只是定义了没人调
+src_open = inspect.getsource(M.tool_open) + inspect.getsource(M._opened)
+check("打开流程会触发清理", "_prune_workspaces" in src_open, True)
+
 # --- 按画面变化取帧 ---
 # 策略：分数从高到低取，够 N 就停；不够则按变化点间隔插值补齐并告知。
 sparse = [(i * 0.5, 0.001) for i in range(21)]
