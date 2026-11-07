@@ -92,16 +92,16 @@ MAX_ANALYZE_SECONDS = 900.0   # 单次分析硬上限 15 分钟
 
 
 def _window(a, asset, default_span=None, allow_end=False):
-    """统一的取窗：先定时间戳 start_seconds，再定看多久 seconds。
+    """统一的取窗：先定时间戳 time，再定看多久 seconds。
 
-    - start_seconds：从哪开始（默认 0）
+    - time：从哪开始（默认 0）
     - seconds：看多久；不给则看满 default_span 或上限
     - end_seconds：只有 schema 里声明了它的工具才认（audio / subtitles）；video 传了也不生效
     - max_seconds：单次上限，默认 900（15 分钟）
     返回 (start, end, note)，note 非空表示被夹过。
     """
     dur = float(asset.get("duration") or 0)
-    start = max(0.0, float(a.get("start_seconds") or 0))
+    start = max(0.0, float(a.get("time") or 0))
     cap = float(a.get("max_seconds") or MAX_ANALYZE_SECONDS)
     if cap <= 0:
         cap = MAX_ANALYZE_SECONDS
@@ -125,7 +125,7 @@ def _window(a, asset, default_span=None, allow_end=False):
         end = dur
         notes.append("已到视频结尾 %.0f 秒" % dur)
     if dur > 0 and start >= dur:
-        notes.append("start_seconds 超出时长，回退到 0")
+        notes.append("time 超出时长，回退到 0")
         start, end = 0.0, min(dur, cap)
     return start, max(start, end), "；".join(notes)
 
@@ -451,13 +451,13 @@ TOOLS = [
          "Give a window and a frame count; it samples that many frames evenly from the window start to "
          "its end (both ends included), lays them out left to right, top to bottom, and returns the page "
          "plus a timeline list.\n"
-         "Example: quantity=12, seconds=60 on a 1280x720 clip gives a 1056x990 png laid out 3 columns x 5 rows "
-         "- 12 frames, 3 cells left dark, cells 352x198 - and timeline = [{t:0.0,...}, {t:5.455,...}, "
-         "... {t:60.0,...}]. You get exactly `quantity` frames; the grid is only the layout, chosen so the page "
-         "stays close to square, and the last row may be partly empty. The sheet has no timestamps burned in: "
-         "cell order matches timeline order 1:1, which is how you tell which moment a thumbnail is.\n"
-         "attach=true (default) sends the page as an image; false returns the path only, with attached / "
-         "sheetKB telling you whether an image went out.\n"
+         "Example: quantity=12, seconds=60 on a 1280x720 clip gives a 1185x888 png laid out 3 columns x 4 rows "
+         "- 12 frames, every cell filled, each cell 395x222 - and timeline = [{t:0.0,...}, {t:5.455,...}, "
+         "... {t:60.0,...}]. You get exactly `quantity` frames; the grid only decides the layout: it prefers a "
+         "shape close to square and, when the count splits cleanly, no empty cells (a prime count like 13 falls "
+         "back to a grid with a couple of dark cells). The sheet has no timestamps burned in: cell order matches "
+         "timeline order 1:1, which is how you tell which moment a thumbnail is. The page is always sent as an "
+         "image, with sheetJpg / sheetKB describing the file.\n"
          "\n"
          "frame - one moment at full detail.\n"
          "Example: time=123.5, crop=1280x260+0+440 returns that slice as an image plus its saved path. "
@@ -465,7 +465,7 @@ TOOLS = [
          "\n"
          "Shared: quality is an area cap, not a resolution - medium means about one megapixel total. For "
          "analyze it caps the whole page (cells get smaller as the grid grows); for frame it caps the "
-         "cropped area. It never upscales. The window is start_seconds + seconds, capped at max_seconds "
+         "cropped area. It never upscales. The window is time + seconds, capped at max_seconds "
          "(900) and clamped to the clip, with a note in the reply when that happens. Outputs land in "
          "workspace/<video>/video/ (frames t<ms>-<w>x<h>.jpg, page sheet_*.png, single frame_<ms>-<hash>.jpg) "
          "and repeat calls reuse them."
@@ -474,15 +474,11 @@ TOOLS = [
          "action": {"type": "string", "enum": ["analyze", "frame"],
                     "description": "analyze = grid page for the clip (default); frame = one frame"},
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
-         "time": {"type": "number", "description": "frame: timestamp in seconds"},
+         "time": {"type": "number", "description": "frame: the moment, in seconds; analyze: window start, default 0"},
          "quantity": {"type": "integer", "description": "analyze: sampled frames, default 15, max 30"},
-         "start_seconds": {"type": "number", "description": "analyze: window start in seconds, default 0"},
          "seconds": {"type": "number", "description": "analyze: window length in seconds; default: up to the cap or the end"},
          "max_seconds": {"type": "number", "description": "window cap in seconds, default 900"},
          "crop": {"type": "string", "description": "frame: crop as WxH+X+Y, e.g. 720x300+0+880"},
-         "attach": {"type": "boolean",
-                    "description": "analyze: attach the grid page as an image, default true; pass false only if your "
-                                   "client can read files itself, otherwise you get a path and no picture"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
                      "description": "pixel cap: low=512^2 medium=1024^2 high=1536^2 max=2048^2; scales down only"}}}},
 
@@ -495,7 +491,7 @@ TOOLS = [
          "action": {"type": "string", "enum": ["levels", "transcribe"],
                     "description": "levels = loudness profile (default); transcribe = speech to text"},
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
-         "start_seconds": {"type": "number", "description": "window start in seconds, default 0"},
+         "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number", "description": "window length in seconds; takes precedence over end_seconds"},
          "end_seconds": {"type": "number", "description": "window end in seconds (legacy; prefer seconds)"},
          "max_seconds": {"type": "number", "description": "window cap in seconds, default 900"},
@@ -512,7 +508,7 @@ TOOLS = [
                     "description": "ocr = one image (default); band = subtitle cues for a window"},
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "image": {"type": "string", "description": "ocr: path to the image"},
-         "start_seconds": {"type": "number", "description": "band: window start in seconds, default 0"},
+         "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number", "description": "band: window length in seconds; takes precedence over end_seconds"},
          "end_seconds": {"type": "number", "description": "band: window end in seconds (legacy; prefer seconds)"},
          "max_seconds": {"type": "number", "description": "window cap in seconds, default 900"},
@@ -584,7 +580,7 @@ def tool_analyze(a):
             if empty > 3:
                 continue
             flip = (c < r) if aspect >= 1 else (c > r)
-            score = abs(math.log((c / r) * aspect)) + 0.05 * empty + (0.25 if flip else 0)
+            score = abs(math.log((c / r) * aspect)) + 0.15 * empty + (0.25 if flip else 0)
             key = (round(score, 3), empty)
             if best is None or key < best[0]:
                 best = (key, c, r)
@@ -637,7 +633,7 @@ def tool_analyze(a):
         "videoDir": asset.get("video_dir"),
         "nextStep": "描述画面前先看 sheet 或 timeline 里的图；细节用 action=frame 取原帧。",
     }
-    if sheet_path and a.get("attach", True) is not False:
+    if sheet_path:
         jp = Path(sheet_path).with_suffix(".jpg")
         try:
             if (not jp.exists()) or jp.stat().st_mtime < Path(sheet_path).stat().st_mtime:
@@ -717,9 +713,9 @@ def tool_transcribe(a):
     if asset is None:
         return (_missing(a), [])
     dur_total = float(asset.get("duration") or 0)
-    if dur_total > 0 and float(a.get("start_seconds") or 0) >= dur_total:
+    if dur_total > 0 and float(a.get("time") or 0) >= dur_total:
         return (json.dumps({"ok": False,
-                            "error": "start_seconds=%.1f 超出时长 %.1f" % (float(a["start_seconds"]), dur_total)},
+                            "error": "time=%.1f 超出时长 %.1f" % (float(a["time"]), dur_total)},
                            ensure_ascii=False), [])
     start, end, window_note = _window(a, asset, allow_end=True)
     language = str(a.get("language") or "zh")

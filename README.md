@@ -83,16 +83,16 @@ python3 ocr.py out/ocr_test.png      # 单图
 
 | 参数 | 含义 |
 |---|---|
-| `start_seconds` | 从哪个时间戳开始，默认 0 |
+| `time` | 从哪个时间戳开始，默认 0（frame 里是那一帧的时刻） |
 | `seconds` | 看多久；不传则看到上限或结尾 |
 | `end_seconds` | 兼容用，等价于 `seconds = end - start` |
 | `max_seconds` | 单次上限，默认 **900 秒（15 分钟）** |
 
-超过上限会被夹住，并在返回里带 `note` 说明夹到了哪里。长视频靠 `start_seconds` 翻页，
+超过上限会被夹住，并在返回里带 `note` 说明夹到了哪里。长视频靠 `time` 翻页，
 不会一次跑到底。
 
 ```jsonc
-{"action":"transcribe","start_seconds":1200,"seconds":600}   // 从 20 分开始，转 10 分钟
+{"action":"transcribe","time":1200,"seconds":600}   // 从 20 分开始，转 10 分钟
 ```
 
 ## 输出不裁剪
@@ -103,7 +103,7 @@ python3 ocr.py out/ocr_test.png      # 单图
 字幕可直接出 SRT：
 
 ```jsonc
-{"action":"subtitles","start_seconds":0,"seconds":900,"format":"srt"}
+{"action":"band","time":0,"seconds":900,"format":"srt"}
 ```
 
 落盘到 `workspace/<视频>/out/subtitles.srt`，也可用 `save_to` 指定。
