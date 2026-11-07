@@ -84,14 +84,19 @@ def probe(path):
 
 
 # ---------- frame extraction ----------
-def _extract_jpeg(media, t, width, out_path, timeout=120):
+def _extract_jpeg(media, t, width, out_path, timeout=120, size=None):
+    # size 显式指定宽高时直接给死，别再让 h=-2 自己取整，否则实际尺寸和报出去的对不上
+    if size:
+        vf = "scale=%d:%d:out_range=full" % (int(size[0]), int(size[1]))
+    else:
+        vf = "scale=w='min(%d,iw)':h=-2:out_range=full" % width
     _run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
           "-ss", str(t), "-i", str(media), "-frames:v", "1", "-an",
-          "-vf", "scale=w='min(%d,iw)':h=-2:out_range=full" % width,
-          "-pix_fmt", "yuvj420p", "-q:v", "2", str(out_path)], timeout=timeout)
+          "-vf", vf, "-pix_fmt", "yuvj420p", "-q:v", "2", str(out_path)], timeout=timeout)
 
 
-def extract_frames(media, times, width=DEFAULT_FRAME_WIDTH, out_dir=None, signal=None, duration=None):
+def extract_frames(media, times, width=DEFAULT_FRAME_WIDTH, out_dir=None, signal=None, duration=None,
+                   size=None):
     media = Path(media)
     if out_dir is None:
         out_dir = media.parent / (media.stem + "_frames")
@@ -108,7 +113,10 @@ def extract_frames(media, times, width=DEFAULT_FRAME_WIDTH, out_dir=None, signal
             t = max(0.0, duration - 0.05)
         if t < 0:
             t = 0.0
-        path = out_dir / ("t%09d-w%d.jpg" % (round(t * 1000), width))
+        if size:
+            path = out_dir / ("t%09d-%dx%d.jpg" % (round(t * 1000), int(size[0]), int(size[1])))
+        else:
+            path = out_dir / ("t%09d-w%d.jpg" % (round(t * 1000), width))
         # reuse if fresh
         if not (path.exists() and path.stat().st_size > 0 and path.stat().st_mtime >= media_mtime):
             ok = False
@@ -116,7 +124,7 @@ def extract_frames(media, times, width=DEFAULT_FRAME_WIDTH, out_dir=None, signal
                 if cand < 0:
                     continue
                 try:
-                    _extract_jpeg(media, cand, width, path)
+                    _extract_jpeg(media, cand, width, path, size=size)
                     if path.exists() and path.stat().st_size > 0:
                         t = cand
                         ok = True
@@ -158,10 +166,12 @@ def _write_png(path, rgb, w, h):
 
 
 def _load_raw_rgb(media, t, w, h, timeout=120):
-    # decode one frame to raw rgb24 at target size
+    # decode one frame to raw rgb24 at target size；t=None 时直接把 media 当图片读，不 seek
+    head = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y"]
+    if t is not None:
+        head += ["-ss", str(t)]
     out = subprocess.run(
-        ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-         "-ss", str(t), "-i", str(media), "-frames:v", "1", "-an",
+        head + ["-i", str(media), "-frames:v", "1", "-an",
          "-vf", "scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2" % (w, h, w, h),
          "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
         capture_output=True, timeout=timeout)
@@ -176,17 +186,20 @@ def _load_raw_rgb(media, t, w, h, timeout=120):
     return arr
 
 
-def compose_sheet(media, times, cols, rows, cell_w, cell_h, out_path, title=None):
+def compose_sheet(media, times, cols, rows, cell_w, cell_h, out_path, title=None, frame_paths=None):
+    """frame_paths 给了就直接读这些 jpg（抽帧时已经解码过一次），
+    否则退回按 times 回原片逐帧解码 —— 后者会把每个时间点 seek 两遍。"""
     canvas_w = cols * cell_w
     canvas_h = rows * cell_h
     canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
     canvas[:] = (24, 24, 28)
-    for idx, t in enumerate(times):
+    srcs = [(p, None) for p in (frame_paths or [])] or [(media, t) for t in times]
+    for idx, (src, t) in enumerate(srcs):
         if idx >= cols * rows:
             break
         r, c = divmod(idx, cols)
         try:
-            cell = _load_raw_rgb(media, t, cell_w, cell_h)
+            cell = _load_raw_rgb(src, t, cell_w, cell_h)
             canvas[r*cell_h:(r+1)*cell_h, c*cell_w:(c+1)*cell_w] = cell
         except Exception:
             pass

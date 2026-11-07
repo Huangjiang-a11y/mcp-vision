@@ -517,7 +517,7 @@ def tool_analyze(a):
     vw = float(asset.get("width") or 16)
     vh = float(asset.get("height") or 9)
     aspect = vw / vh
-    fw, _fh = _fit(vw, vh, _max_pixels(a))
+    fw, fh = _fit(vw, vh, _max_pixels(a))
     qty = int(a.get("quantity") or 15)
     n0 = max(1, min(qty, 30))
     # 先定网格，让整张图接近正方形；再按 cols*rows 抽帧，避免空格
@@ -537,7 +537,7 @@ def tool_analyze(a):
     need = min(cols * rows, 30)
     win_start, win_end, window_note = _window(a, asset)
     ts = engine.sample_times(win_start, win_end, need)
-    frames = engine.extract_frames(asset["media_path"], ts, width=fw,
+    frames = engine.extract_frames(asset["media_path"], ts, width=fw, size=(fw, fh),
                                    out_dir=asset.get("video_dir"), duration=duration)
     sheet_path = None
     if frames:
@@ -552,11 +552,17 @@ def tool_analyze(a):
             cell_h, cell_w = short, max(1, int(round(short * aspect)))
         sp = Path(asset.get("video_dir") or ".")
         sp.mkdir(parents=True, exist_ok=True)
-        sheet_path = str(sp / ("sheet_%s.png" % engine.timecode(duration).replace(":", "")))
+        # 文件名带上片源和网格参数：同名会互相覆盖，多 P 同目录时尤其危险
+        key = "%s|%s|%s|%s|%dx%d|%dx%d" % (asset.get("id") or "", a.get("quantity"),
+                                           a.get("quality"), window_note, cols, rows, cell_w, cell_h)
+        tag = hashlib.md5(key.encode()).hexdigest()[:6]
+        tc = engine.timecode(duration).replace(":", "").replace(".", "")
+        sheet_path = str(sp / ("sheet_%s_%dx%d_%s.png" % (tc, cols, rows, tag)))
         try:
             engine.compose_sheet(asset["media_path"], [f["seconds"] for f in frames], cols, rows,
                                  cell_w=cell_w, cell_h=cell_h, out_path=sheet_path,
-                                 title=asset.get("title"))
+                                 title=asset.get("title"),
+                                 frame_paths=[f["path"] for f in frames])
         except Exception:
             sheet_path = None
     images = []
@@ -566,7 +572,7 @@ def tool_analyze(a):
         "duration": round(duration, 2),
         "width": asset.get("width"),
         "height": asset.get("height"),
-        "frameSize": [fw, int(round(fw / aspect)) if aspect else None],
+        "frameSize": [fw, fh],
         "frames": len(frames),
         "timeline": [{"t": f["seconds"], "path": f["path"]} for f in frames],
         "sheet": sheet_path,
