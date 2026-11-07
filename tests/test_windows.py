@@ -129,6 +129,41 @@ for bad, why in [
 # 查 JSON 键而不是裸词——注释里提到字段名是合法的，写进输出才是问题
 check("OCR 不输出 band_auto 键", '"band_auto":' in src_ocr, False)
 
+# --- 按画面变化取帧 ---
+# 策略：分数从高到低取，够 N 就停；不够则按变化点间隔插值补齐并告知。
+sparse = [(i * 0.5, 0.001) for i in range(21)]
+sparse[10] = (5.0, 0.9)
+sparse[20] = (10.0, 0.8)
+ts, filled = M._pick_scene(sparse, 9, 0, 10)
+check("稀疏场景补齐数", filled, 7)
+check("稀疏场景凑满 9 格", len(ts), 9)
+check("稀疏场景保留变化点", (5.0 in ts) and (10.0 in ts), True)
+check("稀疏场景时间有序", ts, sorted(ts))
+
+# 低分噪声不该占位：它们离已选点远，不用相对下限的话会永远凑满，
+# 补齐分支永远不触发、警告永远不出现。
+noisy = [(i * 0.1, 0.0001) for i in range(100)]
+noisy[30] = (3.0, 0.9)
+ts, filled = M._pick_scene(noisy, 5, 0, 10)
+check("噪声不冒充满额", filled > 0, True)
+
+dense = [(i * 0.5, 0.1 + (i % 7) * 0.1) for i in range(21)]
+ts, filled = M._pick_scene(dense, 9, 0, 10)
+check("变化充足时不硬补", filled < 9, True)
+
+# 同一场景连闪 20 帧：靠 min_gap 压成 1 个，不该占满 5 格
+flash = [(i * 0.02, 0.95 if 100 <= i < 120 else 0.01) for i in range(300)]
+ts, filled = M._pick_scene(flash, 5, 0, 6)
+check("同场景连闪只算一处变化", filled, 4)
+
+# 补点必须落在窗口内且不重复
+ts = M._fill([3.0, 7.0], 6, 0.0, 10.0)
+check("补点数对", len(ts), 6)
+check("补点不越界", all(0.0 <= t <= 10.0 for t in ts), True)
+check("补点不重复", len(set(ts)), len(ts))
+check("补点保留锚点", (3.0 in ts) and (7.0 in ts), True)
+check("n=1 不走场景分析", M._pick_scene([(0, 0.9)], 1, 2.0, 8.0), ([2.0], 0))
+
 # --- 输出里不许有绝对路径 ---
 # 图片走 image 内容块，模型读不了本地路径。绝对路径前缀（workspace/<标题>/video/）
 # 每处 55 字符，quantity=9 时 12 处 = 1333 字符，占文本 63%。
@@ -137,6 +172,11 @@ check("video 不输出绝对路径", '"save": f["path"]' in src_video, False)
 check("video 不输出 videoDir", '"videoDir"' in src_video, False)
 check("video 的 timeline 只放时间", '"path": f["path"]' in src_video, False)
 check("video 用 file 给文件名", '"file": Path(f["path"]).name' in src_video, True)
+
+# 缓存键必须含实际取到的帧时间点：按画面变化取帧时，同一窗口两次调用
+# 可能取到完全不同的帧，键里不写 ts 就会拿旧图冒充新结果。
+check("拼图缓存键含帧时间", "ts_key" in src_video, True)
+check("pick=even 走等分", "even" in inspect.getsource(M._scene_times), True)
 
 print("\nRESULT", "ALL OK" if not fails else "HAS FAIL (%d)" % len(fails))
 for f in fails:

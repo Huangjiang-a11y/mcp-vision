@@ -597,6 +597,9 @@ TOOLS = [
                      "description": "window length, must be > 0; default: to the clip end, capped at 900"},
          "quantity": {"type": "integer",
                       "description": "frames to sample, default 15, max 30; 1 returns a single full-detail frame instead of a page"},
+         "pick": {"type": "string", "enum": ["scene", "even"],
+                  "description": ("scene (default) takes the frames where the picture changes most, so a sheet "
+                                  "shows distinct content; even spaces them by time, for a sense of pacing")},
          "crop": {"type": "string",
                   "description": "crop before scaling, WxH+X+Y (e.g. 720x300+0+880); applies to every cell"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
@@ -766,6 +769,102 @@ def _attach_png(png):
         return None
 
 
+def _fill(anchors, n, start, end):
+    """锚点不够 n 个时补点：在锚点之间的空隙里按长度比例均匀插值。
+
+    补出来的点会贴着既有变化点分布——变化密集的地方补得少，
+    空白的地方补得多，而不是无视内容硬套等分。
+    """
+    anchors = sorted(set(anchors))
+    need = n - len(anchors)
+    if need <= 0:
+        return anchors[:n]
+    edges = [start] + anchors + [end]
+    gaps = [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
+    gaps = [g for g in gaps if g[1] - g[0] > 1e-6]
+    if not gaps:
+        return anchors
+    total = sum(b - a for a, b in gaps)
+    # 按长度比例分配，最大余数法保证总数正好是 need
+    share = [need * (b - a) / total for a, b in gaps]
+    alloc = [int(x) for x in share]
+    for i in sorted(range(len(gaps)), key=lambda i: share[i] - alloc[i], reverse=True)[:need - sum(alloc)]:
+        alloc[i] += 1
+    out = list(anchors)
+    for (a, b), k in zip(gaps, alloc):
+        for j in range(1, k + 1):
+            out.append(round(a + (b - a) * j / (k + 1), 3))
+    return sorted(set(out))[:n]
+
+
+def _pick_scene(scores, n, start, end):
+    """按画面变化取 n 个时间点。返回 (times, 补齐了几个)。
+
+    1. 分数从高到低取，够 n 个就停
+    2. 取一个就把它 ±min_gap 内的候选划掉——
+       同一瞬间的 20 帧分数都高，全取进来等于浪费格子
+    3. 有效变化点不足 n 个，剩下的按间隔均匀插值补齐
+    """
+    if n <= 1:
+        return [float(start)], 0
+    span = max(1e-6, end - start)
+    min_gap = span / n
+    cand = sorted(scores, key=lambda x: -x[1])
+    # 相对下限：分数比最高分小两个量级的，是压缩抖动一类的噪声，不是"变化"。
+    # 不设这条的话 NMS 会把满屏噪声点全选进来——它们分数虽低，但离已选点远，
+    # 于是永远能凑满 n 个，补齐分支永远不触发，警告也就永远不会出现。
+    # 用相对值而非固定阈值：不同片子、不同编码的动态范围差很多。
+    if cand:
+        floor = cand[0][1] * 0.05
+        cand = [x for x in cand if x[1] >= floor]
+    picked = []
+    for t, _sc in cand:
+        if all(abs(t - p) >= min_gap for p in picked):
+            picked.append(t)
+            if len(picked) >= n:
+                break
+    if len(picked) >= n:
+        return sorted(picked)[:n], 0
+    got = len(picked)
+    return _fill(picked, n, start, end), n - got
+
+
+def _scene_times(a, asset, start, end, n, timeout=None):
+    """取 n 个时间点：默认按画面变化挑，pick=even 则老办法等分。
+
+    返回 (times, 补齐数, 退化原因)。扫描结果按窗口缓存，
+    同一段重复调用不再解一遍码。
+    """
+    if str(a.get("pick") or "scene").lower() == "even":
+        return engine.sample_times(start, end, n), 0, None
+    media = asset.get("media_path")
+    key = "%s|%.3f|%.3f" % (media, start, end)
+    cache = None
+    try:
+        cache = Path(asset.get("video_dir") or ".") / (".scene-%s.json" % _short_hash(key))
+        if cache.exists():
+            scores = [(float(t), float(sc)) for t, sc in json.loads(cache.read_text())]
+            ts, filled = _pick_scene(scores, n, start, end)
+            return ts, filled, None
+    except Exception:
+        cache = None
+    try:
+        scores = engine.scene_scores(media, start, end, timeout=timeout)
+    except Exception as e:
+        # 退回等分，但要说出来——否则用户以为看到的是变化点，其实是等分
+        return engine.sample_times(start, end, n), 0, "画面扫描失败（%s），已退回按时间等分" % e
+    if not scores:
+        return engine.sample_times(start, end, n), 0, "窗口内没扫到帧，已退回按时间等分"
+    ts, filled = _pick_scene(scores, n, start, end)
+    if cache is not None:
+        try:
+            # 只存两位小数，8279 帧的 json 约 120KB，够用且省
+            cache.write_text(json.dumps([[round(t, 3), round(sc, 4)] for t, sc in scores]))
+        except Exception:
+            pass
+    return ts, filled, None
+
+
 def tool_video(a):
     """给窗口和张数：quantity=1 出一张单帧，多张拼成一页。"""
     cwd = str(Path(__file__).resolve().parent)
@@ -831,13 +930,18 @@ def tool_video(a):
     # 多帧：拼成一页
     cols, rows = _pick_grid(n, aspect)
     cell_w, cell_h = _sheet_cells(a, aspect, cols, rows)
-    ts = engine.sample_times(win_start, win_end, n)
+    ts, filled, degraded = _scene_times(a, asset, win_start, win_end, n)
     frames = engine.extract_frames(asset["media_path"], ts, out_dir=out_dir, duration=duration,
                                    size=(cell_w, cell_h), crop=crop)
     if not frames:
         return ("抽帧失败（%d 个时间点都没取到）" % len(ts), [])
-    key = "%s|%d|%s|%s|%s|%dx%d|%dx%d" % (asset.get("id") or "", n, a.get("quality"),
-                                           note, spec, cols, rows, cell_w, cell_h)
+    # 缓存键必须含实际取到的帧时间点。
+    # 以前等分采样时 ts 完全由 (win_start, win_end, n) 决定，键里不写也对；
+    # 现在按画面变化取，同样窗口两次调用可能取到完全不同的帧，
+    # 不把 ts 写进键就等于拿旧图冒充新结果。
+    ts_key = ",".join("%.3f" % t for t in ts)
+    key = "%s|%d|%s|%s|%s|%dx%d|%dx%d|%s" % (asset.get("id") or "", n, a.get("quality"),
+                                              note, spec, cols, rows, cell_w, cell_h, ts_key)
     sheet_path, jpg = _compose(a, asset, frames, cols, rows, cell_w, cell_h, key, "sheet", win_start)
     out = {"ok": True, "mode": "sheet", "title": asset.get("title"),
            "duration": round(duration, 2),
@@ -849,6 +953,11 @@ def tool_video(a):
            # 模型看的是拼好的整页，它打不开单帧文件。
            "timeline": [f["seconds"] for f in frames],
            "file": Path(jpg).name if jpg else (Path(sheet_path).name if sheet_path else None)}
+    for msg in ((degraded or ""),
+                ("窗口里只找到 %d 处明显画面变化，其余 %d 格是在变化点之间插值补的，"
+                 "不代表新的画面" % (n - filled, filled)) if filled else ""):
+        if msg:
+            note = msg if not note else note + "；" + msg
     if note:
         out["note"] = note
     if jpg:

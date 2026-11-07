@@ -21,6 +21,45 @@ def timecode(seconds):
     return "%02d:%06.3f" % (int(s // 60), s % 60)
 
 
+_RE_PTS = re.compile(r"pts_time:([0-9.]+)")
+_RE_SCORE = re.compile(r"lavfi\.scene_score=([0-9.]+)")
+
+
+def scene_scores(path, start, end, timeout=None):
+    """窗口内逐帧算画面变化分数，返回按时间排序的 [(t, 秒), ...]。
+
+    t 是绝对秒数（加了 start 偏移）。分数是 ffmpeg scene 滤镜的口径：
+    相邻两帧的差异，0 = 完全相同，1 = 完全不同。
+
+    成本全在解码上（275 秒的片子约 18 秒，缩分辨率或降帧率都更慢），
+    所以一次扫描就要把整窗都算完，不要按需重扫。
+    """
+    start, end = float(start), float(end)
+    dur = end - start
+    if dur <= 0:
+        return []
+    cmd = ["ffmpeg", "-nostdin", "-hide_banner",
+           "-ss", "%.3f" % start, "-t", "%.3f" % dur, "-i", str(path),
+           "-vf", "select='gte(scene,0)',metadata=print", "-f", "null", "-"]
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          timeout=timeout or 900)
+    if proc.returncode != 0:
+        # 别把「ffmpeg 跑挂了」当成「这段没有变化」，两者下游没法区分
+        tail = (proc.stderr or "").strip().splitlines()[-1:] or ["未知错误"]
+        raise RuntimeError(tail[0][:120])
+    rows, cur = [], None
+    for line in proc.stderr.splitlines():
+        m = _RE_PTS.search(line)
+        if m:
+            cur = float(m.group(1))
+            continue
+        m = _RE_SCORE.search(line)
+        if m and cur is not None:
+            rows.append((round(start + cur, 3), float(m.group(1))))
+            cur = None
+    return rows
+
+
 def sample_times(start, end, count):
     if count <= 1:
         return [float(start)]

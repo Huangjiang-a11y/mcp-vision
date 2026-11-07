@@ -58,7 +58,9 @@ python3 mcp_server.py --http 8765
 四个大工具，按职责分层：
 
 - `workspace`：`open`（打开/下载）/ `list`
-- `video`：给窗口 + 张数，抽帧拼成一页网格；`quantity=1` 时不出页，直接给单帧原图（可 `crop`）
+- `video`：给窗口 + 张数，拼成一页网格。默认 **按画面变化取帧**（分数从高到低取满为止，
+  不够就在变化点之间插值补齐并在 `note` 里说明）；`pick=even` 退回按时间等分。
+  `quantity=1` 时不出页，直接给单帧原图（可 `crop`）
   - `quantity` 抽帧数（默认 15，上限 30；1 = 单帧）；`quality` 像素上限：low=512² medium=1024² high=1536² max=2048²（拼页时管整页，单帧时管裁剪后那张）
 - `audio`：按 `view` 出图 —— `level`（20ms RMS 电平）/ `spectrum`（FFT 幅度谱）/
   `spectrogram`（时频图）/ `peak`（峰值频率轨迹）/ `wave`（原始波形），`all` 一次全给
