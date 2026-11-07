@@ -94,6 +94,28 @@ class Canvas:
             for k in range(t):
                 self.px(x + k, y, c)
 
+    def curve(self, xs, ys, x0, y0, x1, y1, c=FG, ss=4, lw=2.0):
+        """按列超采样再缩回，画连续曲线；直线插值在像素格上是台阶，看着全是锯齿。"""
+        W = int(x1 - x0 + 1)
+        H = int(y1 - y0 + 1)
+        gx = np.linspace(x0, x1, W * ss)
+        gy = np.interp(gx, xs, ys)
+        rows = np.round((gy - y0) * ss).astype(int)
+        mask = np.zeros((H * ss, W * ss), dtype=np.float32)
+        half = max(1, int(round(lw * ss / 2.0)))
+        for i in range(len(rows) - 1):
+            a, b = int(rows[i]), int(rows[i + 1])
+            lo, hi = (a, b) if a <= b else (b, a)
+            lo = max(0, lo - half + 1)
+            hi = min(H * ss - 1, hi + half - 1)
+            if hi >= lo:
+                mask[lo:hi + 1, i] = 1.0
+        alpha = mask.reshape(H, ss, W, ss).mean(axis=(1, 3))[..., None]
+        sub = self.buf[y0:y0 + H, x0:x0 + W].astype(np.float32)
+        col = np.array(c, dtype=np.float32)
+        self.buf[y0:y0 + H, x0:x0 + W] = np.clip(
+            sub * (1.0 - alpha) + col * alpha, 0, 255).astype(np.uint8)
+
     def rect(self, x0, y0, x1, y1, c, fill=False):
         if fill:
             self.buf[max(0, y0):min(self.h, y1), max(0, x0):min(self.w, x1)] = c
@@ -189,8 +211,8 @@ def plot_level(d, start, end, tag="", w=1024, h=512):
         lab = "%.1f" % tt
         c.ctext(xx, y1 + 12, lab, DIM, 2)
     c.rect(x0, y0, x1, y1, AXIS)
-    for i in range(1, len(v)):
-        c.line(X(i - 1), Y(v[i - 1]), X(i), Y(v[i]), FG, 2)
+    c.curve(np.array([X(i) for i in range(len(v))]), np.array([Y(x) for x in v]),
+            x0, y0, x1, y1)
     big = "%.1f" % lv["db"]
     c.text(x0, 14, _tag_title(tag, "SOUND LEVEL"), TXT, 3)
     bx = x1 - c.tw(big, 5) - 44
@@ -254,8 +276,7 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512):
     # 超过 Nyquist 的列没有数据，别拖一条假平线到 24000
     lim = np.searchsorted(f, np.maximum(fe[1:], 1.0))
     Wn = int(np.argmax((lim >= len(f) - 0.5)) or W) if np.any(lim >= len(f) - 0.5) else W
-    for i in range(1, max(2, Wn)):
-        c.line(x0 + i - 1, Y(vals[i - 1]), x0 + i, Y(vals[i]), FG, 2)
+    c.curve(np.arange(Wn) + x0, np.array([Y(v) for v in vals[:Wn]]), x0, y0, x1, y1)
     pk = sp["peak_freq_hz"]
     if pk > fmin:
         c.vline(X(pk), y0, y1, (255, 255, 255), 1)
@@ -393,8 +414,9 @@ def plot_peak(d, tag="", w=1024, h=512):
         for tt, ff in tr:
             frac = (tt - t0) / span
             pts.append((x0 + (x1 - x0) * min(1.0, max(0.0, frac)), Y(ff)))
-        for i in range(1, len(pts)):
-            c.line(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1], GRID, 1)
+        if len(pts) > 1:
+            c.curve(np.array([p[0] for p in pts]), np.array([p[1] for p in pts]),
+                    x0, y0, x1, y1, GRID, lw=1.0)
         for xx, yy in pts:
             for a2 in range(-2, 3):
                 for b2 in range(-2, 3):
