@@ -460,19 +460,33 @@ TOOLS = [
          "source": {"type": "string", "description": "视频路径或链接；本地用 file:// 协议"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"], "description": "low=480p medium=720p high=1080p max=源最大；按短边筛选，竖屏不误杀"},
          "cookies": {"type": "boolean", "description": "true 时使用仓库根目录的 cookies.txt"}}}},
-    {"name": "video", "description": "视频：analyze 整片理解（时间线抽帧 + 近似正方形网格页）；frame 单帧核对。",
+    {"name": "video",
+     "description": (
+         "看视频画面，分两层：analyze 出整片概览，frame 出单帧细节。\n"
+         "analyze：在窗口内均匀抽 quantity 帧，拼成接近源画幅比例的网格页，"
+         "返回 timeline（每帧时间点与 jpg 路径）、frameSize（每帧实际像素）、sheet（网格页 png）。"
+         "网格为了让整页近似正方形会自动选 cols×rows，空格最多 3 个，"
+         "所以返回的帧数可能略多于 quantity（例如要 12 帧给 15 帧）。"
+         "默认把网格页转成 jpg 作为图片一并返回；只要路径就传 attach=false。\n"
+         "frame：取某个时间点的单帧，可先 crop 再缩放，裁剪后按裁剪尺寸算像素上限，不失真。"
+         "用于核对小字、看清板书/字幕原文。\n"
+         "产物都落在 workspace/<视频>/video/，抽帧文件名 t<毫秒>-<宽>x<高>.jpg，"
+         "同片重复调用会复用已抽的帧。"
+     ),
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["analyze", "frame"]},
-         "video_id": {"type": "string", "description": "工作区里的视频文件夹名（workspace/<名>），不传用最近打开"},
-         "time": {"type": "number", "description": "frame 的时间点（秒）"},
-         "quantity": {"type": "integer", "description": "analyze 抽帧数，默认 15"},
-         "start_seconds": {"type": "number", "description": "从哪个时间戳开始，默认 0"},
-         "seconds": {"type": "number", "description": "看多久（秒）；不传则为 15 分钟上限内全长"},
-         "max_seconds": {"type": "number", "description": "单次上限秒数，默认 900（15 分钟）"},
-         "crop": {"type": "string", "description": "frame 裁剪：WxH+X+Y，如 720x300+0+880；按裁剪后的尺寸算缩放，不失真"},
-        "attach": {"type": "boolean", "description": "analyze 是否把网格页作为图片一并返回，默认 true；只要路径时传 false"},
+         "action": {"type": "string", "enum": ["analyze", "frame"],
+                    "description": "analyze=整片抽帧拼图（默认）；frame=单帧"},
+         "video_id": {"type": "string", "description": "工作区里的视频文件夹名（workspace/<名>），不传用最近打开的那个"},
+         "time": {"type": "number", "description": "frame 的时间点（秒），也接受别名 t"},
+         "quantity": {"type": "integer", "description": "analyze 抽帧数，默认 15，上限 30；网格凑整实际可能多给 1~3 帧"},
+         "start_seconds": {"type": "number", "description": "analyze 从哪个时间戳开始取窗，默认 0"},
+         "seconds": {"type": "number", "description": "analyze 看多久（秒）；不传则看到 max_seconds 上限或片尾"},
+         "max_seconds": {"type": "number", "description": "单次窗口上限秒数，默认 900（15 分钟）；超了会夹住并在 note 里说明"},
+         "crop": {"type": "string", "description": "frame 裁剪：WxH+X+Y，如 720x300+0+880；先裁再按裁剪尺寸缩放到 quality 上限"},
+         "attach": {"type": "boolean", "description": "analyze 是否把网格页作为图片一并返回，默认 true；只要路径时传 false"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                     "description": "像素上限（数值平方=最大像素数）：low=512 medium=1024 high=1536 max=2048；frame 作用于单帧（裁剪后算），analyze 作用于整页网格"}}}},
+                     "description": "像素上限（数值平方=最大像素数）：low=512 medium=1024 high=1536 max=2048。"
+                                    "analyze 是整页网格的上限，frame 是单帧（裁剪后）的上限；只缩不放"}}}},
     {"name": "audio", "description": "音频：levels 电平分析 / extract 导出 / transcribe 转写（silero-vad 自动断句 + SenseVoice）。",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["levels", "extract", "transcribe"]},
@@ -485,23 +499,38 @@ TOOLS = [
          "language": {"type": "string", "description": "transcribe 语言：zh / en / ja / ko，默认 zh"},
          "max_speech": {"type": "number", "description": "transcribe 单段上限秒数，默认 20"},
          }}},
-    {"name": "subtitles", "description": "字幕：单图 OCR / 字幕带逐帧 OCR + 折叠。",
+    {"name": "subtitles",
+     "description": (
+         "读画面上的文字，两条路。\n"
+         "ocr：单张图片 OCR。传 image（图片路径），返回每行文字、框坐标、置信度。"
+         "适合先 frame 截一块再放大读小字。\n"
+         "band：把一段窗口逐帧 OCR 再折叠成字幕轨。流程是——"
+         "先用 8 个采样点自动定位字幕带（两段式：先 OCR 下方 40%，不够像字幕再补扫上半屏），"
+         "再按 step 采帧，跳过条内文字没变化的帧，最后把同一条 cue 的 OCR 抖动折叠成一段。"
+         "返回 segments（from/to/text/conf）与 ocr_runs/skipped（真的识别了几帧、跳过了几帧）。\n"
+         "字幕带手动指定 band=\"0.10,0.27\"：字幕贴顶、在画面中部，或自动检测明显选错时用。"
+         "band=auto 且一段都没读到时，返回里会带 hint 提示怎么查。\n"
+         "format=srt 会额外落一份字幕文件，时间轴为秒级精度、毫秒位补 000（不伪造精度）。\n"
+         "不适用：整屏都是字的片子（手写稿、大字报、全屏文字版），"
+         "带子里全是正文而不是字幕，任何 band 都读不干净。"
+     ),
      "inputSchema": {"type": "object", "properties": {
-         "action": {"type": "string", "enum": ["ocr", "band"]},
-         "video_id": {"type": "string", "description": "工作区里的视频文件夹名，不传用最近打开"},
-         "image": {"type": "string", "description": "要 OCR 的图片路径"},
-         "start_seconds": {"type": "number", "description": "从哪个时间戳开始，默认 0"},
-         "seconds": {"type": "number", "description": "看多久（秒）；优先于 end_seconds"},
-         "end_seconds": {"type": "number", "description": "结束秒（兼容用）"},
-         "max_seconds": {"type": "number", "description": "单次上限秒数，默认 900（15 分钟）"},
-         "format": {"type": "string", "enum": ["json", "srt"], "description": "srt 额外写字幕文件"},
+         "action": {"type": "string", "enum": ["ocr", "band"],
+                    "description": "ocr=单图识别（默认）；band=视频逐帧字幕轨"},
+         "video_id": {"type": "string", "description": "工作区里的视频文件夹名，不传用最近打开的那个"},
+         "image": {"type": "string", "description": "ocr 用的图片路径；也可用 path"},
+         "start_seconds": {"type": "number", "description": "band 从哪个时间戳开始，默认 0"},
+         "seconds": {"type": "number", "description": "band 看多久（秒）；优先于 end_seconds"},
+         "end_seconds": {"type": "number", "description": "结束秒，兼容用，等价于 seconds = end - start"},
+         "max_seconds": {"type": "number", "description": "单次窗口上限秒数，默认 900（15 分钟）"},
+         "step": {"type": "number", "description": "采帧间隔秒，默认 1.0；耗时主要由字幕条数决定，密集采样只多出便宜的跳帧比对"},
+         "band": {"type": "string", "description": "字幕带纵向范围：'auto'（默认，自动检测）或 \"0.10,0.27\" 这样的起止比例；也接受 [0.10, 0.27]"},
+         "skip_th": {"type": "number", "description": "跳帧阈值：条内高亮文字掩码变化百分比低于它就沿用上一帧，默认 1.0；设 -1 关闭跳帧"},
+         "text_th": {"type": "number", "description": "文字高亮阈值（灰度），默认 223；浅色背景可调高"},
+         "format": {"type": "string", "enum": ["json", "srt"], "description": "srt 额外写一份字幕文件"},
          "save_to": {"type": "string", "description": "srt 落盘路径，默认 workspace/<视频>/out/subtitles.srt"},
-         "step": {"type": "number", "description": "采样间隔秒，默认 1.0"},
-         "band": {"type": "string", "description": "字幕带纵向范围：'auto'（默认，自动检测）或 \"0.10,0.27\" 这样的起止比例"},
-         "skip_th": {"type": "number", "description": "跳帧阈值（带内文字块变化百分比），默认 1.0；设 -1 关闭跳帧"},
-         "text_th": {"type": "number", "description": "文字高亮阈值，默认 223"},
-         "width": {"type": "integer", "description": "缩放宽度；不传按源分辨率，裁完直接输出不缩放"},
-         }}},
+         "width": {"type": "integer", "description": "识别前把带子缩到这个宽度；不传按源分辨率，裁完直接识别不缩放"}}}},
+
 ]
 
 
