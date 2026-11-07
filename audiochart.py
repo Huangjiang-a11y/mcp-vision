@@ -196,9 +196,9 @@ def plot_spectrum(d, path, w=1024, h=512):
     m = np.asarray(sp["mag_db"], dtype=float)
     c = Canvas(w, h)
     x0, y0, x1, y1 = 96, 104, w - 26, h - 56
-    # 横轴按整十倍频程取界，保证每个 decade 等宽（100/1000/10000 落在 1/4、1/2、3/4）
+    # 横轴对数，尾端固定 24000
     fmin = 10.0
-    fmax = 10.0 ** math.ceil(math.log10(max(40.0, float(f[-1]))))
+    fmax = 24000.0
     dmin = max(-80.0, float(np.min(m)))
     if dmin > -30:
         dmin = -30.0
@@ -214,12 +214,10 @@ def plot_spectrum(d, path, w=1024, h=512):
         c.hline(yy, x0, x1, GRID)
         lab = ("%g" % amp)
         c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
-    fr = fmin
-    while fr <= fmax * 1.0001:
+    for fr in (50, 100, 500, 1000, 5000, 10000, 24000):
         xx = X(fr)
         c.vline(xx, y0, y1, GRID)
-        c.ctext(xx, y1 + 12, "%g" % round(fr), DIM, 2)
-        fr *= 10.0
+        c.ctext(xx, y1 + 12, "%g" % fr, DIM, 2)
     c.rect(x0, y0, x1, y1, AXIS)
     for i in range(1, len(f)):
         if f[i] < fmin:
