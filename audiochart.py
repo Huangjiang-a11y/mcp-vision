@@ -191,12 +191,14 @@ def plot_spectrum(d, path, w=900, h=480):
     def X(fr): return x0 + math.log10(max(fr, fmin) / fmin) / math.log10(fmax / fmin) * (x1 - x0)
     def Y(db):
         return y1 - (min(0.0, max(dmin, db)) - dmin) / (0.0 - dmin) * (y1 - y0)
-    for db in (-60, -40, -20, 0):
+    # 纵轴按「相对幅值」标，与参考图一致（对数刻度：1 / 0.1 / 0.01 / 0.001）
+    for amp in (1.0, 0.1, 0.01, 0.001, 0.0001):
+        db = 20.0 * math.log10(amp)
         if db < dmin:
             continue
         yy = Y(db)
         c.hline(yy, x0, x1, GRID)
-        lab = "%d" % db
+        lab = ("%g" % amp)
         c.text(x0 - c.tw(lab) - 12, yy - 7, lab, DIM, 2)
     for fr in (100, 1000, 10000):
         if fr > fmax:
@@ -224,7 +226,7 @@ def plot_spectrum(d, path, w=900, h=480):
         c.text(xx, 52, lab, DIM, 2)
         c.text(xx, 72, val, FG, 3)
     c.text(x1 - c.tw("FREQ (HZ)", 2), h - 34, "FREQ (HZ)", DIM, 2)
-    c.text(x0 + 8, y0 + 6, "DB", DIM, 2)
+    c.text(10, y0 - 26, "FFT AMP (REL)", DIM, 2)
     return c.save(path)
 
 

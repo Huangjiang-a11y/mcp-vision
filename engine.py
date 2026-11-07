@@ -291,9 +291,11 @@ def analyze_spectrum(media, start, end, fft_size=2048, out_dir=None):
         nfr, hop = 1, arr.size
     frames = arr[: nfr * hop].reshape(nfr, hop).astype(np.float64)
     rms = np.sqrt(np.mean(frames ** 2, axis=1))
-    db = 20.0 * np.log10(np.maximum(rms, 1e-7))
+    lsb = 1.0 / 32768.0          # 16bit 量化底噪，比这更小没有意义
+    db = 20.0 * np.log10(np.maximum(rms, lsb))
     lt = float(start) + np.arange(nfr) * (hop / float(sr))
-    peak_dbfs = 20.0 * math.log10(max(float(np.max(np.abs(arr))), 1e-7))
+    silent = bool(float(np.max(np.abs(arr))) < lsb * 2)
+    peak_dbfs = 20.0 * math.log10(max(float(np.max(np.abs(arr))), lsb))
 
     # 频谱：取最响的一帧做 FFT
     size = int(min(max(64, fft_size), arr.size))
@@ -342,6 +344,7 @@ def analyze_spectrum(media, start, end, fft_size=2048, out_dir=None):
         "fft_size": int(size),
         "resolution_hz": round(sr / float(size), 2),
         "period_ms": round(1000.0 * size / float(sr), 2),
+        "silent": silent,
         "level": {
             "db": round(float(db[-1]), 1),
             "min": round(float(np.min(db)), 1),

@@ -297,6 +297,8 @@ def tool_audio(a):
     views = ["level", "spectrum", "spectrogram"] if view == "all" else [view]
     if any(v not in ("level", "spectrum", "spectrogram") for v in views):
         return (_dump({"ok": False, "error": "unknown view: %s" % view}), [])
+    if a.get("seconds") is not None and float(a.get("seconds") or 0) <= 0:
+        return (_dump({"ok": False, "error": "seconds 必须大于 0"}), [])
     dur_total = float(asset.get("duration") or 0)
     if dur_total > 0 and float(a.get("time") or 0) >= dur_total:
         return (_dump({"ok": False,
@@ -320,6 +322,7 @@ def tool_audio(a):
         "duration": d["duration"],
         "sample_rate": d["sample_rate"],
         "channels": d["channels"],
+        "silent": d["silent"],
         "level": {k: d["level"][k] for k in ("db", "min", "max", "mean", "peak_dbfs")},
         "spectrum": {
             "peak_freq_hz": d["spectrum"]["peak_freq_hz"],
