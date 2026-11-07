@@ -362,7 +362,7 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
 
     - samples 默认 10 点；短窗口一次解码取帧，长窗口逐点 seek
     - 只搜画面下半截（> lower_from=0.5）：更上面的区域是水印和画面主体，不可能是字幕
-    - 只看开头 3 分钟：3 分钟还没字幕，基本就是没有字幕轨
+    - 采样点按窗口时长均匀分布（span/(samples+1)），覆盖整段
     """
     if engine is None:
         engine = get_engine()
@@ -370,9 +370,6 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
     if end is None:
         end = dur
     end = min(float(end), dur) if dur else float(end)
-    cap = float(start) + 180.0
-    if end > cap:                      # 检测窗口封顶 3 分钟
-        end = cap
     span = max(0.0, end - start)
     if span <= 1.0:
         return None
@@ -391,8 +388,8 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
 
     # 一次解码拿全部采样帧：原来每个采样点单开一个 ffmpeg -ss，10 次要开 10 次容器。
     # 窗口超过 3 分钟时顺序解码到末尾反而比 seek 贵，那种情况退回逐帧抓。
-    # 顺序解码约 13 倍速：45 秒窗口 3.5 秒解完，3 分钟要 14 秒。
-    # 超过 45 秒改成逐点 seek，10 次约 4 秒，与窗口多长无关。
+    # 顺序解码约 13 倍速：45 秒窗口 3.5 秒解完，10 分钟要 46 秒。
+    # 超过 45 秒改成逐点 seek：每次约 0.35 秒，与片子多长无关，10 点 3.5 秒。
     lowers = []
     if span <= 45.0:
         step = span / float(samples + 1)
@@ -404,9 +401,7 @@ def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
                 break
     if len(lowers) < max(2, samples // 2):     # 管道没吐出够帧，退回逐帧 seek
         lowers = []
-        # 长窗口只需粗略定位：字幕带不会全片漂移，6 个点就够，seek 次数少一半多
-        pts_seek = pts if span <= 45.0 else [start + span * (i + 1) / 7.0 for i in range(6)]
-        for t in pts_seek:
+        for t in pts:
             cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                    "-ss", "%.3f" % t, "-i", str(media), "-frames:v", "1",
                    "-vf", "scale=%d:%d" % (W, H), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
