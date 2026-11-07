@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 echo "mcp-vision 环境体检"
+[ -f ./env.sh ] && . ./env.sh
 for c in python3 ffmpeg ffprobe; do
   command -v $c >/dev/null 2>&1 && echo "  [OK] $c" || echo "  [!!] $c 缺失"
 done

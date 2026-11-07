@@ -22,3 +22,4 @@ models/*.txt
 cookies.txt
 .cookies_netscape.txt
 workspace/
+env.local

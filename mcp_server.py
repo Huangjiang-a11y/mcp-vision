@@ -1,11 +1,63 @@
 #!/usr/bin/env python3
 """mcp-vision MCP 服务器（stdio 或 --http PORT）。手写 JSON-RPC，无 mcp SDK 依赖。"""
-import argparse, base64, hashlib, json, math, os, re, sys, time, http.server, socketserver, threading
+import argparse, base64, hashlib, json, math, os, re, shutil, sys, time, http.server, socketserver, threading
 from pathlib import Path
 import engine
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CACHE = ".mvv-cache"
+
+
+def _load_env_local(path=None):
+    """读仓库根 env.local（KEY=VALUE），只补「还没设」的变量。
+
+    MCP 客户端启动 python 时拿不到 shell 里 export 的东西，
+    所以模型路径这类配置落文件，进程自己补进 os.environ。
+    """
+    f = Path(path) if path else (Path(__file__).resolve().parent / "env.local")
+    try:
+        lines = f.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return {}
+    applied = {}
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k, v = k.strip(), v.strip().strip('"').strip("'")
+        if k and not os.environ.get(k):
+            os.environ[k] = v
+            applied[k] = v
+    return applied
+
+
+_load_env_local()
+KEEP_WORKSPACES = int(os.environ.get("MVV_KEEP_WORKSPACES") or "5")
+
+
+def _prune_workspaces(root, keep=None):
+    """只留最近打开的 N 个工作区，多出来的整目录删掉。返回删掉的名字。"""
+    keep = KEEP_WORKSPACES if keep is None else int(keep)
+    root = Path(root)
+    if keep <= 0 or not root.exists():
+        return []
+    def _mt(d):
+        m = d / "meta.json"
+        try:
+            return m.stat().st_mtime
+        except Exception:
+            return d.stat().st_mtime
+    dirs = sorted((d for d in root.iterdir() if d.is_dir()), key=_mt, reverse=True)
+    victims = dirs[keep:]
+    gone = []
+    for d in victims:
+        try:
+            shutil.rmtree(d)
+            gone.append(d.name)
+        except Exception:
+            pass
+    return gone
 
 
 def _mask(s):
@@ -239,61 +291,6 @@ def tool_open(a):
     return ("已下载并打开 %s\n时长 %.2fs  %sx%s" % (
         asset["title"], asset["duration"], asset["width"], asset["height"]), [])
 
-def tool_frames(a):
-    cwd = str(Path(__file__).resolve().parent)
-    asset = _load_asset(cwd, a.get("video_id"))
-    if asset is None:
-        return _missing(a), []
-    media = asset["media_path"]
-    width = int(a.get("width") or 1280)
-    frames = []
-    if a.get("timestamps"):
-        ts = [float(x) for x in a["timestamps"]]
-        frames = engine.extract_frames(media, ts, width=width, out_dir=asset.get("video_dir"), duration=asset["duration"])
-    else:
-        start = float(a.get("start_seconds", asset.get("cursor", 0)))
-        end = float(a.get("end_seconds", min(start + 30, asset["duration"])))
-        count = int(a.get("frames", 6))
-        count = max(1, min(engine.MAX_FRAMES, count))
-        ts = engine.sample_times(start, end, count)
-        frames = engine.extract_frames(media, ts, width=width, out_dir=asset.get("video_dir"), duration=asset["duration"])
-    # update cursor
-    if frames and not a.get("timestamps"):
-        asset["cursor"] = frames[-1]["seconds"]
-        meta = Path(asset["workspace"]) / "meta.json"
-        try:
-            meta.write_text(json.dumps(asset, ensure_ascii=False, indent=2))
-        except Exception:
-            pass
-    # build content blocks
-    blocks = []
-    head = "frames=%d  range=%s" % (len(frames), ",".join("%.1f" % f["seconds"] for f in frames))
-    for f in frames:
-        data = base64.b64encode(Path(f["path"]).read_bytes()).decode()
-        blocks.append({"type": "image", "data": data, "mimeType": "image/jpeg"})
-    return (head, blocks)
-
-
-def tool_sheet(a):
-    cwd = str(Path(__file__).resolve().parent)
-    asset = _load_asset(cwd, a.get("video_id"))
-    if asset is None:
-        return _missing(a), []
-    media = asset["media_path"]
-    cols = int(a.get("cols", 3))
-    rows = int(a.get("rows", 3))
-    n = cols * rows
-    dur = asset["duration"]
-    ts = engine.sample_times(0, dur, n)
-    out = Path(asset.get("video_dir", cwd)) / "sheet.png"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    cell_w = 400
-    cell_h = 225
-    engine.compose_sheet(media, ts, cols, rows, cell_w, cell_h, out)
-    data = base64.b64encode(out.read_bytes()).decode()
-    return ("sheet: %s  (%dx%d grid, %d frames)" % (out, cols, rows, len(ts)),
-            [{"type": "image", "data": data, "mimeType": "image/png"}])
-
 
 def tool_audio(a):
     cwd = str(Path(__file__).resolve().parent)
@@ -423,18 +420,6 @@ def tool_list(a):
     return (json.dumps(st, ensure_ascii=False, indent=2), [])
 
 
-# 兼容别名：status/clean 仍可调用，但建议直接用文件系统
-def tool_status(a):
-    return tool_list(a)
-
-
-def tool_clean(a):
-    cwd = str(Path(__file__).resolve().parent)
-    root = Path(cwd) / "workspace"
-    if root.exists():
-        shutil.rmtree(root)
-        return ("已清空 %s" % root, [])
-    return ("无 workspace", [])
 
 
 TOOLS = [
@@ -486,32 +471,6 @@ TOOLS = [
          "width": {"type": "integer", "description": "缩放宽度；不传按源分辨率，裁完直接输出不缩放"},
          }}},
 ]
-
-def tool_probe(a):
-    cwd = str(Path(__file__).resolve().parent)
-    asset = _load_asset(cwd, a.get("video_id"))
-    if asset is None:
-        return (_missing(a), [])
-    return (json.dumps({k: asset.get(k) for k in ("id", "title", "duration", "width", "height", "fps", "has_audio", "media_path", "workspace") if asset.get(k) is not None},
-                       ensure_ascii=False, indent=2), [])
-
-
-def tool_peek(a):
-    cwd = str(Path(__file__).resolve().parent)
-    asset = _load_asset(cwd, a.get("video_id"))
-    if asset is None:
-        return (_missing(a), [])
-    t = float(a.get("at") or a.get("seconds") or 0)
-    ts = [t]
-    frames = engine.extract_frames(asset["media_path"], ts, width=int(a.get("width") or 640),
-                                  out_dir=asset.get("video_dir"), duration=asset["duration"])
-    if not frames:
-        return ("取帧失败", [])
-    blocks = []
-    for f in frames:
-        data = base64.b64encode(Path(f["path"]).read_bytes()).decode()
-        blocks.append({"type": "image", "data": data, "mimeType": "image/jpeg"})
-    return ("peek t=%.2f" % frames[0]["seconds"], blocks)
 
 
 VIDEO_QUALITY_PX = {"low": 512, "medium": 1024, "high": 1536, "max": 2048}
