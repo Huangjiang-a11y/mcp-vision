@@ -4,6 +4,9 @@
 
 **让 AI 看视频。** 纯 Python 的 MCP 服务器，不依赖 Node 运行时。
 
+> 个人非商业项目，仅供学习研究使用。代码以 MIT 发布（MIT 允许商用，作者不限制也无法限制），
+> 但作者不提供商业支持、商业担保或定制服务，也不对商业使用承担责任。
+
 仓库结构参照 [dsh-video-vision](https://github.com/Tests4gptplay/dsh-video-vision) 的分层重写：
 保留同样的 `workspace` / `video` / `audio` / `subtitles` 四层与工作区目录布局，
 实现全部换成 Python —— ffmpeg 解码、numpy 计算、onnxruntime 跑 PP-OCRv4，
@@ -311,7 +314,12 @@ v0.4 已通：`workspace`（open / list）、`video`、
 
 ## 许可证
 
+**定位**：个人非商业项目，仅供个人学习研究使用。作者不提供商业支持、商业担保或定制服务。
+
 本仓库代码：MIT，见 [LICENSE](LICENSE)。© 2026 Huangjiang-a11y
+
+MIT 允许任何人（含商业公司）使用本代码，这一点作者无法也不打算限制；
+「非商业」描述的是本项目自身的定位，不是对授权范围的改写。
 
 **LICENSE 只覆盖本仓库的代码。** 模型权重不随仓库分发，遵循各自的上游许可；
 ffmpeg 是以子进程调用的外部程序（不链接、不捆绑）；
