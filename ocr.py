@@ -406,13 +406,12 @@ def _boxes_from_frames(frames, y_from, y_to, H, W, engine):
     return boxes
 
 
-def _band_from_boxes(boxes, pad):
-    """把框按纵向重叠聚类、打分、合并相邻行，返回 {band, count, w, line_h} 或 None。"""
-    if not boxes:
-        return None
+def _cluster_boxes(boxes):
+    """按纵向重叠把框聚成簇。
 
-    # 按纵向重叠聚类。必须限高：重叠是传递的，一屏小字能从顶串到底，
-    # 串成一个 0.0-0.8 的"簇"，选带就彻底跑偏（实测《areyoulost》就这样栽过）。
+    必须限高：重叠是传递的，一屏小字能从顶串到底，串成一个 0.0-0.8 的「簇」，
+    选带就彻底跑偏（实测《areyoulost》就这样栽过）。
+    """
     clusters = []
     for y0, y1, wr, txt in boxes:
         hit = None
@@ -433,6 +432,45 @@ def _band_from_boxes(boxes, pad):
             hit["ws"].append(wr)
             if txt:
                 hit["texts"].append(txt)
+    return clusters
+
+
+def _usable(c):
+    """字幕是「一行、够宽」。这两个条件先筛掉台标、图标、按钮字母。"""
+    w = max(c["ws"]) if c["ws"] else 0.0
+    if w < 0.12:
+        return False
+    if (c["y1"] - c["y0"]) > 0.25:
+        return False
+    return True
+
+
+def _page_like(boxes):
+    """判断这一屏是不是「整页文字」，而不是字幕。
+
+    字幕只有一行（偶尔两行），换几十句也只在带内挤着；
+    整页文字（幻灯片、截图、作文纸）会在多个高度各自成行。
+
+    实测四支片子（可用簇数 / 纵向跨度）：
+      幻灯片 dsh-storyboard   6 / 0.65
+      作文纸《南充0分》      15 / 0.84
+      歌词片《琵琶行》        1 / 0.00
+      实拍片 泡沫满屏         3 / 0.21
+
+    返回 (是否整页, 可用簇数, 跨度)。
+    """
+    cl = [c for c in _cluster_boxes(boxes) if _usable(c)]
+    if len(cl) < 4:
+        return False, len(cl), 0.0
+    span = max(c["y1"] for c in cl) - min(c["y0"] for c in cl)
+    return span >= 0.45, len(cl), span
+
+
+def _band_from_boxes(boxes, pad):
+    """把框按纵向重叠聚类、打分、合并相邻行，返回 {band, count, w, line_h} 或 None。"""
+    if not boxes:
+        return None
+    clusters = _cluster_boxes(boxes)
 
     def _pos(y0):
         # 字幕一般压底或贴顶，画面中部那是主体内容。底部权重最高，顶部次之，中部打折。
@@ -441,16 +479,6 @@ def _band_from_boxes(boxes, pad):
         if y0 <= 0.3:
             return 1.0 + (0.3 - y0) * 2.0        # 0.1 → 1.4，0.0 → 1.6
         return 0.6
-
-    def _usable(c):
-        # 整幅扫的时候会捞出画面上各种字：台标、琴键上的 KAWAI、按钮字母。
-        # 字幕是「一行、够宽、反复出现」，这三条先筛掉明显不是的。
-        w = max(c["ws"]) if c["ws"] else 0.0
-        if w < 0.12:                      # 单个字母/图标，宽不起来
-            return False
-        if (c["y1"] - c["y0"]) > 0.25:    # 一串框纵向串成一柱，不是一行字
-            return False
-        return True
 
     def score(c):
         hs = sorted(c["hs"])
@@ -463,6 +491,12 @@ def _band_from_boxes(boxes, pad):
             s *= 0.25
         return s
 
+    if os.environ.get("BAND_DEBUG"):
+        print("  == 过滤前 %d 个簇 ==" % len(clusters))
+        for c in sorted(clusters, key=lambda c: c["y0"]):
+            print("     y=%.3f-%.3f n=%d w=%.2f 可用=%s 文字=%s" % (
+                c["y0"], c["y1"], c["count"],
+                max(c["ws"]) if c["ws"] else 0, _usable(c), list(c["texts"])[:2]))
     clusters = [c for c in clusters if _usable(c)] or clusters
     if os.environ.get("BAND_DEBUG"):
         for c in sorted(clusters, key=score, reverse=True):
@@ -495,7 +529,7 @@ def _band_from_boxes(boxes, pad):
 
 
 def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
-                         lower_from=None, pad=0.02, engine=None):
+                         lower_from=None, pad=0.02, engine=None, return_detail=False):
     """利用少量采样点按 OCR 框坐标聚类，秒级自动锁定字幕带 (y0_ratio, y1_ratio)。
 
     - 默认两段式：先只搜下方 40%（多数片子字幕在那儿，也便宜）；
@@ -503,6 +537,7 @@ def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
     - samples 默认 8 点；短窗口一次解码取帧，长窗口逐点 seek
     - 两段都走同一批帧数组，解码只做一次
     - lower_from 给了（0.0~1.0）就只搜那一段，不跑两段式
+    - return_detail=True 时返回 dict（多带 page_like 等判断依据），默认仍返回 tuple
     """
     if engine is None:
         engine = get_engine()
@@ -534,24 +569,43 @@ def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
                                         pad=pad, engine=engine)
         return None
 
+    def _ret(band, page, ncl, span, b):
+        if not return_detail:
+            return band
+        d = {"band": band, "page_like": page, "clusters": ncl, "span": round(span, 3),
+             "count": b["count"] if b else 0,
+             "w": b["w"] if b else 0.0, "line_h": b["line_h"] if b else 0.0}
+        return d
+
     if lower_from is not None:
         r = _band_from_boxes(_boxes_from_frames(frames, int(H * lower_from), H, H, W, engine), pad)
-        return r["band"] if r else None
+        if r is None:
+            return None
+        page, ncl, span = _page_like(_boxes_from_frames(frames, 0, H, H, W, engine))
+        return _ret(r["band"], page, ncl, span, r)
 
-    # 第一段：下半屏（40% 的面积），够像字幕就收工
     cut = int(H * 0.6)
     low_boxes = _boxes_from_frames(frames, cut, H, H, W, engine)
     r = _band_from_boxes(low_boxes, pad)
     if r and r["count"] >= 2 and r["w"] >= 0.2:
-        return r["band"]
+        # 下半屏命中了，但还不能收工。
+        # 整页文字的视频（幻灯片、截图、作文纸）下半屏也「像字幕」——
+        # 它的表格行刚好满足 count/w 的门槛。只有看上半屏才知道
+        # 这条带是「字幕」，还是「一整页内容的下半截」。
+        all_boxes = low_boxes + _boxes_from_frames(frames, 0, cut, H, W, engine)
+        page, ncl, span = _page_like(all_boxes)
+        return _ret(r["band"], page, ncl, span, r)
 
-    # 第二段：只补扫上半屏，和第一段的框合并再打分（整幅只扫一遍，不重复）
-    r2 = _band_from_boxes(low_boxes + _boxes_from_frames(frames, 0, cut, H, W, engine), pad)
+    # 下半屏没命中：补扫上半屏，合并再打分
+    all_boxes = low_boxes + _boxes_from_frames(frames, 0, cut, H, W, engine)
+    r2 = _band_from_boxes(all_boxes, pad)
     if r2:
-        return r2["band"]
+        page, ncl, span = _page_like(all_boxes)
+        return _ret(r2["band"], page, ncl, span, r2)
     if samples < 16:
         return detect_subtitle_band(media, samples=16, start=start, end=end, width=width,
-                                    lower_from=lower_from, pad=pad, engine=engine)
+                                    lower_from=lower_from, pad=pad, engine=engine,
+                                    return_detail=return_detail)
     return None
 
 def _text_sig(arr, th):
@@ -639,14 +693,17 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
         engine = get_engine()
     band_used = band
     band_auto = None
+    det = None
     if band in (None, "auto"):
-        band_auto = detect_subtitle_band(media, samples=8, start=start, end=end, engine=engine)
-        if band_auto is None:
+        det = detect_subtitle_band(media, samples=8, start=start, end=end, engine=engine,
+                                   return_detail=True)
+        if det is None:
             # 下半截、两种分辨率、最多 16 个采样点都没找到字：判为无字幕。
             # 不再拿默认带白跑一遍逐帧识别。
             return {"frames": 0, "ocr_runs": 0, "skipped": 0, "band": None,
                     "band_auto": None, "band_px": [0, 0], "step": float(step),
-                    "results": [], "note": "下半截未检出文字，判为无字幕"}
+                    "results": [], "note": "整幅未检出文字，判为无字幕"}
+        band_auto = det["band"]
         band_used = band_auto
     y0r, y1r = float(band_used[0]), float(band_used[1])
     out, prev, prev_res = [], None, None
@@ -679,9 +736,16 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
         conf = round(sum(r["conf"] for r in res) / len(res), 4) if res else 0.0
         out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": False,
                     "conf": conf, "lines": [r["text"] for r in res]})
-    return {"frames": len(out), "ocr_runs": n_ocr, "skipped": n_skip,
-            "band": [y0r, y1r], "band_auto": band_auto, "band_px": [W, H],
-            "step": float(step), "results": out}
+    ret = {"frames": len(out), "ocr_runs": n_ocr, "skipped": n_skip,
+           "band": [y0r, y1r], "band_auto": band_auto, "band_px": [W, H],
+           "step": float(step), "results": out}
+    if det is not None:
+        # 整页文字的视频会「看起来有字幕」，实际读到的是页面碎片。
+        # 把判断依据一起交出去，让上层能提醒调用方换条路。
+        ret["page_like"] = bool(det.get("page_like"))
+        ret["text_clusters"] = det.get("clusters")
+        ret["text_span"] = det.get("span")
+    return ret
 
 
 def _lev(a, b):

@@ -496,7 +496,20 @@ def _subs_ocr(a):
     out = {"mode": "ocr", "frames": res["frames"], "ocr_runs": res["ocr_runs"],
            "skipped": res["skipped"], "band": res.get("band"), "band_auto": res.get("band_auto"),
            "band_px": res["band_px"], "segment_count": len(segs), "segments": segs}
-    if not segs and band == "auto":
+    if res.get("page_like"):
+        # 幻灯片 / 截图 / 作文纸：一屏几十行字，各自成行，没有「字幕带」这回事。
+        # 硬选一条带读出来的是页面碎片（「1档压成172」「then分档」），
+        # 语义不连贯却看着像正常结果——比报错更糟，必须点明。
+        out["page_like"] = True
+        out["text_clusters"] = res.get("text_clusters")
+        out["text_span"] = res.get("text_span")
+        out["hint"] = ("画面里有 %s 处互不相连的文字、纵向跨度 %.0f%%，是整页文字"
+                       "（幻灯片/截图/文档），不是一行字幕。这条带只截到页面的一部分，"
+                       "segments 多半是半句话，别直接当内容用。建议改用 mode=stt："
+                       "这类讲解片通常有口播，转出来是连贯的成句；"
+                       "要看版面就用 video quantity=1 看单页。"
+                       % (res.get("text_clusters"), 100.0 * float(res.get("text_span") or 0)))
+    if not segs and band == "auto" and not out.get("page_like"):
         # 自动检测只搜下方 40%；一个字的没有时，多半是字幕根本不在下面，别让人以为这片子没字幕
         out["hint"] = ("自动检测在下方 40%% 没找到字幕（band=%s）。"
                        "字幕可能在上方或画面中部：先用 video（quantity=1）看一眼位置，"

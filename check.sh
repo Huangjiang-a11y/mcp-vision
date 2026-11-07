@@ -36,4 +36,6 @@ if [ "$1" = "--test" ]; then
   python3 tests/test_stereo.py | sed 's/^/  /' || exit 1
   echo "测试：取窗与参数校验"
   python3 tests/test_windows.py | sed 's/^/  /' || exit 1
+  echo "测试：整页文字判定"
+  python3 tests/test_page_like.py | sed 's/^/  /' || exit 1
 fi
