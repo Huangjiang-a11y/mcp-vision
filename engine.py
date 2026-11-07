@@ -244,16 +244,39 @@ def freq_to_note(freq):
     return _NOTE_NAMES[n % 12] + str(n // 12 - 1), cents
 
 
+def _peak_delta(mag, k):
+    """峰值 bin 相对真实频率的偏移（-0.5..0.5），对数域抛物线插值。"""
+    if k < 1 or k + 1 >= mag.size:
+        return 0.0
+    a, b, c = (20.0 * np.log10(np.maximum(mag[j], 1e-12)) for j in (k - 1, k, k + 1))
+    denom = a - 2.0 * b + c
+    if abs(denom) < 1e-12:
+        return 0.0
+    return float(np.clip(0.5 * (a - c) / denom, -0.5, 0.5))
+
+
+def _hann_gain(delta):
+    """汉宁窗在偏离 bin 中心 delta 格时的幅度损失（0dB 处为 1）。
+
+    |sin(πδ) / (πδ(1-δ²))|，δ=0.5 时约 0.849，正是扇贝损失。
+    """
+    d = abs(float(delta))
+    if d < 1e-9:
+        return 1.0
+    g = math.sin(math.pi * d) / (math.pi * d * (1.0 - d * d))
+    return max(abs(g), 1e-6)
+
+
 def _peak_bin(mag):
-    """幅度谱峰值：抛物线插值，返回 (小数 bin, 峰值幅度)。"""
+    """幅度谱峰值：抛物线插值，返回 (小数 bin, 峰值幅度)。
+
+    幅度按窗函数的扇贝损失修正过，纯音不论落在 bin 哪个位置都能报准。
+    """
     if mag.size < 3:
         return 0, 0.0
     k = int(np.argmax(mag[1:])) + 1
-    a, b = mag[k - 1], mag[k]
-    c = mag[k + 1] if k + 1 < mag.size else mag[k]
-    denom = (a - 2 * b + c)
-    delta = 0.5 * (a - c) / denom if abs(denom) > 1e-12 else 0.0
-    return k + float(np.clip(delta, -0.5, 0.5)), float(b)
+    delta = _peak_delta(mag, k)
+    return k + delta, float(mag[k]) / _hann_gain(delta)
 
 
 def _channel_metrics(x, sr, start, size):
@@ -289,6 +312,12 @@ def _channel_metrics(x, sr, start, size):
     # 这样不同时间窗之间能横向比较，超过 1 也不奇怪（方波基波就有 1.27）
     wsum = float(np.sum(win))
     mag = 2.0 * spec / wsum
+    # 峰值那格按扇贝损失修正：纯音落在两个 bin 正中间时单格读数会低 1.4dB。
+    # 只修峰值一格——其余 bin 本来就只是采样点，不知道真实频率在哪。
+    kf, _ = _peak_bin(spec)
+    kb = int(round(kf))
+    if 0 <= kb < mag.size:
+        mag[kb] /= _hann_gain(kf - kb)
     mag_db = 20.0 * np.log10(np.maximum(mag, 1e-9))
 
     # 时频图：STFT
