@@ -92,15 +92,33 @@ def _dump(obj, limit=0):
 MAX_ANALYZE_SECONDS = 900.0   # 单次分析硬上限 15 分钟
 
 
+def _pos_seconds(a):
+    """seconds 若显式给了就必须 > 0；返回错误文本或 None。
+
+    以前 video / subtitles 不查这个，seconds=0 会静默退化成 1 帧或 0 段，
+    再被当成「没找到字幕」解释给模型，白白让人试半天 band。
+    """
+    if a.get("seconds") is None:
+        return None
+    try:
+        s = float(a["seconds"])
+    except (TypeError, ValueError):
+        return "seconds 必须是数字"
+    if s <= 0:
+        return "seconds 必须大于 0（想看完整段就别传 seconds）"
+    return None
+
+
 def _window(a, asset, default_span=None, cap=None):
     """统一的取窗：先定时间戳 time，再定看多久 seconds。
 
-    - time：从哪开始（默认 0）
+    - time：从哪开始（默认 0），负数按 0 处理
     - seconds：看多久；不给则看满 default_span 或上限
     返回 (start, end, note)，note 非空表示被夹过。
     """
     dur = float(asset.get("duration") or 0)
-    start = max(0.0, float(a.get("time") or 0))
+    raw_time = float(a.get("time") or 0)
+    start = max(0.0, raw_time)
     cap = float(cap) if cap else MAX_ANALYZE_SECONDS
 
     span = None
@@ -112,16 +130,23 @@ def _window(a, asset, default_span=None, cap=None):
     if span is None:
         span = cap
     notes = []
+    if raw_time < 0:
+        notes.append("time 为负数，按 0 处理")
     if span > cap:
         span = cap
         notes.append("单次上限 %.0f 秒" % cap)
+
+    # time 已经越过结尾：什么都没有可看，直接回开头。
+    # 这里要提前返回——否则会先算出 end>dur 又补一条「已到视频结尾」，
+    # 两条 note 一起出现自相矛盾（都回退到 0 了，还说看到了结尾）。
+    if dur > 0 and start >= dur:
+        notes.append("time 超出时长 %.0f 秒，回退到 0" % dur)
+        return 0.0, min(dur, cap), "；".join(notes)
+
     end = start + span
     if dur > 0 and end > dur:
         end = dur
         notes.append("已到视频结尾 %.0f 秒" % dur)
-    if dur > 0 and start >= dur:
-        notes.append("time 超出时长，回退到 0")
-        start, end = 0.0, min(dur, cap)
     return start, max(start, end), "；".join(notes)
 
 
@@ -221,11 +246,23 @@ def tool_open(a):
     src = (a.get("source") or "").strip()
     if not src:
         return "要给 source（视频路径或链接）", []
-    # 本地文件用 file:// 协议
-    if src.lower().startswith("file://"):
+    # 本地文件用 file:// 协议。显式声明是本地文件时，
+    # 找不到就直说找不到——不要掉进下面的 yt-dlp 分支，
+    # 那会把 /nope/a.mp4 当 URL 去解析，报「is not a valid URL」，跟用户输入毫无关系。
+    is_local = src.lower().startswith("file://")
+    if is_local:
         src = src[7:]
         if not src.startswith("/"):
             src = "/" + src
+        pth = Path(src)
+        if not pth.is_absolute():
+            pth = (Path(Path(__file__).resolve().parent) / pth).resolve()
+        if not pth.exists():
+            return "本地文件不存在: %s" % pth, []
+        asset = engine.open_local(str(Path(__file__).resolve().parent), str(pth))
+        return ("已打开 %s\n时长 %.2fs  %sx%s  音频=%s" % (
+            asset["title"], asset["duration"], asset["width"], asset["height"],
+            "有" if asset["has_audio"] else "无"), [])
     src = _normalize_source(src)
     cwd = Path(__file__).resolve().parent
     # 本地文件
@@ -297,8 +334,9 @@ def tool_audio(a):
     views = ["level", "spectrum", "spectrogram", "peak", "wave"] if view == "all" else [view]
     if any(v not in ("level", "spectrum", "spectrogram", "peak", "wave") for v in views):
         return (_dump({"ok": False, "error": "unknown view: %s" % view}), [])
-    if a.get("seconds") is not None and float(a.get("seconds") or 0) <= 0:
-        return (_dump({"ok": False, "error": "seconds 必须大于 0"}), [])
+    err = _pos_seconds(a)
+    if err:
+        return (_dump({"ok": False, "error": err}), [])
     dur_total = float(asset.get("duration") or 0)
     if dur_total > 0 and float(a.get("time") or 0) >= dur_total:
         return (_dump({"ok": False,
@@ -403,6 +441,9 @@ def _subs_stt(a):
     asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return (_missing(a), [])
+    err = _pos_seconds(a)
+    if err:
+        return (_dump({"ok": False, "mode": "stt", "error": err}), [])
     start, end, window_note = _window(a, asset)
     try:
         segs, dur = engine.transcribe(asset["media_path"], start, end, language="auto")
@@ -434,6 +475,9 @@ def _subs_ocr(a):
     asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return (_missing(a), [])
+    err = _pos_seconds(a)
+    if err:
+        return (_dump({"ok": False, "mode": "ocr", "error": err}), [])
     media = asset["media_path"]
     start, end, window_note = _window(a, asset)
     try:
@@ -499,7 +543,7 @@ TOOLS = [
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number",
-                     "description": "window length; default: to the clip end, capped at 900"},
+                     "description": "window length, must be > 0; default: to the clip end, capped at 900"},
          "quantity": {"type": "integer",
                       "description": "frames to sample, default 15, max 30; 1 returns a single full-detail frame instead of a page"},
          "crop": {"type": "string",
@@ -520,7 +564,7 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "window length in seconds, default 10, max 15"},
+         "seconds": {"type": "number", "description": "window length in seconds, must be > 0; default 10, max 15"},
          "view": {"type": "string",
                   "enum": ["all", "level", "spectrum", "spectrogram", "peak", "wave"],
                   "description": ("level = dB over time (20ms RMS); spectrum = FFT amplitude (full-scale sine = 1, auto range), log freq 10-Nyquist; "
@@ -539,7 +583,7 @@ TOOLS = [
                   "description": "ocr = read on-screen subtitles (default); stt = speech to text"},
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "window length in seconds"},
+         "seconds": {"type": "number", "description": "window length in seconds, must be > 0"},
          "band": {"type": "string",
                   "description": "ocr: band range, 'auto' (default) or ratios like \"0.10,0.27\""}}}},
 
@@ -576,6 +620,12 @@ def _parse_crop(spec):
     if w <= 0 or h <= 0:
         raise ValueError("crop 宽高须为正")
     return "crop=%d:%d:%d:%d" % (w, h, x, y)
+
+
+def _crop_box(spec):
+    """WxH+X+Y -> (w, h, x, y)；格式非法时返回 None。"""
+    m = re.match(r"^(\d+)x(\d+)\+(\d+)\+(\d+)$", str(spec or "").strip())
+    return tuple(int(v) for v in m.groups()) if m else None
 
 
 def _pick_grid(n0, aspect):
@@ -668,6 +718,9 @@ def tool_video(a):
     duration = float(asset.get("duration") or 0)
     if duration <= 0:
         return ("视频时长为 0，无法抽帧", [])
+    err = _pos_seconds(a)
+    if err:
+        return (_dump({"ok": False, "error": err}), [])
 
     spec = str(a.get("crop") or "").strip()
     try:
@@ -675,15 +728,29 @@ def tool_video(a):
     except ValueError as e:
         return (str(e), [])
     if spec:
-        m = re.match(r"^(\d+)x(\d+)\+(\d+)\+(\d+)$", spec)
-        sw, sh = float(m.group(1)), float(m.group(2))
+        cw, ch, cx, cy = _crop_box(spec)
+        vw = int(asset.get("width") or 0)
+        vh = int(asset.get("height") or 0)
+        # 越界裁剪 ffmpeg 不会报错，只会吐一张纯黑小图——必须自己拦
+        if vw and vh and (cx + cw > vw or cy + ch > vh):
+            return (_dump({"ok": False,
+                           "error": "crop %s 超出画面 %dx%d（x+w≤%d、y+h≤%d）"
+                                    % (spec, vw, vh, vw, vh)}), [])
+        sw, sh = float(cw), float(ch)
     else:
         sw = float(asset.get("width") or 16)
         sh = float(asset.get("height") or 9)
     aspect = sw / sh
 
-    n = max(1, min(int(a.get("quantity") or 15), 30))
+    raw_q = a.get("quantity")
+    try:
+        n = max(1, min(int(raw_q), 30)) if raw_q is not None else 15
+    except (TypeError, ValueError):
+        return (_dump({"ok": False, "error": "quantity 必须是整数"}), [])
     win_start, win_end, note = _window(a, asset)
+    if raw_q is not None and int(raw_q) != n:
+        extra = "quantity 夹到 %d（允许 1–30）" % n
+        note = extra if not note else note + "；" + extra
     out_dir = asset.get("video_dir")
 
     # 单帧：不拼页，按整帧（或裁剪后）的像素上限出图
@@ -771,6 +838,19 @@ def _tool_lock(name):
         return lk
 
 
+SERVER_VERSION = "0.4.0"   # 与 README「状态」一节保持一致
+
+
+def _parse_error(err, raw=b""):
+    """JSON 解析失败：按 JSON-RPC 2.0 返回 -32700。
+
+    以前 stdio 直接 continue、HTTP 只回 400 空体，
+    调用方拿不到任何原因，只能猜是自己发错了还是服务挂了。
+    """
+    return {"jsonrpc": "2.0", "id": None,
+            "error": {"code": -32700, "message": "parse error: %s" % err}}
+
+
 def handle(req):
     if not isinstance(req, dict):
         return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
@@ -781,7 +861,7 @@ def handle(req):
     if method == "initialize":
         return {"jsonrpc": "2.0", "id": rid,
                 "result": {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
-                           "serverInfo": {"name": "mcp-vision", "version": "0.3.0"}}}
+                           "serverInfo": {"name": "mcp-vision", "version": SERVER_VERSION}}}
     if method == "notifications/initialized":
         return None if is_note else {"jsonrpc": "2.0", "id": rid, "result": {}}
     if method == "tools/list":
@@ -791,7 +871,9 @@ def handle(req):
         args = params.get("arguments") or {}
         handler = HANDLERS.get(name)
         if not handler:
-            return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown tool %s" % name}}
+            # 未知工具是 params 的问题，不是 method 不存在
+            return {"jsonrpc": "2.0", "id": rid,
+                    "error": {"code": -32602, "message": "unknown tool %s" % name}}
         try:
             with _tool_lock(name):
                 text, images = handler(args)
@@ -813,9 +895,10 @@ def serve_stdio():
             continue
         try:
             req = json.loads(line)
-        except Exception:
-            continue
-        resp = handle(req)
+        except Exception as e:
+            resp = _parse_error(e, line)
+        else:
+            resp = handle(req)
         if resp is None:
             continue
         sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
@@ -829,10 +912,9 @@ def serve_http(port, host="127.0.0.1"):
             body = self.rfile.read(n)
             try:
                 req = json.loads(body)
-            except Exception:
-                self.send_response(400); self.end_headers(); return
-            try:
                 resp = handle(req)
+            except json.JSONDecodeError as e:
+                resp = _parse_error(e)
             except Exception as e:      # 别让一个请求炸掉整条连接线程
                 resp = {"jsonrpc": "2.0", "id": None,
                         "error": {"code": -32603, "message": "internal: %s" % e}}

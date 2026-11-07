@@ -34,4 +34,6 @@ printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n{"jsonrpc":"
 if [ "$1" = "--test" ]; then
   echo "测试：L/R 分层出图"
   python3 tests/test_stereo.py | sed 's/^/  /' || exit 1
+  echo "测试：取窗与参数校验"
+  python3 tests/test_windows.py | sed 's/^/  /' || exit 1
 fi
