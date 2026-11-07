@@ -583,15 +583,13 @@ TOOLS = [
      "description": (
          "Look at a clip as one page of frames, or as a single frame.\n"
          "\n"
-         "Sample `quantity` frames evenly from `time` to `time`+`seconds` and lay them out left to right, "
-         "top to bottom on one image, plus a timeline giving each cell's moment. quantity defaults to 15, max 30.\n"
-         "quantity=1 returns that one frame at full detail instead of a page - use it to read a board, "
+         "Samples `quantity` frames across the window into one page, "
+         "plus a timeline mapping each cell to its moment. quantity defaults to 15, max 30.\n"
+         "quantity=1 returns one frame at full detail instead of a page - use it to read a board, "
          "a scoreboard or a subtitle line, optionally with `crop` (WxH+X+Y, applied before scaling).\n"
          "\n"
-         "The page has no timestamps burned in; cell order matches timeline order 1:1. `quality` is an "
-         "area cap that only scales down: it caps the whole page for a sheet and the cropped area for a "
-         "single frame. The window is capped at 900 seconds and clamped to the clip, with a note in the reply "
-         "when that happens. Outputs land in workspace/<video>/video/ and repeat calls reuse them."
+         "`quality` is an area cap that only scales down. The window is capped at 900 seconds "
+         "and clamped to the clip, with a note when that happens."
      ),     "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
@@ -606,13 +604,11 @@ TOOLS = [
 
     {"name": "audio",
      "description": (
-         "Measure a window's audio: a loudness curve in dB, an FFT spectrum with peak "
-         "frequency / musical note / cents, a time-frequency map, a peak-frequency track "
-         "and the raw waveform of the analysed frame. Sample rate follows "
-         "the video's own audio track. L and R are always measured separately: every "
-         "picture is 1024x1024, L on the upper half, R on the lower half, each half "
-         "labelled and captioned with its own peak frequency / note / max level. "
-         "Always returns the pictures; view picks which one."
+         "Measure a window's audio. Returns pictures plus numbers: loudness curve, FFT "
+         "spectrum (peak frequency / note / cents), time-frequency map, pitch track, "
+         "waveform. Sample rate follows the video's audio track. L and R are measured "
+         "separately, L on the upper half of each picture, R on the lower. view picks "
+         "which picture; the numbers always come back for both channels."
      ),
      "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
@@ -620,9 +616,9 @@ TOOLS = [
          "seconds": {"type": "number", "description": "window length in seconds, must be > 0; default 10, max 15"},
          "view": {"type": "string",
                   "enum": ["all", "level", "spectrum", "spectrogram", "peak", "wave"],
-                  "description": ("level = dB over time (20ms RMS); spectrum = FFT amplitude (full-scale sine = 1, auto range), log freq 10-Nyquist; "
-                                  "spectrogram = time-frequency map, log freq 20-Nyquist, colour = FFT amplitude, auto range (full-scale sine = 1, top rounded up to a decade); "
-                                  "peak = peak-frequency track; wave = raw waveform of the analysed 4096-sample frame; default all")}}}},
+                  "description": ("level = loudness over time; spectrum = frequency content at one frame; "
+                                  "spectrogram = frequency over time; peak = pitch track; wave = raw samples. "
+                                  "Which to pick: how loud -> level, what notes -> spectrum or peak, how it changes -> spectrogram. Default all")}}}},
 
     {"name": "subtitles",
      "description": (
@@ -630,12 +626,12 @@ TOOLS = [
          "subtitles by OCRing the subtitle band frame by frame - use it for burned-in subtitles, "
          "songs and any text on screen. mode=stt transcribes the audio with speech recognition - "
          "use it when the speech is not written on screen. "
-         "ONLY mode=stt carries acoustic fields: per-cue emotion (HAPPY/SAD/ANGRY..., "
-         "NEUTRAL and EMO_UNKNOWN omitted), audio event (Speech omitted; BGM/Applause/Laughter "
-         "kept), language, plus a summary count. Those are SenseVoice's judgement on the whole "
-         "clip, not source separation - BGM means music outweighed speech in that segment, "
-         "which is why words may go missing. mode=ocr reads pixels and has no access to them; "
-         "it returns a per-cue conf instead. "
+         "ONLY mode=stt carries acoustic fields: per-cue emotion, "
+         "audio event (BGM = music "
+         "outweighed speech, so words may be missing), language, and a summary count. "
+         "mode=ocr reads pixels and cannot see them; it returns a per-cue conf instead. "
+         
+         
          "band=\"0.10,0.27\" pins the OCR band manually. "
          "Cue times are MM:SS (second precision)."
      ),
