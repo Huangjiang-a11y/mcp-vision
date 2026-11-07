@@ -451,12 +451,11 @@ TOOLS = [
          "Give a window and a frame count; it samples that many frames evenly from the window start to "
          "its end (both ends included), lays them out left to right, top to bottom, and returns the page "
          "plus a timeline list.\n"
-         "Example: quantity=12, seconds=60 on a 1280x720 clip gives a 1056x990 png of 3 columns x 5 rows "
-         "(15 cells, 12 filled, 3 left dark, each cell 352x198) and timeline = [{t:0.0,...}, {t:4.286,...}, "
-         "... {t:60.0,...}]. The sheet itself has no timestamps burned in: cell order matches timeline "
-         "order 1:1, and that is how you tell which moment a thumbnail is.\n"
-         "The reply says frames=15, not 12: a grid must be rectangular, so it picks cols x rows close to "
-         "the source aspect and tolerates up to 3 empty cells.\n"
+         "Example: quantity=12, seconds=60 on a 1280x720 clip gives a 1056x990 png laid out 3 columns x 5 rows "
+         "- 12 frames, 3 cells left dark, cells 352x198 - and timeline = [{t:0.0,...}, {t:5.455,...}, "
+         "... {t:60.0,...}]. You get exactly `quantity` frames; the grid is only the layout, chosen so the page "
+         "stays close to square, and the last row may be partly empty. The sheet has no timestamps burned in: "
+         "cell order matches timeline order 1:1, which is how you tell which moment a thumbnail is.\n"
          "attach=true (default) sends the page as an image; false returns the path only, with attached / "
          "sheetKB telling you whether an image went out.\n"
          "\n"
@@ -481,7 +480,9 @@ TOOLS = [
          "seconds": {"type": "number", "description": "analyze: window length in seconds; default: up to the cap or the end"},
          "max_seconds": {"type": "number", "description": "window cap in seconds, default 900"},
          "crop": {"type": "string", "description": "frame: crop as WxH+X+Y, e.g. 720x300+0+880"},
-         "attach": {"type": "boolean", "description": "analyze: attach the grid page image, default true"},
+         "attach": {"type": "boolean",
+                    "description": "analyze: attach the grid page as an image, default true; pass false only if your "
+                                   "client can read files itself, otherwise you get a path and no picture"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
                      "description": "pixel cap: low=512^2 medium=1024^2 high=1536^2 max=2048^2; scales down only"}}}},
 
@@ -588,7 +589,8 @@ def tool_analyze(a):
             if best is None or key < best[0]:
                 best = (key, c, r)
     cols, rows = best[1], best[2]
-    need = min(cols * rows, 30)
+    # 要几张就抽几张：网格只决定排版，不足的最后一排留空，不再靠多抽样把格子填满
+    need = min(n0, 30)
     win_start, win_end, window_note = _window(a, asset)
     ts = engine.sample_times(win_start, win_end, need)
     frames = engine.extract_frames(asset["media_path"], ts, width=fw, size=(fw, fh),
