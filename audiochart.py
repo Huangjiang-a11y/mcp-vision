@@ -251,6 +251,30 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512):
     return c
 
 
+def _nice_step(span, want=5):
+    """把跨度切成 want 段左右，步长取 1/2/2.5/5 的十倍数，刻度才整齐。"""
+    raw = max(1e-9, span / float(max(1, want - 1)))
+    mag = 10 ** math.floor(math.log10(raw))
+    for m in (1, 2, 2.5, 5, 10):
+        if raw <= m * mag:
+            return m * mag
+    return 10 * mag
+
+
+def _time_ticks(t0, t1, want=5):
+    """窗口内的等距刻度，落在 step 的整数倍上，不出现 6.4 / 6.9 这种歪数。"""
+    step = _nice_step(t1 - t0, want)
+    k = math.ceil(t0 / step - 1e-9)
+    ticks, txt = [], "%.1f" if step >= 0.1 else "%.2f"
+    while True:
+        v = k * step
+        if v > t1 + 1e-9:
+            break
+        ticks.append((v, txt % v))
+        k += 1
+    return ticks
+
+
 def plot_spectrogram(d, tag="", w=1024, h=512):
     sg = d["spectrogram"]
     spec = np.asarray(sg["spec_db"], dtype=float)   # (nfreq, ntime)
@@ -258,7 +282,7 @@ def plot_spectrogram(d, tag="", w=1024, h=512):
     freqs = np.asarray(sg["freqs"], dtype=float)
     c = Canvas(w, h)
     x0, x1 = 96, w - 26
-    y0, y1 = 64, 316
+    y0, y1 = 58, 300
     H, W = y1 - y0, x1 - x0
     nt, nf = spec.shape[1], spec.shape[0]
     if nt < 2:
@@ -276,37 +300,47 @@ def plot_spectrogram(d, tag="", w=1024, h=512):
         xx = x0 + (x1 - x0) * k / 4.0
         lab = "%d" % fr
         c.ctext(xx, y1 + 10, lab, DIM, 2)
-    for k in range(5):
-        frac = k / 4.0
-        tt = times[0] + (times[-1] - times[0]) * frac
+    # 时间刻度：按窗口等距取整
+    t0, t1 = (float(times[0]), float(times[-1])) if times.size > 1 else (0.0, 1.0)
+    for val, lab in _time_ticks(t0, t1):
+        frac = (val - t0) / max(1e-9, t1 - t0)
         yy = y1 - (y1 - y0) * frac
         c.hline(yy, x0, x1, (0, 0, 0), 1)
-        lab = "%.1f" % tt
         c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
-
-    # 峰值频率轨迹
-    p0, p1 = 380, h - 44
+    # 峰值频率轨迹：纵轴按轨迹自身范围自适应，低频的起伏才看得见
+    p0, p1 = 352, h - 52
     tr = sg["peak_track"]
-    fx = float(freqs[-1]) if freqs.size else 1.0
-    c.text(x0, p0 - 22, "PEAK FREQ TRACK", DIM, 2)
+    fs = [float(f) for _, f in tr] or [1.0]
+    lo, hi = min(fs), max(fs)
+    step = _nice_step(max(hi - lo, 1.0), 4)
+    lo = math.floor(lo / step) * step
+    hi = math.ceil(hi / step) * step
+    if hi - lo < step:
+        hi = lo + step
+    def Ytr(f): return p1 - (f - lo) / (hi - lo) * (p1 - p0)
+    c.text(x0, p0 - 22, "PEAK FREQ TRACK (HZ)", DIM, 2)
     c.rect(x0, p0, x1, p1, AXIS)
-    for frac in (0.25, 0.5, 0.75):
-        db = fx * frac
-        yy = p1 - frac * (p1 - p0)
+    v = lo
+    while v <= hi + 1e-9:
+        yy = Ytr(v)
         c.hline(yy, x0, x1, GRID)
-        lab = "%d" % db
+        lab = "%g" % round(v, 2)
         c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
+        v += step
     if tr:
         span = (times[-1] - times[0]) if len(times) > 1 else 1.0
+        pts = []
         for tt, ff in tr:
             frac = (tt - times[0]) / max(1e-9, span)
-            xx = x0 + (x1 - x0) * min(1.0, max(0.0, frac))
-            yy = p1 - (min(ff, fx) / fx) * (p1 - p0)
+            pts.append((x0 + (x1 - x0) * min(1.0, max(0.0, frac)), Ytr(ff)))
+        for i in range(1, len(pts)):
+            c.line(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1], GRID, 1)
+        for xx, yy in pts:
             for a2 in range(-2, 3):
                 for b2 in range(-2, 3):
                     if a2 * a2 + b2 * b2 <= 4:
                         c.px(xx + a2, yy + b2, FG)
-    c.text(x1 - c.tw("TIME (S)", 2), h - 24, "TIME (S)", DIM, 2)
+    c.text(x1 - c.tw("TIME (S)", 2), h - 34, "TIME (S)", DIM, 2)
     _caption(c, d, x1, p0 - 22)
     return c
 
