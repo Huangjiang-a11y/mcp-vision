@@ -751,7 +751,9 @@ def tool_transcribe(a):
 
 def dispatch_audio(a):
     act = (a.get("action") or "levels").lower()
-    if act in ("levels", "analyze"):
+    # 不接 "analyze"：那个词在 video 里是整片抽帧，落到 audio 上却成了电平分析，
+    # 传错工具不会报错，只会拿到一份看起来正常的别的结果
+    if act == "levels":
         return tool_audio(a)
     if act in ("extract",):
         return tool_audio(a)
@@ -766,8 +768,6 @@ def dispatch_subtitles(a):
         return tool_ocr(a)
     if act in ("band", "subtitles"):
         return tool_subtitles(a)
-    if act == "search":
-        return ("search 待实现", [])
     return ("未知 action: %s" % act, [])
 
 
@@ -781,9 +781,11 @@ def dispatch(a):
         return dispatch_workspace(a)
     if act in ("probe", "frames", "sheet", "peek", "watch"):
         return dispatch_video(a)
-    if act in ("levels", "analyze", "extract", "transcribe", "transcript", "audio"):
+    if act == "analyze":                 # 旧入口里 analyze 一直是电平分析
+        return dispatch_audio(dict(a, action="levels"))
+    if act in ("levels", "extract", "transcribe", "transcript", "audio"):
         return dispatch_audio(a)
-    if act in ("ocr", "band", "subtitles", "search"):
+    if act in ("ocr", "band", "subtitles"):
         return dispatch_subtitles(a)
     return ("未知 action: %s" % act, [])
 
@@ -822,7 +824,7 @@ def handle(req):
     if method == "initialize":
         return {"jsonrpc": "2.0", "id": rid,
                 "result": {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
-                           "serverInfo": {"name": "mcp-vision", "version": "0.2.0"}}}
+                           "serverInfo": {"name": "mcp-vision", "version": "0.3.0"}}}
     if method == "notifications/initialized":
         return None if is_note else {"jsonrpc": "2.0", "id": rid, "result": {}}
     if method == "tools/list":
