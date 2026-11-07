@@ -338,12 +338,12 @@ def tool_subtitles(a):
     try:
         res = ocrmod.ocr_subtitles(
             media, start, end,
-            step=float(a.get("step", 1.0)),
+            step=1.0,
             band=band,
             engine=ocrmod.get_engine())
     except Exception as e:
         return ("字幕提取失败: %s" % e, [])
-    segs = ocrmod.fold_segments(res["results"], step=float(a.get("step", 1.0)))
+    segs = ocrmod.fold_segments(res["results"], step=1.0)
     out = {"frames": res["frames"], "ocr_runs": res["ocr_runs"], "skipped": res["skipped"], "band": res.get("band"), "band_auto": res.get("band_auto"),
            "band_px": res["band_px"], "segment_count": len(segs), "segments": segs}
     if not segs and band == "auto":
@@ -417,14 +417,13 @@ TOOLS = [
 
     {"name": "subtitles",
      "description": (
-         "Identify subtitles: OCR a subtitle band window frame by frame and fold the frames into "
-         "cues (from/to/text/conf). Pass band=\"0.10,0.27\" to pin the band manually."
+         "Read on-screen subtitles: OCR the subtitle band frame by frame over a window and return "
+         "cues. band=\"0.10,0.27\" pins the band manually."
      ),
      "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number", "description": "band: window length in seconds"},
-         "step": {"type": "number", "description": "band: sampling interval in seconds, default 1.0"},
          "band": {"type": "string",
                   "description": "band range: 'auto' (default) or ratios like \"0.10,0.27\""}}}},
 
