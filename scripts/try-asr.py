@@ -1,4 +1,4 @@
-import subprocess, wave, numpy as np, sherpa_onnx, sys
+import subprocess, wave, numpy as np, sherpa_onnx
 V = "out/real/BV1Rx54znE7k_p1.mp4"
 rec = sherpa_onnx.OfflineRecognizer.from_sense_voice(
     model="/data/data/com.termux/files/home/asr/sensevoice/model.int8.onnx",

@@ -1,5 +1,5 @@
 """mcp-vision 引擎：probe / 抽帧 / 网格页 / 音频分析 / 工作区。纯 Python，无 Node。"""
-import os, re, json, subprocess, time, math, struct, zlib, hashlib, shutil, urllib.request
+import os, re, json, subprocess, time, math, struct, zlib, hashlib, shutil
 from pathlib import Path
 import numpy as np
 
@@ -189,11 +189,6 @@ def extract_frames(media, times, width=DEFAULT_FRAME_WIDTH, out_dir=None, signal
 # ---------- png writer (zlib, no Pillow) ----------
 def _write_png(path, rgb, w, h):
     # rgb: numpy array shape (h,w,3) uint8
-    def chunk(typ, data):
-        c = struct.pack(">I", len(data)) + typ + data
-        crc = zlib.crc32(typ + data) & 0xffffffff
-        return struct.pack(">I", len(data)) + typ + data + struct.pack(">I", crc)
-    # proper chunk assembly
     def mk(typ, data):
         return struct.pack(">I", len(data)) + typ + data + struct.pack(">I", zlib.crc32(typ + data) & 0xffffffff)
     raw = bytearray()

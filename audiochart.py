@@ -403,7 +403,7 @@ def plot_spectrogram(d, tag="", w=1024, h=512, fmax=None):
             c.ctext(xx, by + bh + 2, lab, DIM, 2)
     y0, y1 = 76, h - 38
     H, W = y1 - y0, x1 - x0
-    nt, nf = rel.shape[1], rel.shape[0]
+    nt = rel.shape[1]
     if nt < 2:
         rel = np.repeat(rel, 2, axis=1); nt = 2
     fmin = 20.0
