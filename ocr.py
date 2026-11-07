@@ -332,12 +332,12 @@ def _stream_frames(media, start=0.0, end=None, step=1.0, width=None, crop=None):
             proc.kill()
 
 
-def detect_subtitle_band(media, samples=4, start=0.0, end=None, width=None,
-                         lower_from=0.45, pad=0.02, engine=None):
+def detect_subtitle_band(media, samples=10, start=0.0, end=None, width=None,
+                         lower_from=0.6667, pad=0.02, engine=None):
     """利用少量采样点按 OCR 框坐标聚类，秒级自动锁定字幕带 (y0_ratio, y1_ratio)。
 
-    - samples 默认 4 点，用 ffmpeg -ss 单帧瞬时抓取
-    - 仅对画面下半截（> lower_from）做 OCR，避开大半画面
+    - samples 默认 10 点，用 ffmpeg -ss 单帧瞬时抓取
+    - 先只搜画面底部三分之一（> lower_from≈2/3）；那里没字再放宽到下半截
     - 耗时通常在 1~2 秒左右
     """
     if engine is None:
@@ -383,36 +383,44 @@ def detect_subtitle_band(media, samples=4, start=0.0, end=None, width=None,
             y1 = (b[3] + crop_y) / float(H)
             if (y1 - y0) < 0.02:  # 太矮的噪点排除
                 continue
-            boxes.append((y0, y1, max(0.0, (b[2] - b[0]) / float(W))))
+            boxes.append((y0, y1, max(0.0, (b[2] - b[0]) / float(W)),
+                          (r.get("text") or "").strip()))
 
     if not boxes:
-        # 两条退路：先加密采样点（短窗口里字幕可能恰好不在那 4 个时刻），
-        # 再降一档分辨率（小字幕在高分辨率下框不出字）。
-        if samples < 8:
-            return detect_subtitle_band(media, samples=8, start=start, end=end, width=width,
+        # 退路一：底部三分之一没字 → 字幕位置更靠上，放宽到下半截
+        if lower_from > 0.5:
+            return detect_subtitle_band(media, samples=max(samples, 10), start=start, end=end,
+                                        width=width, lower_from=0.45, pad=pad, engine=engine)
+        # 退路二：加密采样点（短窗口里字幕可能恰好不在前几个时刻）
+        if samples < 16:
+            return detect_subtitle_band(media, samples=16, start=start, end=end, width=width,
                                         lower_from=lower_from, pad=pad, engine=engine)
+        # 退路三：降一档分辨率（小字幕在高分辨率下框不出字）
         if width > 560:
-            return detect_subtitle_band(media, samples=8, start=start, end=end,
+            return detect_subtitle_band(media, samples=16, start=start, end=end,
                                         width=max(480, width // 2), lower_from=lower_from,
                                         pad=pad, engine=engine)
         return None
 
     # 按纵向重叠聚类
     clusters = []
-    for y0, y1, wr in boxes:
+    for y0, y1, wr, txt in boxes:
         hit = None
         for c in clusters:
             if y0 < c["y1"] and y1 > c["y0"]:
                 hit = c
                 break
         if hit is None:
-            clusters.append({"y0": y0, "y1": y1, "count": 1, "hs": [y1 - y0], "ws": [wr]})
+            clusters.append({"y0": y0, "y1": y1, "count": 1, "hs": [y1 - y0], "ws": [wr],
+                             "texts": {txt} if txt else set()})
         else:
             hit["y0"] = min(hit["y0"], y0)
             hit["y1"] = max(hit["y1"], y1)
             hit["count"] += 1
             hit["hs"].append(y1 - y0)
             hit["ws"].append(wr)
+            if txt:
+                hit["texts"].add(txt)
 
     # 选簇不能只看框数：手写正文一行行的小字框永远比字幕多。
     # 字幕的特征是「字大、横向长、位置靠下」，所以按字号×宽度×位置打分。
@@ -420,7 +428,11 @@ def detect_subtitle_band(media, samples=4, start=0.0, end=None, width=None,
         h = sum(c["hs"]) / len(c["hs"])
         w = max(c["ws"]) if c["ws"] else 0.0
         lower = max(0.0, c["y0"] - 0.5)     # 0.5 以下才算加分
-        return (h ** 1.5) * (0.3 + w) * (1.0 + lower * 2.0)
+        s = (h ** 1.5) * (0.3 + w) * (1.0 + lower * 3.0)
+        # 常驻水印/台标：多次采样文字一字不变，判为静态标，不参与竞争
+        if c["count"] >= 3 and len(c.get("texts") or ()) <= 1:
+            s *= 0.25
+        return s
 
     best = max(clusters, key=score)
     # 至少在 1 个采样点明确检出，且高宽比合理
@@ -517,7 +529,7 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
     band_used = band
     band_auto = None
     if band in (None, "auto"):
-        band_auto = detect_subtitle_band(media, samples=4, start=start, end=end, engine=engine)
+        band_auto = detect_subtitle_band(media, samples=10, start=start, end=end, engine=engine)
         band_used = band_auto or (0.70, 1.0)
     y0r, y1r = float(band_used[0]), float(band_used[1])
     out, prev, prev_res = [], None, None
