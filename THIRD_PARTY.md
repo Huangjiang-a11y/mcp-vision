@@ -42,11 +42,36 @@
 | 模型 | 许可 | 备注 |
 |---|---|---|
 | PP-OCRv4（PaddleOCR） | Apache-2.0 | 需保留版权与许可声明 |
-| SenseVoiceSmall | FunASR Model Open Source License v1.1 | **须保留模型名并署名 FunASR/FunAudioLLM**；商用允许；官方澄清见上游 issue #286 |
+| SenseVoiceSmall | FunASR Model Open Source License v1.1 | 见下节，**不是 Apache** |
 | Silero VAD | MIT | — |
 
-SenseVoice 的署名要求在本项目里的落地方式：文档中始终以「SenseVoice」这一名称指代该模型，
-并在 [README](README.md) 与 [INSTALL](INSTALL.md) 中注明来自 FunAudioLLM / FunASR。
+### SenseVoice 是两套许可，别搞混
+
+| 层面 | 许可 | 出处 |
+|---|---|---|
+| **代码**（推理库、训练脚本） | **MIT** | `FunAudioLLM/SenseVoice`、`QwenAudio/SenseVoice`、`modelscope/FunASR` 三个仓库均为 MIT |
+| **模型权重**（`model.pt` / 转出的 onnx） | **FunASR Model Open Source License v1.1** | 模型卡写 `license: other`，`license_link` 指向 [`modelscope/FunASR/MODEL_LICENSE`](https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE) |
+
+容易记混的地方：
+
+- **Apache-2.0 不是 SenseVoice**。本项目里 Apache-2.0 有两个：`sherpa-onnx`（推理框架）和
+  PP-OCRv4（PaddleOCR 的模型）。SenseVoice 两者都不是。
+- **MIT 只覆盖代码**。你实际下载的权重走 FunASR 那份协议，署名义务来自它而不是 MIT。
+
+协议 v1.1 的实际条款（已核对原文）只有三类：§2.1 允许使用/复制/修改/分享；
+§2.2 要求**注明出处与作者、保留模型名**；§3–§7 是免责、社区行为与终止条款。
+
+两个值得留意的细节：
+
+1. **原文没写「商用」二字**。§3 甚至写着「仅作为参考和学习使用」。
+   商用可行的依据是维护者在 [issue #286](https://github.com/FunAudioLLM/SenseVoice/issues/286)
+   的官方澄清（2026-05），说明 §3 是免责声明而非使用限制。介意这一点的话，
+   建议自己向上游确认一次并留档。
+2. **§4.2 是条不常见的约束**：不得对模型作「无正当理由的贬低、恶意抹黑」，
+   违反即自动失去全部许可。这是评述性条款，正常使用不会碰到，但要知道它存在。
+
+本项目对 §2.2 的落地方式：文档中始终以「SenseVoice」这一名称指代该模型，
+并在 [README](README.md) 与 [INSTALL](INSTALL.md) 中注明来自 FunAudioLLM / FunASR / 阿里巴巴集团。
 
 ## 思路借鉴
 

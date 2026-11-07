@@ -305,8 +305,8 @@ v0.4 已通：`workspace`（open / list）、`video`、
 模型与依赖：
 
 - **PP-OCRv4**，来自 [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)（Apache-2.0）
-- **SenseVoice**，来自 [FunAudioLLM / FunASR](https://github.com/FunAudioLLM/SenseVoice)，
-  模型权重遵循 FunASR Model Open Source License v1.1
+- **SenseVoice**，来自 [FunAudioLLM / FunASR](https://github.com/FunAudioLLM/SenseVoice)。
+  代码 MIT；**模型权重是另一套**：FunASR Model Open Source License v1.1，须保留模型名与署名
 - **Silero VAD**（MIT）、**sherpa-onnx**（Apache-2.0）
 
 ## 许可证

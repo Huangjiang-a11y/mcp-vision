@@ -269,8 +269,9 @@ OCR 与语音转写的输出**可能有错**，尤其在唱腔、方言、强背
 各模型遵循其上游许可，使用前请自行查阅：
 
 - PP-OCRv4（PaddleOCR）：Apache-2.0
-- SenseVoice（FunAudioLLM / FunASR）：FunASR Model Open Source License v1.1，
-  **须保留模型名 SenseVoice 并署名来源**
+- SenseVoice（FunAudioLLM / FunASR，© 阿里巴巴集团）：**代码 MIT，权重另算**——
+  权重遵循 FunASR Model Open Source License v1.1（模型卡标 `license: other`），
+  **须保留模型名 SenseVoice 并署名来源**。注意它不是 Apache-2.0。
 - Silero VAD：MIT
 - sherpa-onnx：Apache-2.0
 
