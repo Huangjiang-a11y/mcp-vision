@@ -279,10 +279,11 @@ def _probe_duration(path):
         return 0.0
 
 
-def _stream_frames(media, start=0.0, end=None, step=1.0, width=960, crop=None):
+def _stream_frames(media, start=0.0, end=None, step=1.0, width=None, crop=None):
     """ffmpeg 管道流出帧，逐帧 yield (i, t, rgb ndarray)。不落盘。
 
     crop: (y0_ratio, y1_ratio)，给了就只出带内；不给出全帧。
+    width: None（默认）按源分辨率出，裁完直接给，不做缩放；给了才缩到这个宽度。
     """
     w0, h0 = _probe_wh(media)
     if crop is None:
@@ -290,14 +291,20 @@ def _stream_frames(media, start=0.0, end=None, step=1.0, width=960, crop=None):
     else:
         y0 = max(0, int(h0 * crop[0]))
         bh = max(8, int(h0 * crop[1]) - y0)
-    W = max(16, min(int(width), w0))
-    H = max(8, int(round(bh * W / w0)))
-    H -= H % 2
+    bh -= bh % 2                      # 偶数高，rawvideo 才不会错半行
+    bh = max(8, bh)
+    if width:
+        W = max(16, min(int(width), w0))
+        H = max(8, int(round(bh * W / w0)))
+        H -= H % 2
+    else:
+        W, H = w0, bh                 # 不缩放：裁完直接输出原像素
     step = float(step) if step and step > 0 else 1.0
     parts = ["fps=%s" % (1.0 / step)]
     if crop is not None:
         parts.append("crop=%d:%d:0:%d" % (w0, bh, y0))
-    parts.append("scale=%d:%d" % (W, H))
+    if width:
+        parts.append("scale=%d:%d" % (W, H))
     cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
            "-ss", str(start), "-i", str(media)]
     if end is not None:
@@ -499,7 +506,7 @@ def _keep_wide(res, W):
 
 
 def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
-                  width=960, skip_th=1.0, text_th=220, min_conf=0.0, engine=None):
+                  width=None, skip_th=1.0, text_th=220, min_conf=0.0, engine=None):
     """字幕带 OCR：ffmpeg 管道流出带帧（不落盘），字幕没变的帧跳过不识别。
 
     band: (y0_ratio, y1_ratio) 显式指定；"auto" 用 OCR 框坐标自动定位；None 等价 auto。
