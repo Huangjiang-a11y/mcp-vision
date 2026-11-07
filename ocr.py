@@ -343,7 +343,7 @@ def _stream_frames(media, start=0.0, end=None, step=1.0, width=None, crop=None):
             proc.kill()
 
 
-STATIC_RATIO = 0.6      # 同一串字在簇内占比超过这个数 → 判为常驻水印
+STATIC_RATIO = 0.5      # 同一串字在簇内占比达到这个数 → 判为常驻水印
 
 
 def _norm_text(t):
@@ -351,7 +351,7 @@ def _norm_text(t):
 
 
 def _is_static(c):
-    """同一簇里出现最多的那串字占比 ≥60%，且至少出现 2 次 → 判为静态标。"""
+    """同一簇里出现最多的那串字占比 ≥50%，且至少出现 2 次 → 判为静态标。"""
     txts = c.get("texts") or []
     if c.get("count", 0) < 2 or not txts:
         return False
@@ -360,11 +360,12 @@ def _is_static(c):
 
 
 def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
-                         lower_from=0.6, pad=0.02, engine=None):
+                         lower_from=0.0, pad=0.02, engine=None):
     """利用少量采样点按 OCR 框坐标聚类，秒级自动锁定字幕带 (y0_ratio, y1_ratio)。
 
     - samples 默认 8 点；短窗口一次解码取帧，长窗口逐点 seek
-    - 只搜画面下方十分之四（> lower_from=0.6）：再往上是画面主体和水印
+    - 默认搜整幅画面（lower_from=0.0）：字幕不一定在下面，顶部/中部都有
+    - 位置在打分里体现：底部和顶部加分，中部（多半是画面主体）压低
     - 采样点按窗口时长均匀分布（span/(samples+1)），覆盖整段
     """
     if engine is None:
@@ -460,17 +461,38 @@ def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
                 hit["texts"].append(txt)
 
     # 选簇不能只看框数：手写正文一行行的小字框永远比字幕多。
-    # 字幕的特征是「字大、横向长、位置靠下」，所以按字号×宽度×位置打分。
-    def score(c):
-        h = sum(c["hs"]) / len(c["hs"])
+    # 字幕的特征是「字大、横向长、位置靠边」，所以按字号×宽度×位置打分。
+    def _pos(y0):
+        # 字幕一般压底或贴顶，画面中部那是主体内容。底部权重最高，顶部次之，中部打折。
+        if y0 >= 0.5:
+            return 1.0 + (y0 - 0.5) * 3.0        # 0.5 → 1.0，0.9 → 2.2
+        if y0 <= 0.3:
+            return 1.0 + (0.3 - y0) * 2.0        # 0.1 → 1.4，0.0 → 1.6
+        return 0.6
+
+    def _usable(c):
+        # 整幅扫的时候会捞出画面上各种字：台标、琴键上的 KAWAI、按钮字母。
+        # 字幕是「一行、够宽、反复出现」，这三条先筛掉明显不是的。
         w = max(c["ws"]) if c["ws"] else 0.0
-        lower = max(0.0, c["y0"] - 0.5)     # 0.5 以下才算加分
-        s = (h ** 1.5) * (0.3 + w) * (1.0 + lower * 3.0)
+        if w < 0.12:                      # 单个字母/图标，宽不起来
+            return False
+        if (c["y1"] - c["y0"]) > 0.25:    # 一串框纵向串成一柱，不是一行字
+            return False
+        return True
+
+    def score(c):
+        hs = sorted(c["hs"])
+        h = hs[len(hs) // 2] if hs else 0.0        # 中位数，别让一个高框把整簇抬起来
+        w = max(c["ws"]) if c["ws"] else 0.0
+        seen = min(1.0, 0.5 + 0.1 * c["count"])    # 反复出现的才像字幕
+        s = (h ** 1.5) * (0.3 + w) * _pos(c["y0"]) * seen
         # 常驻水印/台标：同一位置反复出现同一段字。字幕每句都变，水印不变。
         # 用「出现最多的那串字占比」判断，容忍 OCR 抖动（动画：长相思APP / App / 相思APT）
         if _is_static(c):
             s *= 0.25
         return s
+
+    clusters = [c for c in clusters if _usable(c)] or clusters
 
     if os.environ.get("BAND_DEBUG"):
         for c in sorted(clusters, key=score, reverse=True):
@@ -488,8 +510,13 @@ def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
             ny0, ny1 = min(y0, c["y0"]), max(y1, c["y1"])
             if ny1 - ny0 <= 0.2:
                 y0, y1 = ny0, ny1
-    y0_band = max(0.0, y0 - pad)
-    y1_band = min(1.0, y1 + pad)
+    # 双语/两行字幕会整块上下移动（一行时居中、两行时顶上去），固定 0.02 的边距盖不住。
+    # 按实测行高给边距：8 个采样点看不到所有排版时，这一圈是唯一的余量。
+    hs = sorted(best["hs"])
+    line_h = hs[len(hs) // 2] if hs else 0.0
+    pad_eff = max(pad, 0.6 * line_h)
+    y0_band = max(0.0, y0 - pad_eff)
+    y1_band = min(1.0, y1 + pad_eff)
     if (y1_band - y0_band) < 0.03:
         return None
     return (round(y0_band, 4), round(y1_band, 4))
