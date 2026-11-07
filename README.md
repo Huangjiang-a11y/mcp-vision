@@ -1,5 +1,7 @@
 # mcp-vision
 
+[![CI](https://github.com/Huangjiang-a11y/mcp-vision/actions/workflows/ci.yml/badge.svg)](https://github.com/Huangjiang-a11y/mcp-vision/actions/workflows/ci.yml)
+
 **让 AI 看视频。** 纯 Python 的 MCP 服务器，不依赖 Node 运行时。
 
 仓库结构参照 [dsh-video-vision](https://github.com/Tests4gptplay/dsh-video-vision) 的分层重写：
