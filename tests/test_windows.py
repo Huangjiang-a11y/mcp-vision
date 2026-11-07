@@ -97,8 +97,9 @@ src_ocr = inspect.getsource(M._subs_ocr)
 src_stt = inspect.getsource(M._subs_stt)
 check("OCR 不写 emotion", "emotion" in src_ocr, False)
 check("OCR 不写 event", '"event"' in src_ocr, False)
-check("OCR 标注 acoustic_fields=False", 'acoustic_fields": False' in src_ocr, True)
-check("STT 标注 acoustic_fields=True", 'acoustic_fields": True' in src_stt, True)
+# 字段语义写在 schema 里（只付一次），不进每次响应——调用方自己知道传的哪个 mode。
+check("OCR 不重复声明字段缺失", "acoustic_fields" in src_ocr, False)
+check("STT 不重复声明字段存在", "acoustic_fields" in src_stt, False)
 check("STT 确实带 emotion", '"emotion"' in src_stt, True)
 
 print("\nRESULT", "ALL OK" if not fails else "HAS FAIL (%d)" % len(fails))

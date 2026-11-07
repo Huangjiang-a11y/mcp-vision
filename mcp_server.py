@@ -457,7 +457,7 @@ def _subs_stt(a):
             if x.get(k):
                 c[k] = x[k]
         cues.append(c)
-    out = {"mode": "stt", "engine": "silero-vad + sensevoice", "acoustic_fields": True,
+    out = {"mode": "stt", "engine": "silero-vad + sensevoice",
            "range": [round(start, 2), round(start + dur, 2)],
            "segment_count": len(cues), "segments": cues,
            "text": "".join(x["text"] for x in cues)}
@@ -469,9 +469,11 @@ def _subs_stt(a):
             agg[k] = {v: vals.count(v) for v in sorted(set(vals), key=vals.count, reverse=True)}
     if agg:
         out["summary"] = agg
-    if any(c.get("event") in ("BGM", "Applause", "Laughter") for c in cues):
-        out["note_acoustic"] = ("事件标签来自 SenseVoice 的同一遍前向，不是声道分离："
-                                "BGM 表示这段里音乐压过了人声，转写可能因此掉字。")
+    # 「event 是什么、不代表声道分离」属于字段语义，写进 schema 一次就够，
+    # 不占每次响应。这里只在真的掉字时提醒一句。
+    if any(c.get("event") == "BGM" for c in cues):
+        out["note"] = ("带 BGM 的段转写可能掉字。"
+                       if not window_note else window_note + "；带 BGM 的段转写可能掉字")
     if window_note:
         out["note"] = window_note
     return (_dump(out), [])
@@ -518,10 +520,7 @@ def _subs_ocr(a):
     segs = ocrmod.fold_segments(res["results"], step=1.0)
     out = {"mode": "ocr", "frames": res["frames"], "ocr_runs": res["ocr_runs"],
            "skipped": res["skipped"], "band": res.get("band"), "band_auto": res.get("band_auto"),
-           "band_px": res["band_px"], "segment_count": len(segs), "segments": segs,
-           # 只说一次，省得调用方反复试：OCR 读的是像素，
-           # 情感/事件/语种那三项要转写模型才有，这里永远不会有。
-           "acoustic_fields": False}
+           "band_px": res["band_px"], "segment_count": len(segs), "segments": segs}
     if res.get("page_like"):
         # 幻灯片 / 截图 / 作文纸：一屏几十行字，各自成行，没有「字幕带」这回事。
         # 硬选一条带读出来的是页面碎片（「1档压成172」「then分档」），
@@ -616,9 +615,12 @@ TOOLS = [
          "subtitles by OCRing the subtitle band frame by frame - use it for burned-in subtitles, "
          "songs and any text on screen. mode=stt transcribes the audio with speech recognition - "
          "use it when the speech is not written on screen. "
-         "ONLY mode=stt carries acoustic fields: per-cue emotion (HAPPY/SAD/ANGRY...), "
-         "audio event (Speech/BGM/Applause/Laughter) and language, plus a summary count. "
-         "mode=ocr reads pixels and has no access to them - it returns a per-cue conf instead. "
+         "ONLY mode=stt carries acoustic fields: per-cue emotion (HAPPY/SAD/ANGRY..., "
+         "NEUTRAL and EMO_UNKNOWN omitted), audio event (Speech omitted; BGM/Applause/Laughter "
+         "kept), language, plus a summary count. Those are SenseVoice's judgement on the whole "
+         "clip, not source separation - BGM means music outweighed speech in that segment, "
+         "which is why words may go missing. mode=ocr reads pixels and has no access to them; "
+         "it returns a per-cue conf instead. "
          "band=\"0.10,0.27\" pins the OCR band manually. "
          "Cue times are MM:SS (second precision)."
      ),
