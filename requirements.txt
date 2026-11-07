@@ -1,0 +1,9 @@
+# 核心依赖：抽帧 / 电平 / 频谱 / 出图都只要它
+numpy>=1.24
+
+# 可选（按需装，缺了就少对应能力）
+# onnxruntime>=1.16        # OCR（PP-OCRv4）
+# sherpa-onnx>=1.10        # 语音转写（SenseVoice + silero-vad）
+# yt-dlp                   # 链接下载
+
+# 系统依赖（不在 pip 里）：ffmpeg / ffprobe 必须在 PATH 上
