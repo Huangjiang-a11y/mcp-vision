@@ -276,63 +276,91 @@ def _time_ticks(t0, t1, want=5):
 
 
 def plot_spectrogram(d, tag="", w=1024, h=512):
+    """时频图：横轴对数频率 20..24000，纵轴时间（向上）。"""
     sg = d["spectrogram"]
     spec = np.asarray(sg["spec_db"], dtype=float)   # (nfreq, ntime)
     times = np.asarray(sg["times"], dtype=float)
     freqs = np.asarray(sg["freqs"], dtype=float)
     c = Canvas(w, h)
     x0, x1 = 96, w - 26
-    y0, y1 = 58, 300
+    y0, y1 = 64, h - 58
     H, W = y1 - y0, x1 - x0
     nt, nf = spec.shape[1], spec.shape[0]
     if nt < 2:
         spec = np.repeat(spec, 2, axis=1); nt = 2
+    fmin, fmax = 20.0, 24000.0            # 尾端固定 24k，采样率不够的部分留黑
+    def X(fr): return x0 + math.log10(max(fr, fmin) / fmin) / math.log10(fmax / fmin) * (x1 - x0)
+    fcols = fmin * (fmax / fmin) ** (np.arange(W) / float(max(1, W - 1)))
     yt = np.linspace(nt - 1, 0, H).astype(int)      # 时间向上
-    xf = np.linspace(0, nf - 1, W).astype(int)
-    v = np.clip((spec.T[yt][:, xf] + 70.0) / 70.0, 0, 1)
+    # 对数轴下每个像素覆盖的频率宽度差很多，直接取最近 bin 会一格一格的；
+    # 在对数频率上做线性插值，低中频才连续
+    lf = np.log(np.maximum(freqs, 1e-3))
+    lfq = np.log(fcols)
+    mat = np.empty((H, W), dtype=np.float64)
+    src = spec[:, yt]
+    for j in range(H):
+        mat[j, :] = np.interp(lfq, lf, src[:, j])
+    mat[:, fcols > freqs[-1]] = -70.0               # 超过 Nyquist 的部分没有数据
+    v = np.clip((mat + 70.0) / 70.0, 0, 1)
     c.blit(_cmap(v), x0, y0)
     c.rect(x0, y0, x1, y1, AXIS)
     c.text(x0, 12, _tag_title(tag, "SPECTROGRAM"), TXT, 3)
-    c.text(x1 - c.tw("FREQ (HZ)", 2), 14, "FREQ (HZ)", DIM, 2)
+    c.text(x1 - c.tw("FREQ (HZ, LOG)", 2), 14, "FREQ (HZ, LOG)", DIM, 2)
     c.vtext(8, y0 + 8, "TIME (S)", DIM, 2)
-    for k in range(5):
-        fr = freqs[-1] * k / 4.0
-        xx = x0 + (x1 - x0) * k / 4.0
-        lab = "%d" % fr
-        c.ctext(xx, y1 + 10, lab, DIM, 2)
-    # 时间刻度：按窗口等距取整
+    ticks = [f for f in (50, 100, 500, 1000, 5000, 10000, 24000) if f < fmax]
+    if not ticks or fmax > ticks[-1] * 1.05:
+        ticks.append(fmax)
+    for fr in ticks:
+        xx = X(fr)
+        c.vline(xx, y0, y1, (0, 0, 0), 1)
+        c.ctext(xx, y1 + 10, "%g" % fr, DIM, 2)
     t0, t1 = (float(times[0]), float(times[-1])) if times.size > 1 else (0.0, 1.0)
     for val, lab in _time_ticks(t0, t1):
         frac = (val - t0) / max(1e-9, t1 - t0)
         yy = y1 - (y1 - y0) * frac
         c.hline(yy, x0, x1, (0, 0, 0), 1)
         c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
-    # 峰值频率轨迹：纵轴按轨迹自身范围自适应，低频的起伏才看得见
-    p0, p1 = 352, h - 52
+    return c
+
+
+def plot_peak(d, tag="", w=1024, h=512):
+    """峰值频率轨迹单独一张：横轴时间，纵轴按轨迹自身范围自适应。"""
+    sg = d["spectrogram"]
+    times = np.asarray(sg["times"], dtype=float)
     tr = sg["peak_track"]
+    c = Canvas(w, h)
+    x0, x1 = 110, w - 26
+    y0, y1 = 88, h - 76
     fs = [float(f) for _, f in tr] or [1.0]
     lo, hi = min(fs), max(fs)
-    step = _nice_step(max(hi - lo, 1.0), 4)
-    lo = math.floor(lo / step) * step
+    step = _nice_step(max(hi - lo, 1.0), 5)
+    lo = max(0.0, math.floor(lo / step) * step)
     hi = math.ceil(hi / step) * step
     if hi - lo < step:
         hi = lo + step
-    def Ytr(f): return p1 - (f - lo) / (hi - lo) * (p1 - p0)
-    c.text(x0, p0 - 22, "PEAK FREQ TRACK (HZ)", DIM, 2)
-    c.rect(x0, p0, x1, p1, AXIS)
+    def Y(f): return y1 - (f - lo) / (hi - lo) * (y1 - y0)
+    c.text(x0, 12, _tag_title(tag, "PEAK FREQ TRACK"), TXT, 3)
+    c.vtext(8, y0 + 8, "FREQ (HZ)", DIM, 2)
     v = lo
     while v <= hi + 1e-9:
-        yy = Ytr(v)
+        yy = Y(v)
         c.hline(yy, x0, x1, GRID)
         lab = "%g" % round(v, 2)
         c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
         v += step
+    c.rect(x0, y0, x1, y1, AXIS)
+    t0, t1 = (float(times[0]), float(times[-1])) if times.size > 1 else (0.0, 1.0)
+    for val, lab in _time_ticks(t0, t1):
+        frac = (val - t0) / max(1e-9, t1 - t0)
+        xx = x0 + (x1 - x0) * frac
+        c.vline(xx, y0, y1, GRID)
+        c.ctext(xx, y1 + 12, lab, DIM, 2)
     if tr:
-        span = (times[-1] - times[0]) if len(times) > 1 else 1.0
+        span = (t1 - t0) if t1 > t0 else 1.0
         pts = []
         for tt, ff in tr:
-            frac = (tt - times[0]) / max(1e-9, span)
-            pts.append((x0 + (x1 - x0) * min(1.0, max(0.0, frac)), Ytr(ff)))
+            frac = (tt - t0) / span
+            pts.append((x0 + (x1 - x0) * min(1.0, max(0.0, frac)), Y(ff)))
         for i in range(1, len(pts)):
             c.line(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1], GRID, 1)
         for xx, yy in pts:
@@ -340,8 +368,8 @@ def plot_spectrogram(d, tag="", w=1024, h=512):
                 for b2 in range(-2, 3):
                     if a2 * a2 + b2 * b2 <= 4:
                         c.px(xx + a2, yy + b2, FG)
-    c.text(x1 - c.tw("TIME (S)", 2), h - 34, "TIME (S)", DIM, 2)
-    _caption(c, d, x1, p0 - 22)
+    c.text(x1 - c.tw("TIME (S)", 2), h - 30, "TIME (S)", DIM, 2)
+    _caption(c, d, x1, 40)
     return c
 
 
@@ -368,6 +396,9 @@ def render(d, views, out_dir, stem="audio"):
         elif view == "spectrogram":
             top = plot_spectrogram(d["left"], tag=tl)
             bot = plot_spectrogram(d["right"], tag=tr)
+        elif view == "peak":
+            top = plot_peak(d["left"], tag=tl)
+            bot = plot_peak(d["right"], tag=tr)
         else:
             continue
         c = Canvas(W, H)

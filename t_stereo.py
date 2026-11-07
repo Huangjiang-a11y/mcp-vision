@@ -26,7 +26,7 @@ if not m["mono"]:
     print("  FAIL: mono 没标出来"); ok = False
 
 r["_start"], r["_end"] = 0, 2
-paths = audiochart.render(r, ["level", "spectrum", "spectrogram"], d)
+paths = audiochart.render(r, ["level", "spectrum", "spectrogram", "peak"], d)
 # 尺寸校验：不依赖 PIL，直接读 PNG 头
 import struct
 for k, p in paths.items():

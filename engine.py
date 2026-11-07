@@ -290,7 +290,9 @@ def _channel_metrics(x, sr, start, size):
         mag_db = mag_db - float(np.max(mag_db))
 
     # 时频图：STFT
-    hop2 = max(1, size // 2)
+    # 87.5% 重叠：时频图在 1024 宽的画布上放大好几倍，
+    # 帧太稀会看到一块块的小方格
+    hop2 = max(1, size // 8)
     ncol = max(1, (x.size - size) // hop2 + 1) if x.size >= size else 1
     cols = np.empty((freqs.size, ncol), dtype=np.float32)
     for i in range(ncol):
