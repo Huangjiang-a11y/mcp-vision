@@ -331,6 +331,15 @@ def _channel_metrics(x, sr, start, size):
         if chunk.size < size:
             chunk = np.pad(chunk, (0, size - chunk.size))
         cols[:, i] = np.abs(np.fft.rfft(chunk * win))
+    # 每帧峰值那一格补回扇贝损失：纯音落在 bin 中间时单格只有 0.849 倍，
+    # 不补的话峰值轨迹和亮点会随音高移动忽明忽暗地跳 1.4dB。
+    # 只动峰值一格——别的格本来就只是采样点，不知道真实频率在哪。
+    for i in range(ncol):
+        col = cols[:, i].astype(np.float64)
+        if col.size < 3:
+            continue
+        k = int(np.argmax(col[1:])) + 1
+        cols[k, i] /= _hann_gain(_peak_delta(col, k))
     amp = 2.0 * cols / wsum
     spec_db = 20.0 * np.log10(np.maximum(amp, 1e-9))   # dBFS，满幅正弦 = 0dB
     st = float(start) + np.arange(ncol) * (hop2 / float(sr))
