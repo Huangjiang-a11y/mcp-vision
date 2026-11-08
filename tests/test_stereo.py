@@ -29,6 +29,17 @@ print("mono  : mono=%s L=%.1fHz R=%.1fHz" % (m["mono"], m["left"]["spectrum"]["p
 if not m["mono"]:
     print("  FAIL: mono 没标出来"); ok = False
 
+# 基频按声道各测：L 440、R 3000；而且窗口长短不能影响读数（单帧视图只认 time）
+pl, pr = r["pitch"]["left"]["freq_hz"], r["pitch"]["right"]["freq_hz"]
+print("pitch : L=%.1fHz R=%.1fHz（期望 440 / 3000）" % (pl, pr))
+if not (abs(pl - 440) < 12 and abs(pr - 3000) < 60):
+    print("  FAIL: 基频没按声道走"); ok = False
+w1 = engine.analyze_spectrum(st, 0, 0.1, out_dir=d)["pitch"]["left"]["freq_hz"]
+w2 = engine.analyze_spectrum(st, 0, 2.0, out_dir=d)["pitch"]["left"]["freq_hz"]
+print("window: 0.1s=%.2fHz  2.0s=%.2fHz" % (w1, w2))
+if abs(w1 - w2) > 0.01:
+    print("  FAIL: 基频读数受了窗口长度影响"); ok = False
+
 r["_start"], r["_end"] = 0, 2
 paths = audiochart.render(r, ["level", "spectrum", "spectrogram", "peak", "wave",
                               "pitch", "history"], d)

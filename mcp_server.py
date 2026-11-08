@@ -745,12 +745,20 @@ TOOLS = [
          "reading a board, scoreboard or subtitle line, and honours `crop`.\n"
          "\n"
          "`detail` sets picture size as a pixel budget, split across the cells and only ever "
-         "scaled down. The window is capped at 900s and clamped to the clip, noted when it happens."
+         "scaled down. The window is capped at 900s and clamped to the clip, noted when it happens.\n"
+         "\n"
+         "Long clips: fill the window. A page costs the same whether it covers 60s or 900s - "
+         "15 cells over 900s is one frame a minute, over 60s it is one every 4s. So read a long "
+         "film in 900s pages: time=0, 900, 1800 ... until the end, instead of many short slices "
+         "of the same footage. Narrow the window only when you already know where to look (a cue "
+         "or a timestamp), and raise quantity to 30 there."
      ),     "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number",
-                     "description": "window length, must be > 0; default: to the clip end, capped at 900"},
+                     "description": ("window length, must be > 0; default: to the clip end, capped at 900. "
+                                     "For a long clip pass 900 (or omit it) rather than a short slice - "
+                                     "the page costs the same either way")},
          "quantity": {"type": "integer",
                       "description": "frames to sample, default 15, max 30; 1 returns a single full-detail frame instead of a page"},
          "pick": {"type": "string", "enum": ["scene", "even"],
@@ -1121,6 +1129,17 @@ def tool_video(a):
     except (TypeError, ValueError):
         return (_dump({"ok": False, "error": "quantity must be an integer"}), [])
     win_start, win_end, note = _window(a, asset, single=(n == 1))
+    # 长片小窗的提示：一页的代价是「页」，不是「秒」。
+    # 15 格铺 900 秒是 1 格/分钟，铺 60 秒是 1 格/4 秒——同样的钱少看 15 倍。
+    # 写在返回里而不仅写进 schema：描述只在开头读一遍，模型中途会忘。
+    if n > 1:
+        _span = win_end - win_start
+        if duration > _span * 3 and _span < MAX_ANALYZE_SECONDS * 0.5:
+            _reads = int(math.ceil(duration / max(1e-6, _span)))
+            _pages = int(math.ceil(duration / MAX_ANALYZE_SECONDS))
+            _t = ("%.0fs clip, %.0fs window: omitting seconds or passing seconds=%.0f covers it "
+                  "in %d page(s) instead of %d reads" % (duration, _span, MAX_ANALYZE_SECONDS, _pages, _reads))
+            note = _t if not note else note + "; " + _t
     if raw_q is not None and int(raw_q) != n:
         extra = "quantity clamped to %d (allowed 1-30)" % n
         note = extra if not note else note + "; " + extra

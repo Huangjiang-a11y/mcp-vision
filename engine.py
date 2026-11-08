@@ -422,30 +422,23 @@ def _f0_autocorr(seg, sr, fmin=F0_MIN_HZ, fmax=F0_MAX_HZ):
     }
 
 
-def _pitch_metrics(x, sr, start, size, fmin=F0_MIN_HZ, fmax=F0_MAX_HZ, at=None):
-    """单个声道的基频：在指定（或本声道最响的）一帧上测。
+def _pitch_metrics(x, sr, start, size, fmin=F0_MIN_HZ, fmax=F0_MAX_HZ):
+    """单个声道的基频：读窗口**起点**那一帧。
 
     只吃一路样本：分声道还是混单声道由调用方决定。混成单声道会丢掉
     「两路装的是不同声音」这种情况（见 analyze_spectrum 里的实测）。
 
-    at 给的是分析帧的样本偏移。双声道时调用方传同一个 at，让 L / R 报的是
-    **同一瞬间**的音——各挑各的最响帧，两个读数就不在同一时刻，没法比。
+    **不读「窗口内最响的一帧」**。pitch 是单帧视图，只认 time，窗口给多长
+    都不该改变读数；以前拿窗口内最响的 20ms 去定位分析帧，于是同一个 time
+    换个 seconds 就得到不同的音高——和 3bba4c1 修的是同一类错。
+    两个声道读的是同一个起点，所以天然同一瞬间，不用额外对齐。
     """
     x = np.asarray(x, dtype=np.float32)
     if x.size == 0:
         return None
-    if at is None:
-        hop = max(1, int(sr * 0.02))
-        nfr = x.size // hop
-        if nfr >= 1:
-            frames = x[: nfr * hop].reshape(nfr, hop).astype(np.float64)
-            at = int(np.argmax(np.sqrt(np.mean(frames ** 2, axis=1)))) * hop
-        else:
-            at = 0
-    loud = int(max(0, at))
     if x.size < size:
         x = np.pad(x, (0, size - x.size))
-    lo = max(0, min(x.size - size, loud - size // 2))
+    lo = 0
     seg = x[lo:lo + size].astype(np.float64)
     p = _f0_autocorr(seg, sr, fmin, fmax)
     if p is None:
@@ -690,24 +683,15 @@ def analyze_spectrum(media, start, end, fft_size=None, out_dir=None, track=False
     # （−46.65 音分）——自相关把两条周期的最小公倍当成了基频。
     # mono 文件 ffmpeg 会把同一路复制到两边，两边的结果逐字节相同，只报 left。
     mono = int(info["channels"] or 0) < 2
-    mono_mix = pair.mean(axis=1)
     _empty = lambda: {
         "freq_hz": 0.0, "period_ms": 0.0, "note": "", "cents": 0.0,
         "confidence": 0.0, "range_hz": [fmin, F0_MAX_HZ],
         "span_ms": 20.0, "curve_ms": [], "curve": [],
         "t0": round(float(start), 6), "ms": round(1000.0 * size / float(sr), 3),
     }
-    # 同一个分析帧：取两路合起来最响的那一帧，两边都用它。
-    # 各挑各的最响帧会让 L / R 的读数落在不同时刻，横向比就失去意义。
-    _hop = max(1, int(sr * 0.02))
-    _nfr = mono_mix.size // _hop
-    if _nfr >= 1:
-        _fr = mono_mix[: _nfr * _hop].reshape(_nfr, _hop).astype(np.float64)
-        _at = int(np.argmax(np.sqrt(np.mean(_fr ** 2, axis=1)))) * _hop
-    else:
-        _at = 0
-    pitch = {"left": _pitch_metrics(pair[:, 0], sr, start, size, fmin, at=_at) or _empty(),
-             "right": _pitch_metrics(pair[:, 1], sr, start, size, fmin, at=_at) or _empty()}
+    # 两个声道都读窗口起点那一帧：单帧视图只认 time，窗口长度不参与。
+    pitch = {"left": _pitch_metrics(pair[:, 0], sr, start, size, fmin) or _empty(),
+             "right": _pitch_metrics(pair[:, 1], sr, start, size, fmin) or _empty()}
 
     return {
         "sample_rate": sr,
