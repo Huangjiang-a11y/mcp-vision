@@ -17,7 +17,7 @@ subprocess.run(["ffmpeg","-nostdin","-loglevel","error","-y",
 subprocess.run(["ffmpeg","-nostdin","-loglevel","error","-y","-i",st,"-ac","1",mo], check=True)
 
 ok = True
-r = engine.analyze_spectrum(st, 0, 2, out_dir=d)
+r = engine.analyze_spectrum(st, 0, 2, out_dir=d, track=True)
 fl, fr = r["left"]["spectrum"]["peak_freq_hz"], r["right"]["spectrum"]["peak_freq_hz"]
 print("stereo: mono=%s L=%.1fHz R=%.1fHz" % (r["mono"], fl, fr))
 if not (abs(fl-440) < 30 and abs(fr-3000) < 30):
@@ -30,7 +30,8 @@ if not m["mono"]:
     print("  FAIL: mono 没标出来"); ok = False
 
 r["_start"], r["_end"] = 0, 2
-paths = audiochart.render(r, ["level", "spectrum", "spectrogram", "peak", "wave"], d)
+paths = audiochart.render(r, ["level", "spectrum", "spectrogram", "peak", "wave",
+                              "pitch", "history"], d)
 # 尺寸校验：不依赖 PIL，直接读 PNG 头
 import struct
 for k, p in paths.items():

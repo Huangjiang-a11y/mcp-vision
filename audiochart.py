@@ -560,37 +560,237 @@ def plot_wave(d, tag="", w=FIG_W, h=FIG_W // 2):
     return c
 
 
-def render(d, views, out_dir, stem="audio"):
+def plot_pitch(d, tag="", w=FIG_W, h=FIG_W):
+    """基频自相关：整图一张（单声道）。横轴滞后 ms，纵轴归一化相关系数。
+
+    和参考的「音频自相关」一个意思：周期那个峰在 3.31ms，倒数就是 302.46Hz。
+    """
+    pt = (d or {}).get("pitch") or {}
+    xs = np.asarray(pt.get("curve_ms") or [], dtype=float)
+    ys = np.asarray(pt.get("curve") or [], dtype=float)
+    c = Canvas(w, h)
+    # 上面留给标题 + 一排读数（和 spectrum 的排版一致）
+    x0, y0, x1, y1 = 112, 118, w - 22, h - 72
+    span = float(pt.get("span_ms") or 20.0)
+    if span <= 0:
+        span = 20.0
+
+    # 纵轴不固定 -1..1：语音和乐器的相关值基本落在 -0.3..1，
+    # 留一整段负空间只会把曲线挤到上半截。下边界跟着数据走。
+    ymin = -0.2 if ys.size == 0 else min(-0.2, float(np.min(ys)))
+    ymax = 1.0
+    # 步长定下来再把下边界对齐到步长的整数倍，否则刻度会从 -0.25、0.25
+    # 这种半格位置起跳，0 那条线反而画不出来
+    ystep = _nice_step(ymax - ymin, 5)
+    ymin = math.floor(ymin / ystep + 1e-9) * ystep
+
+    def X(ms): return x0 + (x1 - x0) * min(1.0, max(0.0, ms / span))
+    def Y(v): return y1 - (min(ymax, max(ymin, v)) - ymin) / (ymax - ymin) * (y1 - y0)
+
+    v = ymin
+    while v <= ymax + ystep * 1e-9:
+        yy = Y(v)
+        c.hline(yy, x0, x1, AXIS if abs(v) < 1e-9 else GRID)
+        lab = "%.2f" % v
+        c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
+        v += ystep
+
+    xstep = _nice_step(span, 5)
+    t = 0.0
+    while t <= span + 1e-9:
+        xx = X(t)
+        if t > 0:
+            c.vline(xx, y0, y1, GRID)
+        c.ctext(xx, y1 + 12, ("%.0f" % t) if xstep >= 1 else ("%.1f" % t), DIM, 2)
+        t += xstep
+    c.rect(x0, y0, x1, y1, AXIS)
+
+    freq = float(pt.get("freq_hz") or 0.0)
+    per = float(pt.get("period_ms") or 0.0)
+    conf = float(pt.get("confidence") or 0.0)
+    if xs.size >= 2:
+        c.curve(x0 + (x1 - x0) * xs / span, np.array([Y(y) for y in ys]),
+                x0, y0, x1, y1)
+    else:
+        c.hline(Y(0.0), x0, x1, FG)
+        c.ctext((x0 + x1) / 2.0, y0 + 18, "NO PERIODIC SIGNAL", DIM, 2)
+
+    if freq > 0:
+        # 周期位置竖虚线 + 相关峰上的点：数字和曲线对得上，不用自己数格子
+        px = X(per)
+        for yy in range(y0 + 4, y1, 10):
+            c.vline(px, yy, min(yy + 5, y1), (255, 255, 255), 1)
+        py = Y(conf)
+        for a in range(-4, 5):
+            for b in range(-4, 5):
+                if a * a + b * b <= 16:
+                    c.px(px + a, py + b, TXT)
+
+    c.text(x0, 12, _tag_title(tag, "AUTOCORRELATION"), TXT, 3)
+    # 保留位数按列宽定：一行四列、每列 158px，scale 3 下一字符 18px，
+    # 超过 8 个字符就会压到下一列的标签上（1000.00HZ 正好 9 个）。
+    fhz = ("%.0fHZ" % freq) if freq >= 1000 else ("%.1fHZ" % freq)
+    rows = [("PERIOD", ("%.2fMS" % per) if freq > 0 else "---"),
+            ("FREQ", fhz if freq > 0 else "---"),
+            ("NOTE", str(pt.get("note") or "-")),
+            ("CENTS", ("%+.2f" % float(pt.get("cents") or 0.0)) if freq > 0 else "---")]
+    colw = (x1 - x0) // 4
+    for k, (lab, val) in enumerate(rows):
+        xx = x0 + k * colw
+        c.text(xx, 48, lab, DIM, 2)
+        c.text(xx, 66, val, FG, 3)
+    cap = "CONF %.2f" % conf
+    c.text(x1 - c.tw(cap, 2), 30, cap, DIM, 2)
+    c.text(x1 - c.tw("LAG (MS)", 2), h - 20, "LAG (MS)", DIM, 2)
+    c.vtext(8, y0 + 8, "R (NORM)", DIM, 2)
+    return c
+
+
+def plot_history(d, tag="", w=FIG_W, h=FIG_W):
+    """基频 / 周期随时间变化，上下两幅（对齐参考的「历史频率」界面）。
+
+    上：频率，对数轴（100–5000 Hz，和参考图同一组刻度）。
+    下：周期，线性轴，单位秒——周期就是 1/频率，同一批点换种说法，
+    所以不多算一遍，直接从基频轨迹换算。
+
+    短窗逐帧测（默认 25ms，由 engine 的 frame_ms 决定），块仍偏短，
+    两幅都只给趋势；精确读数看 pitch 的单帧结果。
+    """
+    tr = (d or {}).get("pitch_track") or []
+    c = Canvas(w, h)
+    x0, x1 = 120, w - 22
+    ay0, ay1 = 58, 318          # 频率面板
+    by0, by1 = 386, 664         # 周期面板
+
+    ts = [float(t) for t, _f, _c in tr]
+    fs = [float(f) for _t, f, _c in tr]
+    c.text(x0, 10, _tag_title(tag, "FREQUENCY HISTORY"), TXT, 3)
+
+    t0, t1 = (ts[0], ts[-1]) if ts else (0.0, 1.0)
+    if t1 - t0 < 1e-9:
+        t1 = t0 + 1e-3
+
+    def X(t):
+        return x0 + (x1 - x0) * ((t - t0) / (t1 - t0))
+
+    xt = _time_ticks(t0, t1)
+    for xx, lab in [(X(v), lab) for v, lab in xt]:
+        c.vline(xx, ay0, ay1, GRID)
+        c.vline(xx, by0, by1, GRID)
+    for a0, a1 in ((ay0, ay1), (by0, by1)):
+        c.rect(x0, a0, x1, a1, AXIS)
+        for v, lab in xt:
+            c.ctext(X(v), a1 + 10, lab, DIM, 2)
+        c.text(x1 - c.tw("TIME (S)", 1), a1 + 30, "TIME (S)", DIM, 1)
+
+    # ---- 上：频率，对数轴，下限 100 Hz（25ms 窗能到 40Hz，画到 100 够用）----
+    fl, fh = 100.0, 5000.0
+    lg = math.log10
+    c.text(x0, ay0 - 22, "FREQ (HZ)", DIM, 2)
+    c.vtext(6, ay0 + 4, "FREQ (HZ)", DIM, 1)
+
+    def AF(f):
+        f = min(max(f, fl), fh)
+        return ay1 - (lg(f) - lg(fl)) / (lg(fh) - lg(fl)) * (ay1 - ay0)
+
+    # 刻度只留 500 / 1000 / 5000：200 和 2000 对数轴上离 100 / 1000 太近
+    for f in (500, 1000, 5000):
+        yy = AF(f)
+        c.hline(yy, x0, x1, GRID)
+        c.text(x0 - c.tw("%d" % f) - 10, yy - 7, "%d" % f, DIM, 2)
+
+    # ---- 下：周期，线性轴（秒）----
+    c.text(x0, by0 - 22, "PERIOD (S)", DIM, 2)
+    c.vtext(6, by0 + 4, "PERIOD (S)", DIM, 1)
+    # 用 P98 定轴，别让一两个低八度跳点（周期翻倍）把整幅压到底部；
+    # 超出轴顶的点贴边画，轴顶刻度仍如实标出来
+    ps = [1.0 / f for f in fs if f > 0]
+    p98 = float(np.percentile(ps, 98)) if ps else 0.006
+    pstep = max(0.001, _nice_step(p98, 4))
+    pmax = max(pstep, math.ceil(p98 / pstep) * pstep)
+
+    def BP(p):
+        # 线性轴、下限 0：周期只可能为正，0 起读数直观
+        return by1 - min(max(p, 0.0), pmax) / pmax * (by1 - by0)
+
+    v = 0.0
+    while v <= pmax + 1e-12:
+        yy = BP(v)
+        c.hline(yy, x0, x1, GRID)
+        lab = "%.3f" % v
+        c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
+        v += pstep
+
+    if not ts:
+        c.ctext((x0 + x1) / 2.0, (ay0 + ay1) / 2.0, "NO PERIODIC SIGNAL", DIM, 2)
+        return c
+
+    # 散点而不是连线：帧与帧之间跳变很碎，连线会画成一团锯齿轮廓
+    for t, f in zip(ts, fs):
+        xx = X(t)
+        yy = AF(f)
+        for a in (-1, 0, 1):
+            for b in (-1, 0, 1):
+                c.px(xx + a, yy + b, (255, 150, 40))
+        yy = BP(1.0 / f if f > 0 else 0.0)
+        for a in (-1, 0, 1):
+            for b in (-1, 0, 1):
+                c.px(xx + a, yy + b, FG)
+
+    if fs:
+        med = float(np.median(fs))
+        c.text(x0, h - 20, "%dMS WINDOWS  N=%d  MEDIAN %dHZ"
+               % (round(1000.0 * (ts[1] - ts[0])) if len(ts) > 1 else 0, len(fs), med), DIM, 1)
+    return c
+
+
+def render(d, views, out_dir, stem="audio", size=FIG_W):
     """views: level / spectrum / spectrogram / peak / wave 的子集。
 
-    每张图 768x768：上半 L、下半 R，中间一条分隔线。
+    每张图 size×size（默认 768）：上半 L、下半 R，中间一条分隔线。
+    pitch / history 是单声道量，整张图只画一张。
+    size 就是 detail 档位换算出的边长（见 mcp_server 的 AUDIO_DETAIL_PX），
+    画布和坐标轴等比放大；点、线、字都是按像素画的，放大后不会变细。
     返回 {view: png 路径}。
     """
     from pathlib import Path
     out = {}
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    W, H = FIG_W, FIG_W
+    W = int(size) if size else FIG_W
+    H = W
     sr = float(d.get("sample_rate") or 0)
     nyq = sr / 2.0 if sr > 0 else 24000.0
     tl = "L (MONO)" if d.get("mono") else "L"
     tr = "R (MONO)" if d.get("mono") else "R"
     for view in views:
+        if view == "pitch":
+            # 基频在单声道混合上测，L/R 上下两半会画出两条一模一样的线，
+            # 没有意义，所以整张图只画一条。
+            out[view] = plot_pitch(d, tag="MONO MIX", w=W, h=H).save(
+                out_dir / (stem + "-" + view + ".png"))
+            continue
+        if view == "history":
+            out[view] = plot_history(d, tag="MONO MIX", w=W, h=H).save(
+                out_dir / (stem + "-" + view + ".png"))
+            continue
         if view == "level":
-            top = plot_level(d["left"], d["_start"], d["_end"], tag=tl)
-            bot = plot_level(d["right"], d["_start"], d["_end"], tag=tr)
+            top = plot_level(d["left"], d["_start"], d["_end"], tag=tl, w=W, h=H // 2)
+            bot = plot_level(d["right"], d["_start"], d["_end"], tag=tr, w=W, h=H // 2)
         elif view == "spectrum":
-            top = plot_spectrum(d["left"], tag=tl, resolution_hz=d["resolution_hz"], fmax=nyq)
-            bot = plot_spectrum(d["right"], tag=tr, resolution_hz=d["resolution_hz"], fmax=nyq)
+            top = plot_spectrum(d["left"], tag=tl, resolution_hz=d["resolution_hz"],
+                                fmax=nyq, w=W, h=H // 2)
+            bot = plot_spectrum(d["right"], tag=tr, resolution_hz=d["resolution_hz"],
+                                fmax=nyq, w=W, h=H // 2)
         elif view == "spectrogram":
-            top = plot_spectrogram(d["left"], tag=tl, fmax=nyq)
-            bot = plot_spectrogram(d["right"], tag=tr, fmax=nyq)
+            top = plot_spectrogram(d["left"], tag=tl, fmax=nyq, w=W, h=H // 2)
+            bot = plot_spectrogram(d["right"], tag=tr, fmax=nyq, w=W, h=H // 2)
         elif view == "peak":
-            top = plot_peak(d["left"], tag=tl)
-            bot = plot_peak(d["right"], tag=tr)
+            top = plot_peak(d["left"], tag=tl, w=W, h=H // 2)
+            bot = plot_peak(d["right"], tag=tr, w=W, h=H // 2)
         elif view == "wave":
-            top = plot_wave(d["left"], tag=tl)
-            bot = plot_wave(d["right"], tag=tr)
+            top = plot_wave(d["left"], tag=tl, w=W, h=H // 2)
+            bot = plot_wave(d["right"], tag=tr, w=W, h=H // 2)
         else:
             continue
         c = Canvas(W, H)

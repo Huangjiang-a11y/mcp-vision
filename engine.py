@@ -247,7 +247,13 @@ def compose_sheet(media, times, cols, rows, cell_w, cell_h, out_path, title=None
 
 
 # ---------- audio analysis ----------
-# ---------- 音频频谱分析（level / spectrum / spectrogram）----------
+# ---------- 音频分析（level / spectrum / spectrogram / peak / wave / pitch / history）----------
+# 口径参考 phyphox 的 Audio Autocorrelation / Frequency History / Audio Amplitude：
+# - 分析块 100ms（Frequency History 用 10ms，那是为了刷新率，不看精度）
+# - 自相关峰：只留「超过全局最大一半」的局部极大，周期 = 最后一个峰位置 ÷ 峰数
+# - RMS 转 dB 用 20*log10（等价 10*log10(rms²)，省一次开方）
+# 与 phyphox 不同的一处：本工具的自相关做了能量归一化（跨窗口可比），
+# phyphox 靠相对阈值、不归一化。见 README「音频图的读数口径」。
 _NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
@@ -276,6 +282,197 @@ def freq_to_note(freq):
     n = int(round(midi))
     cents = (midi - n) * 100.0
     return _NOTE_NAMES[n % 12] + str(n // 12 - 1), cents
+
+
+# 基频搜索范围。下限 50Hz 够低到男低音（贝斯歌者 ~50Hz）和吉他低音弦；
+# 上限 5000Hz 对齐 phyphox 的 Audio Autocorrelation 实验——手机麦克风和
+# 大多数乐器的基频都落在 200-5000 Hz，上限再高，周期只有几毫秒，
+# autocorrelation 的峰宽和抛物线插值都开始不可靠。
+F0_MIN_HZ = 50.0
+F0_MAX_HZ = 5000.0
+# 有没有周期性：峰值相关系数低于这个数就判无基频（噪声 / 静音）。
+# 实测人声 / 乐音帧多在 0.3~0.8，噪声在 0.2 以下。
+F0_MIN_CONF = 0.25
+
+# 分析块长度。phyphox 的 Audio Autocorrelation 与 Audio Amplitude 都用
+# 100ms，本工具的 spectrum / wave / pitch 沿用这个长度（44.1k 下 4410 点，
+# 分辨率约 10Hz）。
+# Frequency History 用 20ms 短窗：正好装下 50Hz 的一个整周期（20ms），
+# 下限就是搜索下限 50Hz 本身；再短（10ms）就掉到 100Hz，再长（100ms）
+# 又会把颤音/滑音抹平。20ms 下 4 秒窗口有 200 个点，趋势也看得清。
+FRAME_MS = 100.0
+# 电平曲线的 RMS 块长（非重叠）。20ms 是 phyphox Audio Amplitude 的口径。
+LEVEL_MS = 20.0
+HISTORY_MS = 20.0
+
+
+def _norm_autocorr(seg, sr):
+    """归一化自相关 r(τ)。返回 (r, n)。
+
+    r(τ) = Σ x[i]x[i+τ] / sqrt(Σ x[i]² · Σ x[i+τ]²)，按重叠段能量归一化。
+    phyphox 不归一化，靠「最大幅度一半」这种相对阈值找峰；本工具要跨窗口 /
+    跨文件横向比读数，归一化后读数与窗口长度无关——这是有意偏离 phyphox 的
+    一处，README「音频图的读数口径」里有记。
+    不加窗：汉宁窗的包络会把相关峰往小 τ 拉（55Hz 上实测偏 21 音分）。
+    """
+    x = np.asarray(seg, dtype=np.float64)
+    n = x.size
+    if n < 64:
+        return None, 0
+    x = x - x.mean()
+    if float(np.dot(x, x)) < 1e-12:
+        return None, 0
+    nfft = 1 << int(math.ceil(math.log2(2 * n)))
+    f = np.fft.rfft(x, nfft)
+    ac = np.fft.irfft(f.real ** 2 + f.imag ** 2, nfft)[:n]
+    # 重叠能量：τ 越大，两段可用样本越少，分母跟着缩
+    e = np.concatenate(([0.0], np.cumsum(x * x)))
+    lag = np.arange(n)
+    den = np.sqrt(np.maximum(e[n - lag] * (e[n] - e[lag]), 1e-20))
+    return ac / den, n
+
+
+def _local_peaks(r, sr, fmin, fmax):
+    """搜索带内的局部极大下标。
+
+    峰可能正好落在搜索区间的端点上（5000Hz 只有 9 个样本），所以极大要在
+    [lo-1, hi+1] 里找、再筛回区间内；只在 [lo, hi] 里找会漏掉端点那个峰，
+    退到第二个周期，报出低八度。
+    """
+    n = r.size
+    lo = max(1, int(math.floor(sr / float(fmax))))
+    hi = min(n - 2, int(math.ceil(sr / float(fmin))))
+    if hi <= lo + 1:
+        return None
+    a0, a1 = max(0, lo - 1), min(n - 1, hi + 1)
+    band = r[a0:a1 + 1]
+    mid = band[1:-1]
+    cand = np.where((mid > band[:-2]) & (mid >= band[2:]))[0] + 1 + a0
+    cand = cand[(cand >= lo) & (cand <= hi)]
+    return cand if cand.size else None
+
+
+def _f0_period(r, sr, fmin, fmax):
+    """峰挑选（思路见 phyphox 的实验文档）：周期 = 最后一个峰的位置 / 峰数。
+
+    - 门限：只留「超过全局最大一半」的局部极大
+    - 位置：取最后一个峰而不是第一个。谐波丰富时第一个峰未必是基频，
+      取最后一个 + 除以峰数，等于用整段峰的平均间距估周期，比单看一个峰稳。
+    """
+    cand = _local_peaks(r, sr, fmin, fmax)
+    if cand is None:
+        return None
+    gmax = float(np.max(r[cand]))
+    if gmax < F0_MIN_CONF:          # 静音 / 纯噪声，没有周期可言
+        return None
+    ok = cand[r[cand] >= 0.5 * gmax]
+    if ok.size == 0:
+        ok = cand
+    last, cnt = int(ok[-1]), int(ok.size)
+    # 抛物线插值只作用在「最后一个峰」的位置上：峰数 cnt 是整数，
+    # 插了也会被 1/cnt 的粗糙度吃掉；位置插值是为了让平均间距更准
+    # （5000Hz 处 1 个样本 = 400Hz，不插值就白搭）
+    delta = 0.0
+    if 0 < last < r.size - 1:
+        a, b, cc = r[last - 1], r[last], r[last + 1]
+        d2 = a - 2.0 * b + cc
+        if abs(d2) > 1e-12:
+            delta = float(np.clip(0.5 * (a - cc) / d2, -0.5, 0.5))
+    lag = (last + delta) / float(cnt)
+    return lag, float(r[last]), cnt
+
+
+def _f0_autocorr(seg, sr, fmin=F0_MIN_HZ, fmax=F0_MAX_HZ):
+    """归一化自相关测基频：返回可直接上报 / 画图的字段。
+
+    周期用「数峰法」估：最后一个峰的位置 ÷ 峰数（phyphox 文档里描述的同一思路，
+    但这里是独立实现，没有引用其 GPL 源码）。比简单取第一个峰稳。
+    """
+    r, n = _norm_autocorr(seg, sr)
+    if r is None:
+        return None
+    # 上限别越过 Nyquist；参数顺序是 (fmin, fmax)，别传反
+    got = _f0_period(r, sr, float(fmin), min(float(fmax), sr * 0.45))
+    if got is None:
+        return None
+    lag, conf, cnt = got
+    lag = max(1e-9, lag)
+    freq = float(sr) / lag
+    period_ms = 1000.0 * lag / float(sr)
+    note, cents = freq_to_note(freq)
+
+    # 画图只画搜索范围内的滞后：fmin=50Hz 对应 20ms，正好和参考图同宽。
+    # 画到 2.5 个周期会露出搜索范围外的峰——那里若比基频峰还高，
+    # 读数却按基频报，图和数据就对不上了。
+    span_ms = min(1000.0 * (n - 1) / float(sr), 1000.0 / float(fmin))
+    last = int(min(n - 1, max(1, round(span_ms * sr / 1000.0))))
+    step = max(1, (last + 1) // 600)
+    idx = np.unique(np.append(np.arange(0, last + 1, step), last))
+    return {
+        "freq_hz": round(freq, 2),
+        "period_ms": round(period_ms, 3),
+        "note": note,
+        "cents": round(cents, 2),
+        "confidence": round(conf, 3),
+        "peaks": int(cnt),
+        "range_hz": [fmin, fmax],
+        "span_ms": round(span_ms, 2),
+        "curve_ms": [round(float(v), 3) for v in 1000.0 * idx / float(sr)],
+        "curve": [round(float(v), 4) for v in r[idx]],
+    }
+
+
+def _pitch_metrics(x, sr, start, size, fmin=F0_MIN_HZ, fmax=F0_MAX_HZ):
+    """单声道基频：在最响的一帧上测，和频谱/波形取同一处声音。
+
+    L/R 分开测没有意义：同一件乐器/人声的两个话筒只在声像和底噪上不同，
+    报出两个不一样的音高只会让人不知道该信哪个。所以调用方先混成单声道。
+    """
+    x = np.asarray(x, dtype=np.float32)
+    if x.size == 0:
+        return None
+    hop = max(1, int(sr * 0.02))
+    nfr = x.size // hop
+    if nfr >= 1:
+        frames = x[: nfr * hop].reshape(nfr, hop).astype(np.float64)
+        loud = int(np.argmax(np.sqrt(np.mean(frames ** 2, axis=1)))) * hop
+    else:
+        loud = 0
+    if x.size < size:
+        x = np.pad(x, (0, size - x.size))
+    lo = max(0, min(x.size - size, loud - size // 2))
+    seg = x[lo:lo + size].astype(np.float64)
+    p = _f0_autocorr(seg, sr, fmin, fmax)
+    if p is None:
+        return None
+    p["t0"] = round(float(start) + lo / float(sr), 6)
+    p["ms"] = round(1000.0 * seg.size / float(sr), 3)
+    return p
+
+
+def pitch_track(x, sr, start, frame_ms=HISTORY_MS, step_ms=HISTORY_MS,
+                fmin=F0_MIN_HZ, fmax=F0_MAX_HZ):
+    """phyphox Frequency History：连续短窗测基频，给「音高怎么随时间变」。
+
+    frame_ms 默认 20ms：正好容纳 50Hz 的一个整周期，下限就是 50Hz 本身；
+    10ms 会掉到 100Hz，100ms 会把颤音抹平。
+    短块对精度来说仍然偏短，读数只用来画轨迹；要准的单点读数看 pitch 视图。
+    """
+    x = np.asarray(x, dtype=np.float32)
+    if x.size < int(sr * float(frame_ms) / 1000.0):
+        return []
+    flen = max(64, int(sr * float(frame_ms) / 1000.0))
+    step = max(1, int(sr * float(step_ms) / 1000.0))
+    out = []
+    i = 0
+    while i + flen <= x.size:
+        p = _f0_autocorr(x[i:i + flen].astype(np.float64), sr, fmin, fmax)
+        if p is not None:
+            out.append([round(float(start) + i / float(sr), 3),
+                        round(p["freq_hz"], 2),
+                        round(p["confidence"], 3)])
+        i += step
+    return out
 
 
 def _peak_delta(mag, k):
@@ -313,14 +510,18 @@ def _peak_bin(mag):
     return k + delta, float(mag[k]) / _hann_gain(delta)
 
 
-def _channel_metrics(x, sr, start, size):
-    """单个声道的样本 -> 电平 / 频谱 / 时频图。L、R 各算一遍，参数完全一致。"""
+def _channel_metrics(x, sr, start, size, level_ms=LEVEL_MS):
+    """单个声道的样本 -> 电平 / 频谱 / 时频图。L、R 各算一遍，参数完全一致。
+
+    size 是 FFT 块长（采样点数），level_ms 是电平曲线的 RMS 块长；两者独立，
+    因为「频谱要多细」和「电平要多快」不是一个取舍。
+    """
     x = np.asarray(x, dtype=np.float32)
     if x.size == 0:
         raise RuntimeError("no audio samples in this window")
 
-    # 电平曲线：20ms 一帧的 RMS
-    hop = max(1, int(sr * 0.02))
+    # 电平曲线：level_ms 一帧的 RMS（默认 20ms）
+    hop = max(1, int(sr * float(level_ms) / 1000.0))
     nfr = x.size // hop
     if nfr < 1:
         nfr, hop = 1, x.size
@@ -344,7 +545,7 @@ def _channel_metrics(x, sr, start, size):
     win = np.hanning(seg.size)
     spec = np.abs(np.fft.rfft(seg * win))
     freqs = np.fft.rfftfreq(seg.size, 1.0 / sr)
-    # 原始波形就是这个 FFT 窗本身（4096 点 ≈ 92.9ms @44.1k）：
+    # 原始波形就是这个 FFT 窗本身（默认 100ms）：
     # 波形和频谱是同一段数据，不用再换算时间
     wave = {
         "t0": round(float(start) + lo / float(sr), 6),
@@ -371,7 +572,9 @@ def _channel_metrics(x, sr, start, size):
     # 时频图：STFT
     # 87.5% 重叠：时频图在 1024 宽的画布上放大好几倍，
     # 帧太稀会看到一块块的小方格
-    hop2 = max(1, size // 8)
+    # 列数上限 6000：帧短时 size//8 会小到几十个采样，15s 窗口能堆出几万列，
+    # 画出来还要再抽稀一遍，纯属浪费
+    hop2 = max(1, size // 8, x.size // 6000)
     ncol = max(1, (x.size - size) // hop2 + 1) if x.size >= size else 1
     cols = np.empty((freqs.size, ncol), dtype=np.float32)
     for i in range(ncol):
@@ -426,11 +629,22 @@ def _channel_metrics(x, sr, start, size):
     }
 
 
-def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None):
-    """窗口内的音频剖析：L、R 分别算电平 / 频谱 / 时频图。
+def analyze_spectrum(media, start, end, fft_size=None, out_dir=None, track=False,
+                     history_ms=HISTORY_MS, level_ms=LEVEL_MS, fft_ms=None,
+                     fmin=F0_MIN_HZ):
+    """窗口内的音频剖析：L、R 分别算电平 / 频谱 / 时频图，另加单声道基频。
 
     一次解码出双声道（-ac 2），采样率跟视频音轨走，不重采样。
     单声道音轨会被 ffmpeg 复制成 L=R，结果里 mono=True 标出来。
+
+    三个块长各管一摊，别混：
+    fft_ms   频谱 / 波形 / 基频 / 时频图的块长，默认 FRAME_MS（100ms）；
+             决定频率分辨率 sr/块长，也决定时频图的列间距。
+    level_ms 电平曲线的 RMS 块长，默认 LEVEL_MS（20ms）。
+    history_ms  Frequency History 逐帧块长，默认 HISTORY_MS（20ms）。
+    fft_size 仍可直接给采样点数，优先于 fft_ms。
+    track=True 才逐帧跑 Frequency History 轨迹，只有 history 视图需要；
+    fmin 是基频搜索下限，帧太短时由调用方抬高（一帧至少要装下一个周期）。
     """
     media = Path(media)
     info = audio_info(media)
@@ -455,10 +669,23 @@ def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None):
     pair = arr.reshape(-1, 2)
     nsmp = pair.shape[0]
     dur = nsmp / float(sr)
+    # 默认块长 100ms（phyphox 的 Audio Autocorrelation / Audio Amplitude 口径）。
+    # 调用方可以传 fft_size 覆盖，但给的是「采样点数」而不是时长。
+    if not fft_size:
+        fft_size = int(round(sr * float(fft_ms or FRAME_MS) / 1000.0))
     size = int(min(max(64, fft_size), nsmp))
 
-    left = _channel_metrics(pair[:, 0], sr, start, size)
-    right = _channel_metrics(pair[:, 1], sr, start, size)
+    left = _channel_metrics(pair[:, 0], sr, start, size, level_ms)
+    right = _channel_metrics(pair[:, 1], sr, start, size, level_ms)
+    # 基频在单声道混合上测：同一件乐器/人声的 L、R 只差声像和底噪，
+    # 分开测会给出两个不同的音高，反而不知道信哪个。
+    mono = pair.mean(axis=1)
+    pitch = _pitch_metrics(mono, sr, start, size, fmin) or {
+        "freq_hz": 0.0, "period_ms": 0.0, "note": "", "cents": 0.0,
+        "confidence": 0.0, "range_hz": [fmin, F0_MAX_HZ],
+        "span_ms": 20.0, "curve_ms": [], "curve": [],
+        "t0": round(float(start), 6), "ms": round(1000.0 * size / float(sr), 3),
+    }
 
     return {
         "sample_rate": sr,
@@ -468,6 +695,12 @@ def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None):
         "fft_size": int(size),
         "resolution_hz": round(sr / float(size), 2),
         "period_ms": round(1000.0 * size / float(sr), 2),
+        "level_ms": round(1000.0 * max(1, int(sr * float(level_ms) / 1000.0)) / float(sr), 2),
+        "pitch": pitch,
+        # Frequency History 口径的轨迹：短窗逐帧测基频，看音高怎么变。
+        # 精度不如 pitch（块太短），且很费时（10s → 1000 帧），按需才算。
+        "pitch_track": (pitch_track(mono, sr, start, frame_ms=history_ms,
+                                    step_ms=history_ms, fmin=fmin) if track else []),
         "left": left,
         "right": right,
     }

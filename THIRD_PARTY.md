@@ -90,6 +90,22 @@
 这类点阵字体在多数法域不被视为受版权保护的美术作品（美国明确不保护字体字形本身），
 风险很低；若需要绝对干净，可自行重绘或用 matplotlib 等绘图库替代。
 
+## 方法参考：phyphox（只参考文档，不复用代码）
+
+`engine.py` 里基频自相关的方法（100ms 分析块、"超过最大幅度一半"的峰门限、
+"最后一个极大 ÷ 极大数量"求周期）参考了 phyphox 的
+[Audio Autocorrelation](https://phyphox.org/wiki/index.php?title=Experiment:_Audio_Autocorrelation)、
+[Frequency History](https://phyphox.org/wiki/index.php?title=Experiment:_Frequency_History)、
+[Audio Amplitude](https://phyphox.org/wiki/index.php?title=Experiment:_Audio_Amplitude)
+三篇**实验文档**。
+
+**没有复用 phyphox 的任何源码。** [phyphox-android](https://github.com/phyphox/phyphox-android)
+以 **GPL-3.0** 发布，本项目是 MIT；因此这里只依据公开文档描述的方法独立实现，
+不拷贝、不翻译其源代码，避免许可冲突。方法、算法本身不受版权保护。
+
+`phyphox` 与 `RWTH Aachen University` 是 RWTH Aachen University 的注册商标，
+本项目与之**没有隶属、合作或背书关系**。
+
 ## 内容版权
 
 通过本工具处理的一切视频、音频、字幕、封面、评论、弹幕，版权归原作者与平台所有。
