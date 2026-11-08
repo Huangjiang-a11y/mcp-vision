@@ -68,7 +68,7 @@ python3 mcp_server.py --http 8765
 - `subtitles`：`mode=ocr` 识字幕（`band` 可指范围）/ `mode=stt` 语音转写
   （silero-vad 自动断句 + SenseVoice，模型路径由环境变量指定）
 
-音频图一律 1024×1024，上半 L、下半 R。读数口径见「音频图的读数口径」。
+音频图一律 768×768，上半 L、下半 R。读数口径见「音频图的读数口径」。
 
 视频固定在工作区 `workspace/<文件夹名>/`。
 `video` / `audio` / `subtitles` 默认作用于最近打开的那个，可用 `video_id` 传文件夹名指定。

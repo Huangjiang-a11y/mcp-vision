@@ -107,6 +107,14 @@ _audio_schema = [t for t in M.TOOLS if t["name"] == "audio"][0]["inputSchema"]
 check("audio schema 把 view 设为必填", _audio_schema.get("required"), ["view"])
 check("audio enum 没有 all", "all" in _audio_schema["properties"]["view"]["enum"], False)
 
+# --- 音频图尺寸 ---
+# 上下两半必须正好拼成正方形，且 blit 偏移跟着 H//2 走（别留硬编码 512）。
+check("音频图边长 768", engine.audiochart.FIG_W, 768)
+_src_render = inspect.getsource(engine.audiochart.render)
+check("下半接 H//2 而非写死 512", "c.blit(bot.buf, 0, H // 2)" in _src_render, True)
+check("分隔线也在 H//2", "c.hline(H // 2" in _src_render, True)
+check("render 不留硬编码 1024", "1024" in _src_render, False)
+
 # --- 音频轨迹抽稀 ---
 # 原来是 step = max(1, len//60)：len<120 时整除恒为 1，等于没抽稀，
 # 8 秒的片子就给 62 个点、15 秒能到 81 个。改成 ceil + 目标 40 点。

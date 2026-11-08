@@ -185,7 +185,12 @@ def _caption(c, d, x1, y=30):
     c.text(x1 - c.tw(txt, 2), y, txt, DIM, 2)
 
 
-def plot_level(d, start, end, tag="", w=1024, h=512):
+# 音频图整图边长。上下两半各 FIG_W//2，合起来是正方形。
+# 1024 时一张 PNG 的 base64 接近 1MB，768 能省四成多，读数并不受影响。
+FIG_W = 768
+
+
+def plot_level(d, start, end, tag="", w=FIG_W, h=FIG_W // 2):
     lv = d["level"]
     t = np.asarray(lv["times"], dtype=float)
     v = np.asarray(lv["values"], dtype=float)
@@ -289,7 +294,7 @@ def _freq_ticks(fmax):
     return ticks
 
 
-def plot_spectrum(d, tag="", resolution_hz=0.0, w=1024, h=512, fmax=None):
+def plot_spectrum(d, tag="", resolution_hz=0.0, w=FIG_W, h=FIG_W // 2, fmax=None):
     sp = d["spectrum"]
     f = np.asarray(sp["freqs"], dtype=float)
     m = np.asarray(sp["mag_db"], dtype=float)
@@ -378,7 +383,7 @@ def _time_ticks(t0, t1, want=5):
     return ticks
 
 
-def plot_spectrogram(d, tag="", w=1024, h=512, fmax=None):
+def plot_spectrogram(d, tag="", w=FIG_W, h=FIG_W // 2, fmax=None):
     """时频图：横轴对数频率 20..Nyquist，纵轴时间（向上）。"""
     sg = d["spectrogram"]
     spec = np.asarray(sg["spec_db"], dtype=float)   # (nfreq, ntime)
@@ -442,7 +447,7 @@ def plot_spectrogram(d, tag="", w=1024, h=512, fmax=None):
     return c
 
 
-def plot_peak(d, tag="", w=1024, h=512):
+def plot_peak(d, tag="", w=FIG_W, h=FIG_W // 2):
     """峰值频率轨迹单独一张：横轴时间，纵轴按轨迹自身范围自适应。"""
     sg = d["spectrogram"]
     times = np.asarray(sg["times"], dtype=float)
@@ -494,7 +499,7 @@ def plot_peak(d, tag="", w=1024, h=512):
     return c
 
 
-def plot_wave(d, tag="", w=1024, h=512):
+def plot_wave(d, tag="", w=FIG_W, h=FIG_W // 2):
     """原始波形：与频谱同一处声音，约 40ms。横轴毫秒，纵轴相对幅值（满幅 = 1）。"""
     wv = (d or {}).get("wave") or {}
     s = np.asarray(wv.get("samples") or [], dtype=float)
@@ -558,14 +563,14 @@ def plot_wave(d, tag="", w=1024, h=512):
 def render(d, views, out_dir, stem="audio"):
     """views: level / spectrum / spectrogram / peak / wave 的子集。
 
-    每张图 1024x1024：上半 L、下半 R，中间一条分隔线。
+    每张图 768x768：上半 L、下半 R，中间一条分隔线。
     返回 {view: png 路径}。
     """
     from pathlib import Path
     out = {}
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    W, H = 1024, 1024
+    W, H = FIG_W, FIG_W
     sr = float(d.get("sample_rate") or 0)
     nyq = sr / 2.0 if sr > 0 else 24000.0
     tl = "L (MONO)" if d.get("mono") else "L"
@@ -590,7 +595,7 @@ def render(d, views, out_dir, stem="audio"):
             continue
         c = Canvas(W, H)
         c.blit(top.buf, 0, 0)
-        c.blit(bot.buf, 0, 512)
-        c.hline(512, 0, W - 1, FG, 2)
+        c.blit(bot.buf, 0, H // 2)
+        c.hline(H // 2, 0, W - 1, FG, 2)
         out[view] = c.save(out_dir / (stem + "-" + view + ".png"))
     return out
