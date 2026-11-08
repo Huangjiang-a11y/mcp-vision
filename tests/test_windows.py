@@ -207,9 +207,22 @@ for _n in (31, 62, 100, 161, 300):
     check("轨迹点数有上限 (len=%d → %d)" % (_n, _pts), _pts <= 41, True)
 check("轨迹改用 ceil 抽稀", "math.ceil(len(track) / 40.0)" in _inspect.getsource(M.tool_audio), True)
 
-# 紧凑模式要连空格一起关掉：indent=None 只管换行，", " 和 ": " 还在
-_dense = M._dump({"a": [1, 2], "b": [3, 4]}, compact=True)
-check("compact 无多余空格", " " in _dense, False)
+# 工具返回值一律不缩进：缩进和 ", " / ": " 里的空格不提供信息，只吃 token。
+# indent=None 不够，它只管换行，分隔符旁的空格还在，所以要看 separators。
+_dense = M._dump({"a": [1, 2], "b": [3, 4]})
+check("返回没有换行", "\n" in _dense, False)
+check("返回没有分隔符空格", " " in _dense, False)
+check("_dump 不再有 compact 开关", "compact" in _inspect.signature(M._dump).parameters, False)
+check("工具里没有 indent=2 的返回", "indent=2" in _inspect.getsource(M), False)
+
+# 每个 view 只发自己那几块数：level 的返回里不该再出现 pitch / peak_freq_track
+_src_audio = _inspect.getsource(M.tool_audio)
+check("按 view 裁剪返回", "_PER_VIEW.get(view, ())" in _src_audio, True)
+check("level 只带 level", '"level": ("silent", "level")' in _src_audio, True)
+check("spectrum 只带频谱", '"spectrum": ("spectrum",)' in _src_audio, True)
+check("wave 只带波形统计", '"wave": ("wave",)' in _src_audio, True)
+check("基频只给 pitch 视图", 'if view == "pitch":' in _src_audio, True)
+check("历史只给 history 视图", 'elif view == "history":' in _src_audio, True)
 
 # --- 单帧取窗：别为不存在的窗口报警 ---
 # 以前 quantity=1 时仍走完整窗口逻辑，t=100 会附赠一句「已到视频结尾 276 秒」，

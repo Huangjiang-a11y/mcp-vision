@@ -73,18 +73,15 @@ def _mask(s):
     return s
 
 
-def _dump(obj, limit=0, compact=False):
+def _dump(obj, limit=0):
     """序列化。默认**不裁剪**：调用方是模型，宁可长也别悄悄少一半。
 
-    compact=True 时不缩进。纯数值数组（音频峰值轨迹那种）缩进后
-    每个 [t, f] 要占 6 行，字符翻一倍多，而缩进对它毫无可读性收益。
+    一律不缩进。这是工具返回值，读者是模型不是人：缩进和 ", " / ": " 里
+    的空格不提供任何信息，只白占 token。一条 62 点的峰值轨迹缩进后每个
+    [t, f] 占 6 行、字符翻一倍多；光分隔符旁的空格另有 180 多个字符。
     limit>0 时仍保留旧的逐半裁剪逻辑，应急用。
     """
-    # indent=None 只管换行，不关掉 ", " 和 ": " 里的空格。
-    # 峰值轨迹 62 个点，光这些空格就 183 个字符——真正要紧的是 separators。
-    ind = None if compact else 2
-    sep = (",", ":") if compact else None
-    txt = json.dumps(obj, ensure_ascii=False, indent=ind, separators=sep)
+    txt = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
     if limit <= 0 or len(txt) <= limit:
         return txt
     import copy
@@ -93,14 +90,14 @@ def _dump(obj, limit=0, compact=False):
         v = o.get(key)
         if isinstance(v, list) and v:
             o.setdefault("_truncated", {})[key] = len(v)
-    while len(json.dumps(o, ensure_ascii=False, indent=ind, separators=sep)) > limit:
+    while len(json.dumps(o, ensure_ascii=False, separators=(",", ":"))) > limit:
         cand = [k for k in o if isinstance(o[k], list) and len(o[k]) > 1]
         if not cand:
-            return json.dumps({"_truncated": True, "note": "result too large"}, ensure_ascii=False, indent=ind, separators=sep)
+            return json.dumps({"_truncated": True, "note": "result too large"}, ensure_ascii=False, separators=(",", ":"))
         k = max(cand, key=lambda x: len(json.dumps(o[x], ensure_ascii=False)))
         o[k] = o[k][: max(1, len(o[k]) // 2)]
         o.setdefault("_truncated", {})[k] = "kept only the first %d" % len(o[k])
-    return json.dumps(o, ensure_ascii=False, indent=2)
+    return json.dumps(o, ensure_ascii=False, separators=(",", ":"))
 
 
 MAX_ANALYZE_SECONDS = 900.0   # 单次分析硬上限 15 分钟
@@ -462,24 +459,41 @@ def tool_audio(a):
         return (_dump({"ok": False, "error": str(e)}), [])
     d["_start"], d["_end"] = start, end
 
-    # 每路各自抽稀峰值轨迹，纯文本模式也够用
-    def _chan(c):
-        track = c["spectrogram"]["peak_track"]
-        # 抽稀到 ~40 点。原来写的是 len//60：len<120 时整除恒为 1，
-        # 等于完全没抽稀（8 秒的片子就有 62 个点，15 秒能到 81 个）。
-        step = max(1, math.ceil(len(track) / 40.0))
-        return {
-            "silent": c["silent"],
-            "level": {k: c["level"][k] for k in ("db", "min", "max", "mean", "peak_dbfs")},
-            "spectrum": {
-                "peak_freq_hz": c["spectrum"]["peak_freq_hz"],
-                "note": c["spectrum"]["note"],
-                "cents": c["spectrum"]["cents"],
-            },
-            "peak_freq_track": [[round(t, 2), round(f, 1)] for t, f in track[::step]],
+    # 每个 view 只要它自己那几块数。一张图只回答一个问题，把基频、频谱、
+    # 峰值轨迹、波形一股脑塞进同一个返回里，只会让模型在无关字段里翻答案
+    # （level 的返回原本还带着 pitch 和 40 点 peak_freq_track）。
+    def _chan(c, want):
+        out = {}
+        # silent 是整段窗口的判断，单帧视图（spectrum/wave）对它没有意义
+        if "silent" in want:
+            out["silent"] = c["silent"]
+        if "level" in want:
+            out["level"] = {k: c["level"][k]
+                            for k in ("db", "min", "max", "mean", "peak_dbfs")}
+        if "spectrum" in want:
+            out["spectrum"] = {k: c["spectrum"][k]
+                               for k in ("peak_freq_hz", "note", "cents")}
+        if "peak_freq_track" in want:
+            track = c["spectrogram"]["peak_track"]
+            # 抽稀到 ~40 点。原来写的是 len//60：len<120 时整除恒为 1，
+            # 等于完全没抽稀（8 秒的片子就有 62 个点，15 秒能到 81 个）。
+            step = max(1, math.ceil(len(track) / 40.0))
+            out["peak_freq_track"] = [[round(t, 2), round(f, 1)]
+                                      for t, f in track[::step]]
+        if "wave" in want:
             # 波形只报统计量，100ms 帧的采样点留给画图
-            "wave": {k: c["wave"][k] for k in ("t0", "ms", "peak", "rms")},
-        }
+            out["wave"] = {k: c["wave"][k] for k in ("t0", "ms", "peak", "rms")}
+        return out
+
+    # 时频图和峰值轨迹是同一份数：图是那张图，数是每列的峰值频率
+    _PER_VIEW = {
+        "level": ("silent", "level"),
+        "spectrum": ("spectrum",),
+        "spectrogram": ("silent", "peak_freq_track"),
+        "peak": ("silent", "peak_freq_track"),
+        "wave": ("wave",),
+    }
+    want = _PER_VIEW.get(view, ())
 
     def _track(tr):
         # 逐帧轨迹在 10 秒窗口里有几百个点，抽稀到 ~60 个
@@ -492,12 +506,16 @@ def tool_audio(a):
         "sample_rate": d["sample_rate"],
         "channels": d["channels"],
         "mono": d["mono"],
-        "fft_size": d["fft_size"],
-        "resolution_hz": d["resolution_hz"],
-        "period_ms": d["period_ms"],
-        "level_ms": d["level_ms"],
+    }
+    # 报的口径只报这个 view 用得上的那个块长
+    if view == "level":
+        summary["level_ms"] = d["level_ms"]
+    elif view in ("spectrum", "spectrogram", "peak"):
+        summary["frame_ms"] = d["period_ms"]
+        summary["resolution_hz"] = d["resolution_hz"]
+    if view == "pitch":
         # 基频是单声道量：L/R 只差声像和底噪，分开报两个音高没有意义
-        "pitch": {
+        summary["pitch"] = {
             "freq_hz": d["pitch"]["freq_hz"],
             "period_ms": d["pitch"]["period_ms"],
             "note": d["pitch"]["note"],
@@ -507,16 +525,17 @@ def tool_audio(a):
             "range_hz": d["pitch"]["range_hz"],
             "at_s": d["pitch"]["t0"],
             "frame_ms": d["pitch"]["ms"],
-        },
-        "left": _chan(d["left"]),
-    }
-    # 单声道时 right 和 left 逐字节相同（note 里也这么说），
-    # 两条 peak_freq_track 就白占 1000 多字符，别发两份。
-    if not d["mono"]:
-        summary["right"] = _chan(d["right"])
-    # 轨迹只有在 history 视图才算，别给别的视图塞一个空数组
-    if d.get("pitch_track"):
+        }
+    elif view == "history":
+        # 单帧基频在这儿没有意义，只给轨迹和它的口径
+        summary["frame_ms"] = d["pitch"]["ms"]
+        summary["range_hz"] = d["pitch"]["range_hz"]
         summary["pitch_track"] = _track(d["pitch_track"])
+    if want:
+        summary["left"] = _chan(d["left"], want)
+        # 单声道时 right 和 left 逐字节相同（note 里也这么说），别发两份
+        if not d["mono"]:
+            summary["right"] = _chan(d["right"], want)
     notes = []
     if view_defaulted:
         notes.append("view defaulted to %s" % view)
@@ -539,7 +558,7 @@ def tool_audio(a):
                 images.append(im)
     except Exception as e:
         summary["image_error"] = "%s: %s" % (type(e).__name__, e)
-    return (_dump(summary, compact=True), images)
+    return (_dump(summary), images)
 
 
 def _parse_band(v):
@@ -693,7 +712,7 @@ def _subs_ocr(a):
 def tool_list(a):
     cwd = str(Path(__file__).resolve().parent)
     st = engine.status(cwd)
-    return (json.dumps(st, ensure_ascii=False, indent=2), [])
+    return (json.dumps(st, ensure_ascii=False, separators=(",", ":")), [])
 
 
 
@@ -1120,7 +1139,7 @@ def tool_video(a):
         out = {"t": f["seconds"], "duration": round(duration, 2)}
         if note:
             out["note"] = note
-        return (json.dumps(out, ensure_ascii=False, indent=2), _attach(f["path"]))
+        return (json.dumps(out, ensure_ascii=False, separators=(",", ":")), _attach(f["path"]))
 
     # 多帧：拼成一页
     cols, rows = _pick_grid(n, aspect)
@@ -1159,7 +1178,7 @@ def tool_video(a):
             note = msg if not note else note + "; " + msg
     if note:
         out["note"] = note
-    return (json.dumps(out, ensure_ascii=False, indent=2), _attach(jpg))
+    return (json.dumps(out, ensure_ascii=False, separators=(",", ":")), _attach(jpg))
 
 
 def dispatch_workspace(a):
