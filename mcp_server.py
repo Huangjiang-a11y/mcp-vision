@@ -721,7 +721,7 @@ def tool_list(a):
 
 TOOLS = [
     {"name": "workspace",
-     "description": "Workspace: open or download a video from a URL or local path (source required), or list opened videos.",
+     "description": "Open a video by URL or local path, or list what is open.",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["open", "list"],
                     "description": "open = download and open (default); list = show opened videos"},
@@ -738,20 +738,13 @@ TOOLS = [
 
     {"name": "video",
      "description": (
-         "Look at a clip as one page of frames, or a single frame.\n"
+         "See a clip as one page of frames, or one frame.\n"
          "\n"
-         "`quantity` frames go onto one page with a timeline (default 15, max 30); `pick` takes "
-         "scene changes (default) or even spacing. quantity=1 returns one full-detail frame for "
-         "reading a board, scoreboard or subtitle line, and honours `crop`.\n"
+         "`quantity` frames go on one page (default 15, max 30), taken at scene changes (default) "
+         "or evenly; quantity=1 gives one full-detail frame and honours `crop`.\n"
          "\n"
-         "`detail` sets picture size as a pixel budget, split across the cells and only ever "
-         "scaled down. The window is capped at 900s and clamped to the clip, noted when it happens.\n"
-         "\n"
-         "Long clips: fill the window. A page costs the same whether it covers 60s or 900s - "
-         "15 cells over 900s is one frame a minute, over 60s it is one every 4s. So read a long "
-         "film in 900s pages: time=0, 900, 1800 ... until the end, instead of many short slices "
-         "of the same footage. Narrow the window only when you already know where to look (a cue "
-         "or a timestamp), and raise quantity to 30 there."
+         "Fill the window: a page costs the same at 60s and at 900s, so read long clips in 900s "
+         "pages (time=0, 900, 1800 ...) and narrow only when you know where to look."
      ),     "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
@@ -760,30 +753,23 @@ TOOLS = [
                                      "For a long clip pass 900 (or omit it) rather than a short slice - "
                                      "the page costs the same either way")},
          "quantity": {"type": "integer",
-                      "description": "frames to sample, default 15, max 30; 1 returns a single full-detail frame instead of a page"},
+                      "description": "frames per page, default 15, max 30; 1 = one full-detail frame"},
          "pick": {"type": "string", "enum": ["scene", "even"],
-                  "description": ("scene (default) takes the frames where the picture changes most, so a sheet "
-                                  "shows distinct content; even spaces them by time, for a sense of pacing")},
+                  "description": "scene (default) = the frames where the picture changes most; even = spaced by time"},
          "crop": {"type": "string",
-                  "description": "crop before scaling, WxH+X+Y (e.g. 720x300+0+880); applies to every cell"},
+                  "description": "crop before scaling, WxH+X+Y (e.g. 720x300+0+880), every cell"},
          "detail": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                    "description": ("image quality, as a pixel budget for the whole page: "
-                                    "low = 512, medium = 1024 (default), high = 1536, max = 2048 "
-                                    "- these are the side of a square with the same area, and the "
-                                    "budget is split across the cells, so more cells means smaller "
-                                    "cells. It only scales down, never up: a 480p clip stays 480p. "
-                                    "Raise it to read small text, lower it to save tokens.")}}}},
+                    "description": ("page pixel budget: low=512 medium=1024 (default) high=1536 "
+                                    "max=2048, split across cells and only ever scaled down. Raise it "
+                                    "to read small text, lower it to save tokens")}}}},
 
     {"name": "audio",
      "description": (
-         "Measure a window's audio: one figure plus the numbers behind it. view picks the "
-         "measurement (level, spectrum, spectrogram, peak, wave, pitch, history). L and R are "
-         "measured separately, upper and lower half of each figure; pitch and history are mono "
-         "and fill the whole figure.\n"
+         "Measure a window's audio: one figure plus the numbers behind it. L on the upper half, "
+         "R on the lower; `view` picks the measurement.\n"
          "\n"
-         "spectrum, wave and pitch read one frame at `time` and ignore `seconds`; the rest take a "
-         "window (default 10s, max 15s). `frame_ms` trades time against frequency resolution; "
-         "`detail` sets figure size - neither changes the readings, only what the picture resolves."
+         "spectrum, wave and pitch read the single frame at `time` - `seconds` does not apply. "
+         "The rest take a window (default 10s, max 15s)."
      ),
      "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
@@ -794,60 +780,47 @@ TOOLS = [
                   "default": "level",
                   "description": ("level = loudness over time; spectrum = frequency content at one frame; "
                                   "spectrogram = frequency over time; peak = spectral peak frequency track; "
-                                  "wave = raw samples; pitch = fundamental frequency at one 100ms frame "
-                                  "(period / note / cents by autocorrelation, plus the curve); "
-                                  "history = fundamental frequency over a window (20ms frames, trend only; two panels: frequency log axis, period linear axis). "
-                                  "Which to pick: how loud -> level, what notes -> spectrum, "
-                                  "true fundamental -> pitch, pitch over time -> history, "
-                                  "how the spectrum changes -> spectrogram. Omit it and you get level.")},
+                                  "wave = raw samples; pitch = fundamental of one frame (period / note / "
+                                  "cents by autocorrelation, plus the curve); history = fundamental over "
+                                  "the window (20ms frames, trend only; frequency + period panels). "
+                                  "Pick: how loud -> level, what notes -> spectrum, true fundamental -> "
+                                  "pitch, pitch over time -> history. Default level.")},
 
         "frame_ms": {"type": "number",
-                     "description": ("block length in ms, 5-200; every view has a default and they differ "
-                                     "because the trade-offs differ: "
-                                     "level = RMS block (default 20) - finer shows fast dynamics, "
-                                     "coarser smooths them; "
-                                     "spectrum/wave/pitch = the single frame (default 100) - "
-                                     "longer gives finer resolution_hz (sr/frame) but averages more time, "
-                                     "shorter tracks fast changes but a frame must still hold one full "
-                                     "period, so the pitch floor rises to ~1000/frame_ms Hz "
-                                     "(5ms -> 200Hz, 20ms -> 50Hz); "
-                                     "spectrogram/peak = FFT frame (default 100) - also sets column spacing; "
-                                     "history = per-frame block for the track (default 20). "
-                                     "Every view takes it; note reports the value actually used.")},
+                     "description": ("block length in ms, 5-200; defaults differ by trade-off: level 20 "
+                                     "(RMS block, finer = faster dynamics), spectrum/wave/pitch 100 (the "
+                                     "frame; longer = finer resolution_hz, shorter = tracks fast change, but "
+                                     "a frame must hold one period so the pitch floor is ~1000/frame_ms Hz), "
+                                     "spectrogram/peak 100 (also sets column spacing), history 20. The note "
+                                     "reports the value used.")},
 
         "detail": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                   "description": ("figure size in pixels, square: low = 768 (default), "
-                                   "medium = 1024, high = 1280, max = 1536. Axes, ticks and points "
-                                   "scale with it; the readings never change, only how finely they "
-                                   "can be read off the picture. Raise it when lines crowd together "
-                                   "(a dense pitch track, a busy spectrogram), lower it to save tokens.")},
+                   "description": ("figure side in px: low=768 (default) medium=1024 high=1280 max=1536. "
+                                   "Axes scale, readings do not - it only decides how finely they can be "
+                                   "read off. Raise it when lines crowd together.")},
      }}},
 
     {"name": "subtitles",
      "description": (
-         "Get a window's text as cues (from/to/text, times in MM:SS).\n"
+         "Read a window's text as cues (from/to/text, MM:SS).\n"
          "\n"
-         "mode=ocr (default) reads burned-in subtitles and on-screen text from a band, frame by "
-         "frame, and returns a per-cue confidence - use it for songs and any text the pixels show. "
-         "mode=stt transcribes the speech and adds per-cue emotion, audio event and language, plus "
-         "a summary; use it when the speech is not written on screen. BGM is reported as an event "
-         "because music that drowns out the voice costs words.\n"
+         "mode=ocr (default) reads burned-in captions and on-screen text per frame, with a per-cue "
+         "confidence; mode=stt transcribes speech and adds emotion, audio event and language. BGM "
+         "shows up as an event because it costs words.\n"
          "\n"
-         "Long clips: fill the window here too. ocr steps one frame a second but skips frames whose "
-         "band did not change (roughly half on a talking head or an MV), and stt runs faster than "
-         "realtime, so a 900s page is the cheap way to read a long clip: time=0, 900, 1800 ... "
-         "until the end. Narrow the window only when you already know where to look."
+         "Fill the window here too: ocr skips frames whose band did not change and stt runs faster "
+         "than realtime, so read 900s pages (time=0, 900, 1800 ...)."
      ),
      "inputSchema": {"type": "object", "properties": {
          "mode": {"type": "string", "enum": ["ocr", "stt"],
-                  "description": "ocr = read on-screen subtitles (default); stt = speech to text"},
+                  "description": "ocr = on-screen text (default); stt = speech to text"},
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number",
                      "description": ("window length, must be > 0; default to the clip end, capped at 900. "
                                      "For a long clip pass 900 (or omit it) rather than a short slice")},
          "band": {"type": "string",
-                  "description": "ocr: band range, 'auto' (default) or ratios like \"0.10,0.27\""}}}},
+                  "description": "ocr: 'auto' (default) or ratios like \"0.10,0.27\""}}}},
 
 ]
 
