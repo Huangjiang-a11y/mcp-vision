@@ -107,6 +107,19 @@ _audio_schema = [t for t in M.TOOLS if t["name"] == "audio"][0]["inputSchema"]
 check("audio schema 把 view 设为必填", _audio_schema.get("required"), ["view"])
 check("audio enum 没有 all", "all" in _audio_schema["properties"]["view"]["enum"], False)
 
+# --- 音频轨迹抽稀 ---
+# 原来是 step = max(1, len//60)：len<120 时整除恒为 1，等于没抽稀，
+# 8 秒的片子就给 62 个点、15 秒能到 81 个。改成 ceil + 目标 40 点。
+import math as _math
+for _n in (31, 62, 100, 161, 300):
+    _pts = len(range(0, _n, max(1, _math.ceil(_n / 40.0))))
+    check("轨迹点数有上限 (len=%d → %d)" % (_n, _pts), _pts <= 41, True)
+check("轨迹改用 ceil 抽稀", "math.ceil(len(track) / 40.0)" in _inspect.getsource(M.tool_audio), True)
+
+# 紧凑模式要连空格一起关掉：indent=None 只管换行，", " 和 ": " 还在
+_dense = M._dump({"a": [1, 2], "b": [3, 4]}, compact=True)
+check("compact 无多余空格", " " in _dense, False)
+
 # --- 单帧取窗：别为不存在的窗口报警 ---
 # 以前 quantity=1 时仍走完整窗口逻辑，t=100 会附赠一句「已到视频结尾 276 秒」，
 # 但单帧只用起点，结尾根本不参与取图。

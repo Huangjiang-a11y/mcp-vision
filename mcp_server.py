@@ -80,8 +80,11 @@ def _dump(obj, limit=0, compact=False):
     每个 [t, f] 要占 6 行，字符翻一倍多，而缩进对它毫无可读性收益。
     limit>0 时仍保留旧的逐半裁剪逻辑，应急用。
     """
+    # indent=None 只管换行，不关掉 ", " 和 ": " 里的空格。
+    # 峰值轨迹 62 个点，光这些空格就 183 个字符——真正要紧的是 separators。
     ind = None if compact else 2
-    txt = json.dumps(obj, ensure_ascii=False, indent=ind)
+    sep = (",", ":") if compact else None
+    txt = json.dumps(obj, ensure_ascii=False, indent=ind, separators=sep)
     if limit <= 0 or len(txt) <= limit:
         return txt
     import copy
@@ -90,10 +93,10 @@ def _dump(obj, limit=0, compact=False):
         v = o.get(key)
         if isinstance(v, list) and v:
             o.setdefault("_truncated", {})[key] = len(v)
-    while len(json.dumps(o, ensure_ascii=False, indent=ind)) > limit:
+    while len(json.dumps(o, ensure_ascii=False, indent=ind, separators=sep)) > limit:
         cand = [k for k in o if isinstance(o[k], list) and len(o[k]) > 1]
         if not cand:
-            return json.dumps({"_truncated": True, "note": "result too large"}, ensure_ascii=False, indent=ind)
+            return json.dumps({"_truncated": True, "note": "result too large"}, ensure_ascii=False, indent=ind, separators=sep)
         k = max(cand, key=lambda x: len(json.dumps(o[x], ensure_ascii=False)))
         o[k] = o[k][: max(1, len(o[k]) // 2)]
         o.setdefault("_truncated", {})[k] = "kept only the first %d" % len(o[k])
@@ -391,7 +394,9 @@ def tool_audio(a):
     # 每路各自抽稀峰值轨迹，纯文本模式也够用
     def _chan(c):
         track = c["spectrogram"]["peak_track"]
-        step = max(1, len(track) // 60)
+        # 抽稀到 ~40 点。原来写的是 len//60：len<120 时整除恒为 1，
+        # 等于完全没抽稀（8 秒的片子就有 62 个点，15 秒能到 81 个）。
+        step = max(1, math.ceil(len(track) / 40.0))
         return {
             "silent": c["silent"],
             "level": {k: c["level"][k] for k in ("db", "min", "max", "mean", "peak_dbfs")},
@@ -400,7 +405,7 @@ def tool_audio(a):
                 "note": c["spectrum"]["note"],
                 "cents": c["spectrum"]["cents"],
             },
-            "peak_freq_track": [[t, f] for t, f in track[::step]],
+            "peak_freq_track": [[round(t, 2), round(f, 1)] for t, f in track[::step]],
             # 波形只报统计量，4096 个采样点留给画图
             "wave": {k: c["wave"][k] for k in ("t0", "ms", "peak", "rms")},
         }
