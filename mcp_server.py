@@ -383,7 +383,19 @@ def tool_audio(a):
     if dur_total > 0 and float(a.get("time") or 0) >= dur_total:
         return (_dump({"ok": False,
                        "error": "time=%.1f is past the %.1f clip" % (float(a.get("time") or 0), dur_total)}), [])
-    start, end, note = _window(a, asset, default_span=10.0, cap=15.0)
+    if view in ("spectrum", "wave"):
+        # 这两个视图只读一个 FFT 帧（4096 点 ≈ 93ms）。窗口对它们没有意义：
+        # 传 seconds 只是在更大范围里挑「最响的一帧」，报出来的数却像是
+        # 整段窗口的代表值——之前 t=53 报 -33 cents 就是这么来的，
+        # 那一秒里其实换了 6 个音。所以只认时间戳，seconds 忽略并说明。
+        start = max(0.0, float(a.get("time") or 0))
+        end = min(start + 0.093, dur_total) if dur_total else start + 0.093
+        note = ""
+        if a.get("seconds") is not None:
+            note = ("seconds is ignored: %s reads one 93ms FFT frame at time=%.3g"
+                    % (view, start))
+    else:
+        start, end, note = _window(a, asset, default_span=10.0, cap=15.0)
     try:
         d = engine.analyze_spectrum(asset["media_path"], start, end,
                                     fft_size=4096, out_dir=asset.get("audio_dir"))
@@ -645,14 +657,16 @@ TOOLS = [
      "description": (
          "Measure a window's audio. Returns pictures plus numbers: loudness curve, FFT "
          "spectrum (peak frequency / note / cents), time-frequency map, pitch track, "
-         "waveform. Sample rate follows the video's audio track. L and R are measured "
+         "waveform. Sample rate follows the video's audio track. spectrum and wave read "
+         "a single 93ms FFT frame at time (seconds is ignored); the rest take a window. "
+         "L and R are measured "
          "separately, L on the upper half of each picture, R on the lower. view picks "
          "which picture; the numbers come back for each channel."
      ),
      "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "window length in seconds, must be > 0; default 10, max 15"},
+         "seconds": {"type": "number", "description": "window length in seconds, must be > 0; default 10, max 15. Ignored by spectrum and wave, which read a single frame at time"},
          "view": {"type": "string",
                   "enum": ["level", "spectrum", "spectrogram", "peak", "wave"],
                   "description": ("level = loudness over time; spectrum = frequency content at one frame; "

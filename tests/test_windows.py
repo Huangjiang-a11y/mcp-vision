@@ -107,6 +107,13 @@ _audio_schema = [t for t in M.TOOLS if t["name"] == "audio"][0]["inputSchema"]
 check("audio schema 把 view 设为必填", _audio_schema.get("required"), ["view"])
 check("audio enum 没有 all", "all" in _audio_schema["properties"]["view"]["enum"], False)
 
+# --- spectrum/wave 只认时间戳 ---
+# 这两个视图读一个 93ms 帧，seconds 对它没有意义：传了只会在更大范围里
+# 挑最响的一帧，报出来的值却像整段窗口的代表值（越过音符切换就给错 cents）。
+_src_audio2 = _inspect.getsource(M.tool_audio)
+check("spectrum/wave 固定 93ms 帧", 'start + 0.093' in _src_audio2, True)
+check("传了 seconds 会说明被忽略", 'seconds is ignored' in _src_audio2, True)
+
 # --- 音频图尺寸 ---
 # 上下两半必须正好拼成正方形，且 blit 偏移跟着 H//2 走（别留硬编码 512）。
 import audiochart as _ac
