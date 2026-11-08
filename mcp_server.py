@@ -73,12 +73,15 @@ def _mask(s):
     return s
 
 
-def _dump(obj, limit=0):
+def _dump(obj, limit=0, compact=False):
     """序列化。默认**不裁剪**：调用方是模型，宁可长也别悄悄少一半。
 
+    compact=True 时不缩进。纯数值数组（音频峰值轨迹那种）缩进后
+    每个 [t, f] 要占 6 行，字符翻一倍多，而缩进对它毫无可读性收益。
     limit>0 时仍保留旧的逐半裁剪逻辑，应急用。
     """
-    txt = json.dumps(obj, ensure_ascii=False, indent=2)
+    ind = None if compact else 2
+    txt = json.dumps(obj, ensure_ascii=False, indent=ind)
     if limit <= 0 or len(txt) <= limit:
         return txt
     import copy
@@ -87,10 +90,10 @@ def _dump(obj, limit=0):
         v = o.get(key)
         if isinstance(v, list) and v:
             o.setdefault("_truncated", {})[key] = len(v)
-    while len(json.dumps(o, ensure_ascii=False, indent=2)) > limit:
+    while len(json.dumps(o, ensure_ascii=False, indent=ind)) > limit:
         cand = [k for k in o if isinstance(o[k], list) and len(o[k]) > 1]
         if not cand:
-            return json.dumps({"_truncated": True, "note": "结果过大"}, ensure_ascii=False, indent=2)
+            return json.dumps({"_truncated": True, "note": "结果过大"}, ensure_ascii=False, indent=ind)
         k = max(cand, key=lambda x: len(json.dumps(o[x], ensure_ascii=False)))
         o[k] = o[k][: max(1, len(o[k]) // 2)]
         o.setdefault("_truncated", {})[k] = "只保留前 %d 条" % len(o[k])
@@ -396,7 +399,6 @@ def tool_audio(a):
         }
 
     summary = {
-        "ok": True,
         "range": [round(start, 3), round(start + d["duration"], 3)],
         "duration": d["duration"],
         "sample_rate": d["sample_rate"],
@@ -406,11 +408,14 @@ def tool_audio(a):
         "resolution_hz": d["resolution_hz"],
         "period_ms": d["period_ms"],
         "left": _chan(d["left"]),
-        "right": _chan(d["right"]),
     }
+    # 单声道时 right 和 left 逐字节相同（note 里也这么说），
+    # 两条 peak_freq_track 就白占 1000 多字符，别发两份。
+    if not d["mono"]:
+        summary["right"] = _chan(d["right"])
     notes = []
     if d["mono"]:
-        notes.append("单声道音轨，L 与 R 相同")
+        notes.append("单声道音轨，只有 left")
     if note:
         notes.append(note)
     if notes:
@@ -421,14 +426,13 @@ def tool_audio(a):
         out_dir = Path(asset.get("audio_dir") or (Path(asset["media_path"]).parent / "audio"))
         stem = "a-%d-%d" % (round(start * 1000), round(end * 1000))
         paths = audiochart.render(d, views, out_dir, stem=stem)
-        summary["images"] = {k: Path(v).name for k, v in paths.items()}
         for p in paths.values():
             im = _attach_png(p)
             if im:
                 images.append(im)
     except Exception as e:
         summary["image_error"] = "%s: %s" % (type(e).__name__, e)
-    return (_dump(summary), images)
+    return (_dump(summary, compact=True), images)
 
 
 def _parse_band(v):
@@ -489,7 +493,7 @@ def _subs_stt(a):
     # 不写 engine（stt 只有一种引擎，属已知事实，见 schema）
     # 不写 range（就是调用方传的 time/seconds；真被夹了，note 会说）
     # 不写 text（等于把 segments 的文本再拼一遍，实测占响应 13%）
-    out = {"mode": "stt", "segment_count": len(cues), "segments": cues}
+    out = {"mode": "stt", "segments": cues}
     # 汇总：一眼看出这首歌有没有 BGM、几处在笑/鼓掌、语种混没混。
     agg = {}
     for k in ("emotion", "event", "lang"):
@@ -555,7 +559,7 @@ def _subs_ocr(a):
     # band_auto 恒等于 band（自动检测时两者同源，显式指定时它必为 None），零额外信息
     out = {"mode": "ocr", "frames": res["frames"], "ocr_runs": res["ocr_runs"],
            "skipped": res["skipped"], "band": res.get("band"),
-           "band_px": res["band_px"], "segment_count": len(segs), "segments": segs}
+           "band_px": res["band_px"], "segments": segs}
     if res.get("page_like"):
         # 幻灯片 / 截图 / 作文纸：一屏几十行字，各自成行，没有「字幕带」这回事。
         # 硬选一条带读出来的是页面碎片（「1档压成172」「then分档」），
@@ -954,10 +958,9 @@ def tool_video(a):
         f = got[0]
         # 路径只留文件名：图片本身走 image 内容块，模型读不了本地路径。
         # 绝对路径前缀（workspace/<标题>/video/）每处 55 字符，纯重复。
-        out = {"ok": True, "mode": "single", "title": asset.get("title"),
-               "duration": round(duration, 2), "t": f["seconds"], "file": Path(f["path"]).name,
-               "size": [tw, th], "crop": spec or None,
-               "quality": a.get("quality") or "medium"}
+        # 只留模型用得上的：这一帧在几秒、片长多少、有没有被截断。
+        # ok/mode/title 是回显或恒定值，size 看图就知道，file 它打不开。
+        out = {"t": f["seconds"], "duration": round(duration, 2)}
         if note:
             out["note"] = note
         return (json.dumps(out, ensure_ascii=False, indent=2), _attach(f["path"]))
@@ -978,16 +981,19 @@ def tool_video(a):
     key = "%s|%d|%s|%s|%s|%dx%d|%dx%d|%s" % (asset.get("id") or "", n, a.get("quality"),
                                               note, spec, cols, rows, cell_w, cell_h, ts_key)
     sheet_path, jpg = _compose(a, asset, frames, cols, rows, cell_w, cell_h, key, "sheet", win_start)
-    out = {"ok": True, "mode": "sheet", "title": asset.get("title"),
-           "duration": round(duration, 2),
-           "frames": len(frames),
+    # 只留模型用得上的：片长、实际窗口、每格时间点、提示。
+    # 删掉的几类——
+    #   ok        永远是 true，失败走另一条返回路径
+    #   mode      由 quantity 决定，调用方自己知道
+    #   title     回显它刚传的 video_id
+    #   frames    = len(timeline)
+    #   grid/cellSize  排版细节，图上看得出来
+    #   crop/quality   回显入参
+    #   file      图片就在 image 块里，它没有文件系统
+    #   sheetKB   它没法据此做决定
+    out = {"duration": round(duration, 2),
            "range": [round(min(ts), 3), round(max(ts), 3)],
-           "grid": [cols, rows], "cellSize": [cell_w, cell_h], "crop": spec or None,
-           "quality": a.get("quality") or "medium",
-           # 每格的时间点有用（对上是第几张），每格的路径没用——
-           # 模型看的是拼好的整页，它打不开单帧文件。
-           "timeline": [f["seconds"] for f in frames],
-           "file": Path(jpg).name if jpg else (Path(sheet_path).name if sheet_path else None)}
+           "timeline": [f["seconds"] for f in frames]}
     for msg in ((degraded or ""),
                 ("窗口里只找到 %d 处明显画面变化，其余 %d 格是在变化点之间插值补的，"
                  "不代表新的画面" % (n - filled, filled)) if filled else ""):
@@ -995,11 +1001,6 @@ def tool_video(a):
             note = msg if not note else note + "；" + msg
     if note:
         out["note"] = note
-    if jpg:
-        try:
-            out["sheetKB"] = int(round(Path(jpg).stat().st_size / 1024))
-        except Exception:
-            pass
     return (json.dumps(out, ensure_ascii=False, indent=2), _attach(jpg))
 
 

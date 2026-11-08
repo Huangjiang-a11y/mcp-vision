@@ -227,7 +227,30 @@ src_video = inspect.getsource(M.tool_video)
 check("video 不输出绝对路径", '"save": f["path"]' in src_video, False)
 check("video 不输出 videoDir", '"videoDir"' in src_video, False)
 check("video 的 timeline 只放时间", '"path": f["path"]' in src_video, False)
-check("video 用 file 给文件名", '"file": Path(f["path"]).name' in src_video, True)
+# 输出只留模型用得上的。这些字段要么恒为 true、要么是入参回显、
+# 要么能数出来、要么它根本没有文件系统去用。
+for dead in ('"ok": True', '"mode": "', '"title": asset.get', '"frames": len(',
+             '"grid": [cols', '"cellSize"', '"crop": spec', '"quality": a.get',
+             '"sheetKB"', '"file": Path('):
+    check("video 不输出 %s" % dead.strip(), dead in src_video, False)
+check("video 保留 timeline", '"timeline"' in src_video, True)
+check("video 保留 note", '"note"' in src_video, True)
+
+# workspace list：绝对路径模型读不了，bytes 它也做不了决定
+src_status = inspect.getsource(engine.status)
+check("list 不输出 workspace 绝对路径", '"workspace": str(root)' in src_status, False)
+check("list 不输出每项 path", '"path": m.get' in src_status, False)
+check("list 不输出 bytes", '"bytes":' in src_status, False)
+
+# audio：mono 时 right 与 left 逐字节相同，不该发两份
+src_audio = inspect.getsource(M.tool_audio)
+check("audio 单声道不重复发 right", 'if not d["mono"]:' in src_audio, True)
+check("audio 不输出图片文件名", 'summary["images"]' in src_audio, False)
+check("audio 不输出恒真的 ok", '"ok": True' in src_audio, False)
+
+# subtitles：segment_count 就是 len(segments)
+src_subs = inspect.getsource(M.tool_subtitles)
+check("subtitles 不重复给 segment_count", 'segment_count' in src_subs, False)
 
 # 缓存键必须含实际取到的帧时间点：按画面变化取帧时，同一窗口两次调用
 # 可能取到完全不同的帧，键里不写 ts 就会拿旧图冒充新结果。

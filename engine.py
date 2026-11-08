@@ -490,26 +490,31 @@ def cache_root(cwd):
 
 
 def status(cwd):
+    """列出工作区里的视频。只给模型用得上的：id 和时长。
+
+    不给绝对路径——模型没有文件系统，读不了也拼不了。
+    不给 bytes——它没法据此做任何决定。
+    id 与 title 绝大多数时候相同，留 id 一个（调用 video 时传的就是它）。
+    """
     root = workspace_root(cwd)
     if not root.exists():
-        return {"workspace": str(root), "videos": [], "bytes": 0}
+        return {"videos": []}
     videos = []
-    total = 0
     for d in root.iterdir():
         if not d.is_dir():
             continue
         meta = d / "meta.json"
-        if meta.exists():
-            try:
-                m = json.loads(meta.read_text())
-                videos.append({"id": m.get("id"), "title": m.get("title"),
-                               "duration": m.get("duration"), "path": m.get("media_path")})
-            except Exception:
-                pass
-        for pp in d.rglob("*"):
-            if pp.is_file():
-                total += pp.stat().st_size
-    return {"workspace": str(root), "videos": videos, "bytes": total}
+        if not meta.exists():
+            continue
+        try:
+            m = json.loads(meta.read_text())
+        except Exception:
+            continue
+        item = {"id": m.get("id")}
+        if m.get("duration"):
+            item["duration"] = round(float(m["duration"]), 1)
+        videos.append(item)
+    return {"videos": videos}
 
 
 def open_local(cwd, path, title=None, url=None):
