@@ -1,6 +1,6 @@
 # 安装指南
 
-`mcp-vision` 是一个 MCP 服务器：把视频变成 AI 能读的东西（帧、网格页、音频电平、字幕、转写）。
+`mcp-vision` 是一个 MCP 服务器：把视频变成 AI 能读的东西（帧、网格页、音频电平、基频、字幕、转写）。
 本机跑，不上传。
 
 > **先读免责声明**：本项目仅供个人学习研究，软件按 MIT「AS IS」提供、不作任何担保；
@@ -184,7 +184,9 @@ sh check.sh --test
 ```
 workspace open  "file:///path/to/a.mp4"
 video     quantity=15
-audio     view=all time=0 seconds=10
+audio     view=pitch time=0
+audio     view=history time=0 seconds=10 [frame_ms=5~200]
+audio     view=spectrogram time=0 seconds=10
 subtitles mode=stt time=0 seconds=30
 ```
 
@@ -198,7 +200,7 @@ mcp-vision/
 ├── workspace/         产物：每个视频一个文件夹（gitignore）
 │   └── <标题>/
 │       ├── video/     probe.json / frame_*.jpg / sheet_*.png
-│       ├── audio/     a-<窗口>.wav / .pcm，以及 level/spectrum/spectrogram/peak/wave 的 png
+│       ├── audio/     a-<窗口>.pcm，以及 level/spectrum/spectrogram/peak/wave/pitch/history 的 png
 │       └── subtitles/ 字幕段直接写在返回里，不落盘
 ├── cookies.txt        B 站登录态（gitignore，**绝不要提交**）
 └── out/               实验产物（gitignore）
@@ -225,7 +227,7 @@ Termux 上 `pkg install python-onnxruntime` 后再 `pip install sherpa-onnx`；�
 把浏览器 cookies 导出成 Netscape 格式存为 `cookies.txt`。该文件含账号凭证，别分享、别提交。
 
 **抽帧很慢**
-`quality` 调 `low`，`quantity` 调小；解码本身受手机 CPU 限制。
+`detail` 调 `low`，`quantity` 调小；解码本身受手机 CPU 限制。
 
 ---
 
