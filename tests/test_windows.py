@@ -1,3 +1,4 @@
+import json
 """取窗与参数校验的回归测试。
 
 这一组全是纯逻辑（不碰模型、不碰素材），跑得很快。
@@ -101,18 +102,92 @@ for _args, _lab in (({"time": -5}, "负 time"), ({"time": 99999}, "越界"),
 
 import inspect as _inspect
 _src_audio = _inspect.getsource(M.tool_audio)
-check("audio 缺 view 要报错", 'view is required' in _src_audio, True)
+check("audio 缺 view 不再报错", 'view is required' in _src_audio, False)
+check("缺 view 时落到 level", 'raw_view or "level"' in _src_audio, True)
 check("audio 不再有 all 分支", '== "all"' in _src_audio, False)
 _audio_schema = [t for t in M.TOOLS if t["name"] == "audio"][0]["inputSchema"]
-check("audio schema 把 view 设为必填", _audio_schema.get("required"), ["view"])
+check("audio schema 不把 view 设为必填", _audio_schema.get("required"), None)
+check("audio schema 给 view 写了默认值", _audio_schema["properties"]["view"].get("default"), "level")
 check("audio enum 没有 all", "all" in _audio_schema["properties"]["view"]["enum"], False)
 
-# --- spectrum/wave 只认时间戳 ---
-# 这两个视图读一个 93ms 帧，seconds 对它没有意义：传了只会在更大范围里
-# 挑最响的一帧，报出来的值却像整段窗口的代表值（越过音符切换就给错 cents）。
+# --- 基频：归一化自相关 ---
+# 参考图 302.46Hz -> 周期 3.31ms / D#4 / -48.92 音分。
+import numpy as _np
+_sr = 44100
+_t = _np.arange(4096) / float(_sr)
+_p = engine._f0_autocorr(_np.sin(2 * _np.pi * 302.46 * _t), _sr)
+check("基频 302.46Hz 测得准", abs(_p["freq_hz"] - 302.46) < 0.2, True)
+check("周期 3.306ms", abs(_p["period_ms"] - 3.306) < 0.01, True)
+check("音名 D#4", _p["note"], "D#4")
+check("音分 -48.9", abs(_p["cents"] + 48.92) < 1.0, True)
+check("纯音置信度接近 1", _p["confidence"] > 0.95, True)
+
+# 1975Hz 的第一个峰正好落在搜索区间的下端点。只在 [lo, hi] 里找局部极大
+# 会漏掉它、退到第二个周期，报成 987Hz（低八度）。
+_hi = engine._f0_autocorr(_np.sin(2 * _np.pi * 1975.0 * _t), _sr)
+check("接近上限的 1975Hz 不报低八度", abs(_hi["freq_hz"] - 1975.0) < 2.0, True)
+
+# 上限 5000Hz（对齐 phyphox），4500Hz 仍要测准
+_p2 = engine._f0_autocorr(_np.sin(2 * _np.pi * 4500.0 * _t), _sr)
+check("4500Hz 测得准", abs(_p2["freq_hz"] - 4500.0) < 5.0, True)
+check("4500Hz 置信度高", _p2["confidence"] > 0.9, True)
+
+# 谐波丰富时最高峰未必是基频，取「最早够高的峰」才不会被 2 倍频骗走
+_saw = sum(_np.sin(2 * _np.pi * 110 * k * _t) / k for k in range(1, 9))
+check("锯波仍报 110Hz 基频", abs(engine._f0_autocorr(_saw, _sr)["freq_hz"] - 110.0) < 0.5, True)
+
+check("静音无基频", engine._f0_autocorr(_np.zeros(4096), _sr), None)
+check("太短的帧不硬测", engine._f0_autocorr(_np.ones(32), _sr), None)
+check("view 支持 pitch", "pitch" in _audio_schema["properties"]["view"]["enum"], True)
+check("view 支持 history", "history" in _audio_schema["properties"]["view"]["enum"], True)
+check("history 是窗口视图", '"history"' not in '("spectrum", "wave", "pitch")', True)
+
+# --- 数峰法（phyphox 口径）---
+# 周期 = 最后一个峰位置 / 峰数；100ms 窗在 4410 点数下比 4096 点更准。
+_t100 = _np.arange(int(_sr * 0.1)) / float(_sr)
+_pb = engine._f0_autocorr(_np.sin(2 * _np.pi * 1000.0 * _t100), _sr)
+check("1000Hz 报 1000", abs(_pb["freq_hz"] - 1000.0) < 0.1, True)
+check("1000Hz 峰数约 20", abs(_pb["peaks"] - 20) <= 1, True)
+check("峰数已上报", "peaks" in _pb, True)
+_pc = engine._f0_autocorr(_np.sin(2 * _np.pi * 4500.0 * _t100), _sr)
+check("4500Hz 在 100ms 窗也准", abs(_pc["freq_hz"] - 4500.0) < 2.0, True)
+check("无周期门槛是 0.25", engine.F0_MIN_CONF, 0.25)
+_pt = engine.pitch_track(0.5 * _np.sin(2 * _np.pi * 440.0 * _np.arange(_sr) / float(_sr)), _sr, 0.0)
+check("Frequency History 出轨迹", len(_pt) > 5, True)
+check("轨迹是 (t, f, conf)", (len(_pt[0]), abs(_pt[0][1] - 440.0) < 1.0), (3, True))
+check("pitch 也走单帧路径", '("spectrum", "wave", "pitch")' in _inspect.getsource(M.tool_audio), True)
+# 参数校验在取素材之前：报错要指向参数，别先喊「open a video first」
+_bad = json.loads(M.tool_audio({"view": "bogus"})[0])
+check("未知 view 直接报参数错", "unknown view" in _bad.get("error", ""), True)
+check("报错里列全了 view", "| pitch" in _bad.get("error", ""), True)
+
+# --- spectrum/wave/pitch 只认时间戳 ---
+# 这三个视图读一个 100ms 帧（FRAME_MS，phyphox 口径），seconds 对它没有意义：
+# 传了只会在更大范围里挑最响的一帧，报出来的值却像整段窗口的代表值。
 _src_audio2 = _inspect.getsource(M.tool_audio)
-check("spectrum/wave 固定 93ms 帧", 'start + 0.093' in _src_audio2, True)
+check("单帧长度走 FRAME_MS 常量", "engine.FRAME_MS" in _src_audio2, True)
+check("单帧不再写死 0.093", "0.093" in _src_audio2, False)
 check("传了 seconds 会说明被忽略", 'seconds is ignored' in _src_audio2, True)
+check("帧长 100ms", engine.FRAME_MS, 100.0)
+check("Frequency History 默认 20ms", engine.HISTORY_MS, 20.0)
+
+# --- frame_ms 对所有视图都生效 ---
+_src3 = _inspect.getsource(M.tool_audio)
+check("frame_ms 在 schema 里", "frame_ms" in _audio_schema["properties"], True)
+check("frame_ms 是 5-200", "5-200" in _audio_schema["properties"]["frame_ms"]["description"], True)
+check("level 块长独立于 FFT", engine.LEVEL_MS, 20.0)
+check("analyze_spectrum 收 level_ms", "level_ms" in _inspect.signature(engine.analyze_spectrum).parameters, True)
+check("analyze_spectrum 收 fft_ms", "fft_ms" in _inspect.signature(engine.analyze_spectrum).parameters, True)
+check("analyze_spectrum 收 fmin", "fmin" in _inspect.signature(engine.analyze_spectrum).parameters, True)
+# 帧长 -> FFT 点数：25ms @ 48k = 1200
+_sr48 = 48000
+_x = 0.5 * _np.sin(2 * _np.pi * 440.0 * _np.arange(_sr48) / float(_sr48))
+_c = engine._channel_metrics(_x, _sr48, 0.0, 1200, 5.0)
+check("level 5ms 一帧 200 点", _c["level"]["times"][1] - _c["level"]["times"][0], 0.005)
+_c2 = engine._channel_metrics(_x, _sr48, 0.0, 1200, 100.0)
+check("level 100ms 一帧", round(_c2["level"]["times"][1] - _c2["level"]["times"][0], 3), 0.1)
+check("FFT 块长仍是 25ms", _c["wave"]["ms"], 25.0)
+check("默认 fft_size 按采样率折算", engine.analyze_spectrum.__defaults__[0], None)
 
 # --- 音频图尺寸 ---
 # 上下两半必须正好拼成正方形，且 blit 偏移跟着 H//2 走（别留硬编码 512）。
@@ -186,16 +261,51 @@ check("下载不用不存在的 min()", "min(w,h)" not in src_open_full, True)
 check("下载用 res: 排序短边", '"res:%d"' in src_open_full, True)
 check("不写死格式过滤（避免无匹配回落）", 'fmt = "bv*+ba/b"' in src_open_full, True)
 check("quality 档位仍是短边语义", M._QUALITY_MAP("medium"), 720)
+# detail 是图片质量（像素预算），和下载分辨率的 quality 是两回事
+check("video detail 默认 1024", M.VIDEO_DETAIL_PX[M._detail_level({}, M.VIDEO_DETAIL_PX, "medium")], 1024)
+check("detail 不再认旧名 quality", M._detail_level({"quality": "high"}, M.VIDEO_DETAIL_PX, "medium"), "medium")
+
+# --- schema 的必填要和实际行为一致 ---
+# source 只在 action=open 时才必要：写成无条件 required，list 就得凭空编路径；
+# 完全不写，模型只能靠试错。用 allOf 条件必填把「缺省 action 也是 open」表达出来。
+_w = [t for t in M.TOOLS if t["name"] == "workspace"][0]["inputSchema"]
+check("workspace 有条件必填", "allOf" in _w, True)
+check("open 时要求 source", _w["allOf"][0]["then"]["required"], ["source"])
+check("条件挂在 action=open 上", _w["allOf"][0]["if"]["properties"]["action"]["const"], "open")
+check("action 本身不是无条件必填", "required" in _w, False)
+# 运行时兜底也要说得清楚，别让模型猜
+_missing_src, _ = M.tool_open({})
+check("缺 source 报错点明原因", "source is required" in _missing_src, True)
+_a = [t for t in M.TOOLS if t["name"] == "audio"][0]["inputSchema"]
+# view 缺省给 level：最便宜（27KB/0.8s）、按窗口算（认 seconds）、没有歧义。
+# spectrogram 384KB 当默认等于替调用方做了个很贵的决定；
+# spectrum/wave/pitch 只读一帧，会把 seconds 悄悄丢掉。
+# history 也按窗口算（别把它归进单帧那一拨），只是逐帧追基频更贵、更假设素材带音高。
+check("audio 不再硬必填 view", _a.get("required"), None)
+check("view 的缺省是 level", _a["properties"]["view"].get("default"), "level")
+_src_audio = inspect.getsource(M.tool_audio)
+# 默认值会被无声接受，所以走了默认就在 note 里说一句
+check("走缺省时 note 里说清楚", 'view defaulted to %s' in _src_audio, True)
+check("显式传 view 时不加 note", "if view_defaulted:" in _src_audio, True)
+# history 是窗口视图，不是单帧：它走 _window(default_span=10.0, cap=15.0)，
+# seconds=2 和 seconds=8 应该拿到不同的 range。曾经在注释里把它写成"只读一帧"，是错的。
+check("单帧分支只有 spectrum/wave/pitch", '("spectrum", "wave", "pitch")' in _src_audio, True)
+check("history 不在单帧分支", '("spectrum", "wave", "pitch", "history")' in _src_audio, False)
+check("history 按窗口取", 'default_span=10.0, cap=15.0' in _src_audio, True)
+check("detail 认新名", M._detail_level({"detail": "max"}, M.VIDEO_DETAIL_PX, "medium"), "max")
+check("detail 乱填回落默认", M._detail_level({"detail": "huge"}, M.VIDEO_DETAIL_PX, "medium"), "medium")
+check("音频 detail 四档", sorted(M.AUDIO_DETAIL_PX.values()), [768, 1024, 1280, 1536])
+check("音频默认 low=768（和以前一样大）", M.AUDIO_DETAIL_PX[M._detail_level({}, M.AUDIO_DETAIL_PX, "low")], 768)
 
 # --- 格子尺寸：整页预算要按整页算 ---
 # 以前把 sqrt(cap/(aspect·cols·rows)) 当"短边"，公式已除过 cols·rows，
 # 得到的其实是单格窄边。竖屏再拿它当页面宽 → 整页 316% 预算。
 # 横屏恰好 100%，所以只有竖屏能暴露。
-cap = M._max_pixels({"quality": "medium"})
+cap = M._max_pixels({"detail": "medium"})
 for label, asp, c, r in (("竖屏3x2", 1080/1920, 3, 2), ("竖屏2x5", 1080/1920, 2, 5),
                          ("横屏3x3", 1280/720, 3, 3), ("横屏5x2", 1280/720, 5, 2),
                          ("方形3x3", 1.0, 3, 3)):
-    w, h = M._sheet_cells({"quality": "medium"}, asp, c, r)
+    w, h = M._sheet_cells({"detail": "medium"}, asp, c, r)
     got = w * h * c * r
     check("%s 整页 ≈ 预算" % label, abs(got / cap - 1.0) < 0.06, True)
     check("%s 单格保持画面比例" % label, abs((w / h) / asp - 1.0) < 0.02, True)
@@ -277,7 +387,7 @@ check("video 的 timeline 只放时间", '"path": f["path"]' in src_video, False
 # 输出只留模型用得上的。这些字段要么恒为 true、要么是入参回显、
 # 要么能数出来、要么它根本没有文件系统去用。
 for dead in ('"ok": True', '"mode": "', '"title": asset.get', '"frames": len(',
-             '"grid": [cols', '"cellSize"', '"crop": spec', '"quality": a.get',
+             '"grid": [cols', '"cellSize"', '"crop": spec', '"detail": a.get',
              '"sheetKB"', '"file": Path('):
     check("video 不输出 %s" % dead.strip(), dead in src_video, False)
 check("video 保留 timeline", '"timeline"' in src_video, True)
@@ -308,3 +418,19 @@ print("\nRESULT", "ALL OK" if not fails else "HAS FAIL (%d)" % len(fails))
 for f in fails:
     print(" -", f)
 sys.exit(0 if not fails else 1)
+
+# --- history 帧长：默认 20ms，也可指定 ---
+_t1s = _np.arange(_sr) / float(_sr)
+_q = 0.5 * _np.sin(2 * _np.pi * 300 * _t1s)
+_t10 = engine.pitch_track(_q, _sr, 0, frame_ms=10, step_ms=10)
+_t25 = engine.pitch_track(_q, _sr, 0, frame_ms=25, step_ms=25)
+_t20 = engine.pitch_track(_q, _sr, 0, frame_ms=20, step_ms=20)
+check("frame_ms=10 步进 10ms", round(_t10[1][0] - _t10[0][0], 3), 0.01)
+check("frame_ms=25 步进 25ms", round(_t25[1][0] - _t25[0][0], 3), 0.025)
+check("默认 20ms 步进 20ms", round(engine.pitch_track(_q, _sr, 0)[1][0], 3), 0.02)
+check("25ms 帧点数约为 10ms 的四成", len(_t25) <= 45 and len(_t10) >= 95, True)
+# 25ms 能装下 50Hz 的整周期（20ms），10ms 装不下
+_low = 0.5 * _np.sin(2 * _np.pi * 50 * _t1s)
+check("50Hz 在 20ms 帧下可测", abs(engine.pitch_track(_low, _sr, 0, frame_ms=20)[0][1] - 50) < 0.5, True)
+check("50Hz 在 25ms 帧下可测", abs(engine.pitch_track(_low, _sr, 0, frame_ms=25)[0][1] - 50) < 0.5, True)
+check("50Hz 在 10ms 帧下测不到", engine.pitch_track(_low, _sr, 0, frame_ms=10), [])

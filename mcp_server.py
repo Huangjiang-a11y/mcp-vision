@@ -359,23 +359,34 @@ def tool_open(a):
 
 def tool_audio(a):
     """音频剖析：电平曲线 / 频谱 / 时频图。可返回图片，也可只给数字。"""
+    # 一次只出一张图。以前 view=all 把五张全画出来：五张 PNG 的 base64 比数字
+    # 大两个数量级，而模型通常只要其中一张。
+    #
+    # 缺省给 level，不是随便挑的：
+    #   level 按窗口算（认 seconds），27KB / 0.8s，最便宜又最没有歧义；
+    #   spectrogram 一张 384KB，当默认等于替调用方做了个很贵的决定；
+    #   spectrum / wave / pitch 只读一帧，会把传进来的 seconds 悄悄丢掉，
+    #   这种"看起来生效其实没生效"的默认最坑；
+    #   history 也按窗口算，但 20ms 一帧逐帧追基频，1.24s 且默认就假设这是音乐/带音高的
+    #   内容，当门脸比 level 武断。
+    # 代价是默认值会被无声接受，所以真走了默认就在 note 里写一句，
+    # 让模型知道自己没选、拿到的是哪张图。
+    _VIEWS = ("level", "spectrum", "spectrogram", "peak", "wave", "pitch", "history")
+    raw_view = str(a.get("view") or "").strip().lower()
+    view = raw_view or "level"
+    view_defaulted = not raw_view
+    views = [view]
+    if view not in _VIEWS:
+        return (_dump({"ok": False,
+                       "error": "unknown view: %s (pick one of %s)"
+                                % (view, " | ".join(_VIEWS))}), [])
+
     cwd = str(Path(__file__).resolve().parent)
     asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return _missing(a), []
     if not asset.get("has_audio"):
         return (_dump({"ok": False, "error": "this video has no audio track"}), [])
-    # 一次只出一张图，而且必须显式指定 view。
-    # 以前 view=all 默认把五张全画出来：五张 PNG 的 base64 比数字大两个数量级，
-    # 而模型通常只需要其中一张。改成"有默认值"也不对——默认值会被无声接受，
-    # 模型根本不会意识到自己选了什么。所以不给默认，缺了就报错让它显式说。
-    view = str(a.get("view") or "").strip().lower()
-    if not view:
-        return (_dump({"ok": False,
-                       "error": "view is required: level | spectrum | spectrogram | peak | wave"}), [])
-    views = [view]
-    if view not in ("level", "spectrum", "spectrogram", "peak", "wave"):
-        return (_dump({"ok": False, "error": "unknown view: %s" % view}), [])
     err = _pos_seconds(a)
     if err:
         return (_dump({"ok": False, "error": err}), [])
@@ -383,22 +394,70 @@ def tool_audio(a):
     if dur_total > 0 and float(a.get("time") or 0) >= dur_total:
         return (_dump({"ok": False,
                        "error": "time=%.1f is past the %.1f clip" % (float(a.get("time") or 0), dur_total)}), [])
-    if view in ("spectrum", "wave"):
-        # 这两个视图只读一个 FFT 帧（4096 点 ≈ 93ms）。窗口对它们没有意义：
+    # frame_ms 是所有视图共用的「块长」旋钮，含义按视图分：
+    #   level               RMS 块长（默认 20ms）
+    #   spectrum/wave/pitch 单帧块长（默认 100ms），决定频率分辨率
+    #   spectrogram/peak    FFT 块长（默认 100ms），也决定列间距
+    #   history             逐帧块长（默认 20ms）
+    # 别再让调用方传采样点数：给时长才是人话。
+    _DEFAULT_MS = {"level": engine.LEVEL_MS, "history": engine.HISTORY_MS}
+    try:
+        _fm = a.get("frame_ms")
+        frame_ms = None if _fm is None else float(_fm)
+    except (TypeError, ValueError):
+        return (_dump({"ok": False, "error": "frame_ms must be a number"}), [])
+    if frame_ms is not None:
+        # 5ms 以下 FFT 只剩几十个点，200ms 以上单帧已经盖住整段窗口
+        frame_ms = max(5.0, min(200.0, frame_ms))
+    ms = frame_ms if frame_ms is not None else _DEFAULT_MS.get(view, engine.FRAME_MS)
+    # 基频的搜索下限跟着帧长走：一帧至少要装下一个完整周期，
+    # 5ms 帧测不了 50Hz，硬测只会到处报倍频，不如把下限抬上去说清楚。
+    fmin = (max(engine.F0_MIN_HZ, 1000.0 / ms)
+            if view in ("pitch", "history") else engine.F0_MIN_HZ)
+
+    if view in ("spectrum", "wave", "pitch"):
+        # 这三个视图只读一个帧。窗口对它们没有意义：
         # 传 seconds 只是在更大范围里挑「最响的一帧」，报出来的数却像是
         # 整段窗口的代表值——之前 t=53 报 -33 cents 就是这么来的，
         # 那一秒里其实换了 6 个音。所以只认时间戳，seconds 忽略并说明。
         start = max(0.0, float(a.get("time") or 0))
-        end = min(start + 0.093, dur_total) if dur_total else start + 0.093
-        note = ""
+        end = min(start + ms / 1000.0, dur_total) if dur_total else start + ms / 1000.0
+        notes = []
         if a.get("seconds") is not None:
-            note = ("seconds is ignored: %s reads one 93ms FFT frame at time=%.3g"
-                    % (view, start))
+            notes.append("seconds is ignored: %s reads one %gms frame at time=%.3g"
+                         % (view, ms, start))
+        if fmin > engine.F0_MIN_HZ:
+            notes.append("floor ~%dHz: a %gms frame cannot hold a lower period"
+                         % (int(fmin), ms))
+        note = "; ".join(notes)
     else:
         start, end, note = _window(a, asset, default_span=10.0, cap=15.0)
+        extra = ""
+        if view == "history":
+            # 轨迹本来就只给趋势，块短是设计的一部分
+            floor = int(fmin)
+            extra = ("history uses %gms frames: trend only, floor ~%dHz"
+                     % (ms, floor))
+        elif view == "level" and frame_ms is not None:
+            # 电平默认 20ms 是常用口径，只在调用方改了才提一句
+            extra = "level uses %gms RMS frames" % ms
+        elif frame_ms is not None:
+            # spectrogram / peak 只在调用方主动改帧长时才提一句
+            extra = ("%s uses %gms FFT frames, ~%.0fHz resolution"
+                     % (view, ms, 1000.0 / ms))
+        if extra:
+            note = (note + "; " + extra) if note else extra
     try:
         d = engine.analyze_spectrum(asset["media_path"], start, end,
-                                    fft_size=4096, out_dir=asset.get("audio_dir"))
+                                    out_dir=asset.get("audio_dir"),
+                                    track=(view == "history"),
+                                    history_ms=(ms if view == "history"
+                                                else engine.HISTORY_MS),
+                                    level_ms=(ms if view == "level"
+                                              else engine.LEVEL_MS),
+                                    fft_ms=(None if view in ("level", "history")
+                                            else ms),
+                                    fmin=fmin)
     except RuntimeError as e:
         return (_dump({"ok": False, "error": str(e)}), [])
     d["_start"], d["_end"] = start, end
@@ -418,9 +477,14 @@ def tool_audio(a):
                 "cents": c["spectrum"]["cents"],
             },
             "peak_freq_track": [[round(t, 2), round(f, 1)] for t, f in track[::step]],
-            # 波形只报统计量，4096 个采样点留给画图
+            # 波形只报统计量，100ms 帧的采样点留给画图
             "wave": {k: c["wave"][k] for k in ("t0", "ms", "peak", "rms")},
         }
+
+    def _track(tr):
+        # 逐帧轨迹在 10 秒窗口里有几百个点，抽稀到 ~60 个
+        step = max(1, math.ceil(len(tr) / 60.0))
+        return [[t, f] for t, f, _c in tr[::step]]
 
     summary = {
         "range": [round(start, 3), round(start + d["duration"], 3)],
@@ -431,13 +495,31 @@ def tool_audio(a):
         "fft_size": d["fft_size"],
         "resolution_hz": d["resolution_hz"],
         "period_ms": d["period_ms"],
+        "level_ms": d["level_ms"],
+        # 基频是单声道量：L/R 只差声像和底噪，分开报两个音高没有意义
+        "pitch": {
+            "freq_hz": d["pitch"]["freq_hz"],
+            "period_ms": d["pitch"]["period_ms"],
+            "note": d["pitch"]["note"],
+            "cents": d["pitch"]["cents"],
+            "confidence": d["pitch"]["confidence"],
+            "peaks": d["pitch"]["peaks"],
+            "range_hz": d["pitch"]["range_hz"],
+            "at_s": d["pitch"]["t0"],
+            "frame_ms": d["pitch"]["ms"],
+        },
         "left": _chan(d["left"]),
     }
     # 单声道时 right 和 left 逐字节相同（note 里也这么说），
     # 两条 peak_freq_track 就白占 1000 多字符，别发两份。
     if not d["mono"]:
         summary["right"] = _chan(d["right"])
+    # 轨迹只有在 history 视图才算，别给别的视图塞一个空数组
+    if d.get("pitch_track"):
+        summary["pitch_track"] = _track(d["pitch_track"])
     notes = []
+    if view_defaulted:
+        notes.append("view defaulted to %s" % view)
     if d["mono"]:
         notes.append("mono track, left only")
     if note:
@@ -449,7 +531,8 @@ def tool_audio(a):
     try:
         out_dir = Path(asset.get("audio_dir") or (Path(asset["media_path"]).parent / "audio"))
         stem = "a-%d-%d" % (round(start * 1000), round(end * 1000))
-        paths = audiochart.render(d, views, out_dir, stem=stem)
+        paths = audiochart.render(d, views, out_dir, stem=stem,
+                                  size=AUDIO_DETAIL_PX[_detail_level(a, AUDIO_DETAIL_PX, "low")])
         for p in paths.values():
             im = _attach_png(p)
             if im:
@@ -617,27 +700,31 @@ def tool_list(a):
 
 TOOLS = [
     {"name": "workspace",
-     "description": "Workspace: open or download a video from a URL or local path; list opened videos.",
+     "description": "Workspace: open or download a video from a URL or local path (source required), or list opened videos.",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["open", "list"],
                     "description": "open = download and open (default); list = show opened videos"},
          "source": {"type": "string",
                     "description": "Video path or URL; use the file:// scheme for local files"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                     "description": "low=480p medium=720p high=1080p max=source, filtered by the short edge"},
-         "cookies": {"type": "boolean", "description": "true = use cookies.txt from the repo root"}}}},
+                     "description": "download height: low=480p medium=720p (default) high=1080p max=source, filtered by the short edge"},
+         "cookies": {"type": "boolean", "description": "true = use cookies.txt from the repo root; default false"}},
+         # source 只在 open 时才必要：写成无条件 required，action=list 就得凭空编一个路径。
+         # action 缺省也是 open（properties 对缺省字段不约束，所以这个 if 会命中），
+         # 正好对上默认值，模型不必知道「缺省=open」这条隐含规则。
+         "allOf": [{"if": {"properties": {"action": {"const": "open"}}},
+                    "then": {"required": ["source"]}}]}},
 
     {"name": "video",
      "description": (
-         "Look at a clip as one page of frames, or as a single frame.\n"
+         "Look at a clip as one page of frames, or a single frame.\n"
          "\n"
-         "Samples `quantity` frames across the window into one page, "
-         "plus a timeline mapping each cell to its moment. quantity defaults to 15, max 30.\n"
-         "quantity=1 returns one frame at full detail instead of a page - use it to read a board, "
-         "a scoreboard or a subtitle line, optionally with `crop` (WxH+X+Y, applied before scaling).\n"
+         "`quantity` frames go onto one page with a timeline (default 15, max 30); `pick` takes "
+         "scene changes (default) or even spacing. quantity=1 returns one full-detail frame for "
+         "reading a board, scoreboard or subtitle line, and honours `crop`.\n"
          "\n"
-         "`quality` is an area cap that only scales down. The window is capped at 900 seconds "
-         "and clamped to the clip, with a note when that happens."
+         "`detail` sets picture size as a pixel budget, split across the cells and only ever "
+         "scaled down. The window is capped at 900s and clamped to the clip, noted when it happens."
      ),     "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
@@ -650,63 +737,105 @@ TOOLS = [
                                   "shows distinct content; even spaces them by time, for a sense of pacing")},
          "crop": {"type": "string",
                   "description": "crop before scaling, WxH+X+Y (e.g. 720x300+0+880); applies to every cell"},
-         "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                     "description": "area cap, scales down only; see enum for the values"}}}},
+         "detail": {"type": "string", "enum": ["low", "medium", "high", "max"],
+                    "description": ("image quality, as a pixel budget for the whole page: "
+                                    "low = 512, medium = 1024 (default), high = 1536, max = 2048 "
+                                    "- these are the side of a square with the same area, and the "
+                                    "budget is split across the cells, so more cells means smaller "
+                                    "cells. It only scales down, never up: a 480p clip stays 480p. "
+                                    "Raise it to read small text, lower it to save tokens.")}}}},
 
     {"name": "audio",
      "description": (
-         "Measure a window's audio. Returns pictures plus numbers: loudness curve, FFT "
-         "spectrum (peak frequency / note / cents), time-frequency map, pitch track, "
-         "waveform. Sample rate follows the video's audio track. spectrum and wave read "
-         "a single 93ms FFT frame at time (seconds is ignored); the rest take a window. "
-         "L and R are measured "
-         "separately, L on the upper half of each picture, R on the lower. view picks "
-         "which picture; the numbers come back for each channel."
+         "Measure a window's audio: one figure plus the numbers behind it. view picks the "
+         "measurement (level, spectrum, spectrogram, peak, wave, pitch, history). L and R are "
+         "measured separately, upper and lower half of each figure; pitch and history are mono "
+         "and fill the whole figure.\n"
+         "\n"
+         "spectrum, wave and pitch read one frame at `time` and ignore `seconds`; the rest take a "
+         "window (default 10s, max 15s). `frame_ms` trades time against frequency resolution; "
+         "`detail` sets figure size - neither changes the readings, only what the picture resolves."
      ),
      "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "window length in seconds, must be > 0; default 10, max 15. Ignored by spectrum and wave, which read a single frame at time"},
+         "seconds": {"type": "number", "description": "window length in seconds, must be > 0; default 10, max 15. Ignored by spectrum, wave and pitch, which read a single frame at time"},
          "view": {"type": "string",
-                  "enum": ["level", "spectrum", "spectrogram", "peak", "wave"],
+                  "enum": ["level", "spectrum", "spectrogram", "peak", "wave", "pitch", "history"],
+                  "default": "level",
                   "description": ("level = loudness over time; spectrum = frequency content at one frame; "
-                                  "spectrogram = frequency over time; peak = pitch track; wave = raw samples. "
-                                  "Which to pick: how loud -> level, what notes -> spectrum or peak, "
-                                  "how it changes -> spectrogram. Required—pick one.")}},
-        "required": ["view"]}},
+                                  "spectrogram = frequency over time; peak = spectral peak frequency track; "
+                                  "wave = raw samples; pitch = fundamental frequency at one 100ms frame "
+                                  "(period / note / cents by autocorrelation, plus the curve); "
+                                  "history = fundamental frequency over a window (20ms frames, trend only; two panels: frequency log axis, period linear axis). "
+                                  "Which to pick: how loud -> level, what notes -> spectrum, "
+                                  "true fundamental -> pitch, pitch over time -> history, "
+                                  "how the spectrum changes -> spectrogram. Omit it and you get level.")},
+
+        "frame_ms": {"type": "number",
+                     "description": ("block length in ms, 5-200; every view has a default and they differ "
+                                     "because the trade-offs differ: "
+                                     "level = RMS block (default 20) - finer shows fast dynamics, "
+                                     "coarser smooths them; "
+                                     "spectrum/wave/pitch = the single frame (default 100) - "
+                                     "longer gives finer resolution_hz (sr/frame) but averages more time, "
+                                     "shorter tracks fast changes but a frame must still hold one full "
+                                     "period, so the pitch floor rises to ~1000/frame_ms Hz "
+                                     "(5ms -> 200Hz, 20ms -> 50Hz); "
+                                     "spectrogram/peak = FFT frame (default 100) - also sets column spacing; "
+                                     "history = per-frame block for the track (default 20). "
+                                     "Every view takes it; note reports the value actually used.")},
+
+        "detail": {"type": "string", "enum": ["low", "medium", "high", "max"],
+                   "description": ("figure size in pixels, square: low = 768 (default), "
+                                   "medium = 1024, high = 1280, max = 1536. Axes, ticks and points "
+                                   "scale with it; the readings never change, only how finely they "
+                                   "can be read off the picture. Raise it when lines crowd together "
+                                   "(a dense pitch track, a busy spectrogram), lower it to save tokens.")},
+     }}},
 
     {"name": "subtitles",
      "description": (
-         "Get a window's text, as cues (from/to/text). mode=ocr (default) reads on-screen "
-         "subtitles by OCRing the subtitle band frame by frame - use it for burned-in subtitles, "
-         "songs and any text on screen. mode=stt transcribes the audio with speech recognition - "
-         "use it when the speech is not written on screen. "
-         "ONLY mode=stt carries acoustic fields: per-cue emotion, "
-         "audio event (BGM = music "
-         "outweighed speech, so words may be missing), language, and a summary count. "
-         "mode=ocr reads pixels and cannot see them; it returns a per-cue conf instead. "
-         
-         
-         "band=\"0.10,0.27\" pins the OCR band manually. "
-         "Cue times are MM:SS (second precision)."
+         "Get a window's text as cues (from/to/text, times in MM:SS).\n"
+         "\n"
+         "mode=ocr (default) reads burned-in subtitles and on-screen text from a band, frame by "
+         "frame, and returns a per-cue confidence - use it for songs and any text the pixels show. "
+         "mode=stt transcribes the speech and adds per-cue emotion, audio event and language, plus "
+         "a summary; use it when the speech is not written on screen. BGM is reported as an event "
+         "because music that drowns out the voice costs words."
      ),
      "inputSchema": {"type": "object", "properties": {
          "mode": {"type": "string", "enum": ["ocr", "stt"],
                   "description": "ocr = read on-screen subtitles (default); stt = speech to text"},
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "window length in seconds, must be > 0"},
+         "seconds": {"type": "number",
+                     "description": "window length, must be > 0; default to the clip end"},
          "band": {"type": "string",
                   "description": "ocr: band range, 'auto' (default) or ratios like \"0.10,0.27\""}}}},
 
 ]
 
 
-VIDEO_QUALITY_PX = {"low": 512, "medium": 1024, "high": 1536, "max": 2048}
+# detail 档位 = 画布边长（像素）。两套阶梯别混：
+#   视频帧   一页 N 格，预算按整页面积算，看的是「还能不能看清脸/字」
+#   音频图   一张图就是一块画布，看的是「曲线和刻度要不要更细」
+VIDEO_DETAIL_PX = {"low": 512, "medium": 1024, "high": 1536, "max": 2048}
+AUDIO_DETAIL_PX = {"low": 768, "medium": 1024, "high": 1280, "max": 1536}
+
+
+def _detail_level(a, ladder, default):
+    """取 detail 档位；档位名不认识就回落默认。
+
+    别再认 quality：video 的图片质量和 workspace 的下载分辨率重名，
+    一个「low」在两个工具里指的是完全不同的东西，读的人得先猜是哪个。
+    """
+    key = str(a.get("detail") if a.get("detail") is not None else default).lower()
+    return key if key in ladder else default
 
 
 def _max_pixels(a):
-    n = VIDEO_QUALITY_PX.get(str(a.get("quality") or "medium").lower(), 1024)
+    n = VIDEO_DETAIL_PX[_detail_level(a, VIDEO_DETAIL_PX, "medium")]
     return float(n) * n
 
 
@@ -760,7 +889,7 @@ def _pick_grid(n0, aspect):
 
 
 def _sheet_cells(a, aspect, cols, rows):
-    """按 quality 档位给**整页**定像素预算，再平均分给每个格子。
+    """按 detail 档位给**整页**定像素预算，再平均分给每个格子。
 
     设 cell 短边 = s，整页 = (s·cols·aspect) × (s·rows)（宽屏），
     面积 s²·aspect·cols·rows = cap，即 s = sqrt(cap/(aspect·cols·rows))。
@@ -1006,7 +1135,8 @@ def tool_video(a):
     # 现在按画面变化取，同样窗口两次调用可能取到完全不同的帧，
     # 不把 ts 写进键就等于拿旧图冒充新结果。
     ts_key = ",".join("%.3f" % t for t in ts)
-    key = "%s|%d|%s|%s|%s|%dx%d|%dx%d|%s" % (asset.get("id") or "", n, a.get("quality"),
+    key = "%s|%d|%s|%s|%s|%dx%d|%dx%d|%s" % (asset.get("id") or "", n,
+                                              _detail_level(a, VIDEO_DETAIL_PX, "medium"),
                                               note, spec, cols, rows, cell_w, cell_h, ts_key)
     sheet_path, jpg = _compose(a, asset, frames, cols, rows, cell_w, cell_h, key, "sheet", win_start)
     # 只留模型用得上的：片长、实际窗口、每格时间点、提示。
@@ -1016,7 +1146,7 @@ def tool_video(a):
     #   title     回显它刚传的 video_id
     #   frames    = len(timeline)
     #   grid/cellSize  排版细节，图上看得出来
-    #   crop/quality   回显入参
+    #   crop/detail    回显入参
     #   file      图片就在 image 块里，它没有文件系统
     #   sheetKB   它没法据此做决定
     out = {"duration": round(duration, 2),
