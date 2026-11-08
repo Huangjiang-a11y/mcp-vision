@@ -4,15 +4,16 @@
 
 **让 AI 看视频。** 纯 Python 的 MCP 服务器，不依赖 Node 运行时。
 
-> 仅供学习研究使用。代码以 MIT 发布。
-
-仓库结构参照 [dsh-video-vision](https://github.com/Tests4gptplay/dsh-video-vision) 的分层重写：
-保留同样的 `workspace` / `video` / `audio` / `subtitles` 四层与工作区目录布局，
-实现全部换成 Python —— ffmpeg 解码、numpy 计算、onnxruntime 跑 PP-OCRv4，
+给它一个本地文件或 B 站链接，它把片子拆成模型能直接吃的东西：带时间戳的帧、
+一页网格故事板（默认 15 格）、音频电平与频谱、画面 OCR 与折叠后的字幕轨。
+全部在本机完成 —— ffmpeg 解码、numpy 计算、onnxruntime 跑 PP-OCRv4，
 没有浏览器、没有 Node 进程、没有 Electron。
 
-输入本地文件或 B 站链接，输出模型能直接消费的东西：带时间戳的帧、近似正方形的网格故事板、
-音频电平与静音区间、画面 OCR 与折叠后的字幕轨。全部在本机完成。
+四层（`workspace` / `video` / `audio` / `subtitles`）与工作区目录布局参照
+[dsh-video-vision](https://github.com/Tests4gptplay/dsh-video-vision) 重写；
+结构照搬，代码全部自己写，不 import 任何外部仓库。
+
+> 仅供学习研究使用。代码以 MIT 发布。
 
 ## 设计原则
 

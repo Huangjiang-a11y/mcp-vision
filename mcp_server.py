@@ -721,7 +721,9 @@ def tool_list(a):
 
 TOOLS = [
     {"name": "workspace",
-     "description": "Open a video by URL or local path, or list what is open.",
+     "description": "Start here for a new clip: open it by URL or local path, or list what is already open. "
+                     "video, audio and subtitles act on the most recently opened clip unless you "
+                     "pass `video_id`.",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["open", "list"],
                     "description": "open = download and open (default); list = show opened videos"},
@@ -745,6 +747,10 @@ TOOLS = [
          "\n"
          "Fill the window: a page costs the same at 60s and at 900s, so read long clips in 900s "
          "pages (time=0, 900, 1800 ...) and narrow only when you know where to look."
+         "\n"
+         "\n"
+         "Frames are pictures only: for what is said use subtitles with mode=stt, for "
+         "loudness or spectra use audio."
      ),     "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
@@ -769,7 +775,10 @@ TOOLS = [
          "R on the lower; `view` picks the measurement.\n"
          "\n"
          "spectrum, wave and pitch read the single frame at `time` - `seconds` does not apply. "
-         "The rest take a window (default 10s, max 15s)."
+         "The rest take a window (default 10s, max 15s).\n"
+         "\n"
+         "This is sound, not speech: for the words use subtitles with mode=stt. The "
+         "numbers behind the figure come back with it - read them instead of eyeballing."
      ),
      "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
@@ -809,7 +818,9 @@ TOOLS = [
          "shows up as an event because it costs words.\n"
          "\n"
          "Fill the window here too: ocr skips frames whose band did not change and stt runs faster "
-         "than realtime, so read 900s pages (time=0, 900, 1800 ...)."
+         "than realtime, so read 900s pages (time=0, 900, 1800 ...).\n"
+         "\n"
+         "Text only: for the picture use video, for the sound use audio."
      ),
      "inputSchema": {"type": "object", "properties": {
          "mode": {"type": "string", "enum": ["ocr", "stt"],
