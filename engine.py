@@ -422,22 +422,27 @@ def _f0_autocorr(seg, sr, fmin=F0_MIN_HZ, fmax=F0_MAX_HZ):
     }
 
 
-def _pitch_metrics(x, sr, start, size, fmin=F0_MIN_HZ, fmax=F0_MAX_HZ):
-    """单声道基频：在最响的一帧上测，和频谱/波形取同一处声音。
+def _pitch_metrics(x, sr, start, size, fmin=F0_MIN_HZ, fmax=F0_MAX_HZ, at=None):
+    """单个声道的基频：在指定（或本声道最响的）一帧上测。
 
-    L/R 分开测没有意义：同一件乐器/人声的两个话筒只在声像和底噪上不同，
-    报出两个不一样的音高只会让人不知道该信哪个。所以调用方先混成单声道。
+    只吃一路样本：分声道还是混单声道由调用方决定。混成单声道会丢掉
+    「两路装的是不同声音」这种情况（见 analyze_spectrum 里的实测）。
+
+    at 给的是分析帧的样本偏移。双声道时调用方传同一个 at，让 L / R 报的是
+    **同一瞬间**的音——各挑各的最响帧，两个读数就不在同一时刻，没法比。
     """
     x = np.asarray(x, dtype=np.float32)
     if x.size == 0:
         return None
-    hop = max(1, int(sr * 0.02))
-    nfr = x.size // hop
-    if nfr >= 1:
-        frames = x[: nfr * hop].reshape(nfr, hop).astype(np.float64)
-        loud = int(np.argmax(np.sqrt(np.mean(frames ** 2, axis=1)))) * hop
-    else:
-        loud = 0
+    if at is None:
+        hop = max(1, int(sr * 0.02))
+        nfr = x.size // hop
+        if nfr >= 1:
+            frames = x[: nfr * hop].reshape(nfr, hop).astype(np.float64)
+            at = int(np.argmax(np.sqrt(np.mean(frames ** 2, axis=1)))) * hop
+        else:
+            at = 0
+    loud = int(max(0, at))
     if x.size < size:
         x = np.pad(x, (0, size - x.size))
     lo = max(0, min(x.size - size, loud - size // 2))
@@ -632,7 +637,7 @@ def _channel_metrics(x, sr, start, size, level_ms=LEVEL_MS):
 def analyze_spectrum(media, start, end, fft_size=None, out_dir=None, track=False,
                      history_ms=HISTORY_MS, level_ms=LEVEL_MS, fft_ms=None,
                      fmin=F0_MIN_HZ):
-    """窗口内的音频剖析：L、R 分别算电平 / 频谱 / 时频图，另加单声道基频。
+    """窗口内的音频剖析：L、R 分别算电平 / 频谱 / 时频图 / 基频。
 
     一次解码出双声道（-ac 2），采样率跟视频音轨走，不重采样。
     单声道音轨会被 ffmpeg 复制成 L=R，结果里 mono=True 标出来。
@@ -677,15 +682,32 @@ def analyze_spectrum(media, start, end, fft_size=None, out_dir=None, track=False
 
     left = _channel_metrics(pair[:, 0], sr, start, size, level_ms)
     right = _channel_metrics(pair[:, 1], sr, start, size, level_ms)
-    # 基频在单声道混合上测：同一件乐器/人声的 L、R 只差声像和底噪，
-    # 分开测会给出两个不同的音高，反而不知道信哪个。
-    mono = pair.mean(axis=1)
-    pitch = _pitch_metrics(mono, sr, start, size, fmin) or {
+    # 基频**按声道各测一遍**，不混成单声道。
+    # 早先混的理由是「L/R 只差声像和底噪，分开测会给出两个音高，不知道信哪个」——
+    # 那只对「同一声源分到两边」成立。故意把两条不同的声音装进 L / R 的素材
+    # （双耳素材、左右不同音轨、某些教程）混起来会得到一个两边都没有的音：
+    # 实测 t=53.5s，L 是 266.92 Hz C4、R 是 374.99 Hz F#4，混合却报 320.86 Hz E4
+    # （−46.65 音分）——自相关把两条周期的最小公倍当成了基频。
+    # mono 文件 ffmpeg 会把同一路复制到两边，两边的结果逐字节相同，只报 left。
+    mono = int(info["channels"] or 0) < 2
+    mono_mix = pair.mean(axis=1)
+    _empty = lambda: {
         "freq_hz": 0.0, "period_ms": 0.0, "note": "", "cents": 0.0,
         "confidence": 0.0, "range_hz": [fmin, F0_MAX_HZ],
         "span_ms": 20.0, "curve_ms": [], "curve": [],
         "t0": round(float(start), 6), "ms": round(1000.0 * size / float(sr), 3),
     }
+    # 同一个分析帧：取两路合起来最响的那一帧，两边都用它。
+    # 各挑各的最响帧会让 L / R 的读数落在不同时刻，横向比就失去意义。
+    _hop = max(1, int(sr * 0.02))
+    _nfr = mono_mix.size // _hop
+    if _nfr >= 1:
+        _fr = mono_mix[: _nfr * _hop].reshape(_nfr, _hop).astype(np.float64)
+        _at = int(np.argmax(np.sqrt(np.mean(_fr ** 2, axis=1)))) * _hop
+    else:
+        _at = 0
+    pitch = {"left": _pitch_metrics(pair[:, 0], sr, start, size, fmin, at=_at) or _empty(),
+             "right": _pitch_metrics(pair[:, 1], sr, start, size, fmin, at=_at) or _empty()}
 
     return {
         "sample_rate": sr,
@@ -699,8 +721,13 @@ def analyze_spectrum(media, start, end, fft_size=None, out_dir=None, track=False
         "pitch": pitch,
         # Frequency History 口径的轨迹：短窗逐帧测基频，看音高怎么变。
         # 精度不如 pitch（块太短），且很费时（10s → 1000 帧），按需才算。
-        "pitch_track": (pitch_track(mono, sr, start, frame_ms=history_ms,
-                                    step_ms=history_ms, fmin=fmin) if track else []),
+        # 逐帧轨迹同样按声道分开：两路各扫一遍，耗时翻倍，所以仍按需才算。
+        "pitch_track": {
+            "left": (pitch_track(pair[:, 0], sr, start, frame_ms=history_ms,
+                                 step_ms=history_ms, fmin=fmin) if track else []),
+            "right": (pitch_track(pair[:, 1], sr, start, frame_ms=history_ms,
+                                  step_ms=history_ms, fmin=fmin) if track else []),
+        },
         "left": left,
         "right": right,
     }

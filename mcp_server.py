@@ -513,24 +513,26 @@ def tool_audio(a):
     elif view in ("spectrum", "spectrogram", "peak"):
         summary["frame_ms"] = d["period_ms"]
         summary["resolution_hz"] = d["resolution_hz"]
-    if view == "pitch":
-        # 基频是单声道量：L/R 只差声像和底噪，分开报两个音高没有意义
-        summary["pitch"] = {
-            "freq_hz": d["pitch"]["freq_hz"],
-            "period_ms": d["pitch"]["period_ms"],
-            "note": d["pitch"]["note"],
-            "cents": d["pitch"]["cents"],
-            "confidence": d["pitch"]["confidence"],
-            "peaks": d["pitch"]["peaks"],
-            "range_hz": d["pitch"]["range_hz"],
-            "at_s": d["pitch"]["t0"],
-            "frame_ms": d["pitch"]["ms"],
+    def _pitch_of(p):
+        return {
+            "freq_hz": p["freq_hz"], "period_ms": p["period_ms"],
+            "note": p["note"], "cents": p["cents"],
+            "confidence": p["confidence"], "peaks": p["peaks"],
+            "range_hz": p["range_hz"], "at_s": p["t0"], "frame_ms": p["ms"],
         }
+
+    if view == "pitch":
+        # 基频按声道分开报：两路装不同声音时，混出来的音可能两边都没有
+        summary["pitch"] = {"left": _pitch_of(d["pitch"]["left"])}
+        if not d["mono"]:
+            summary["pitch"]["right"] = _pitch_of(d["pitch"]["right"])
     elif view == "history":
         # 单帧基频在这儿没有意义，只给轨迹和它的口径
-        summary["frame_ms"] = d["pitch"]["ms"]
-        summary["range_hz"] = d["pitch"]["range_hz"]
-        summary["pitch_track"] = _track(d["pitch_track"])
+        summary["frame_ms"] = d["pitch"]["left"]["ms"]
+        summary["range_hz"] = d["pitch"]["left"]["range_hz"]
+        summary["pitch_track"] = {"left": _track(d["pitch_track"]["left"])}
+        if not d["mono"]:
+            summary["pitch_track"]["right"] = _track(d["pitch_track"]["right"])
     if want:
         summary["left"] = _chan(d["left"], want)
         # 单声道时 right 和 left 逐字节相同（note 里也这么说），别发两份

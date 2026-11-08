@@ -560,12 +560,14 @@ def plot_wave(d, tag="", w=FIG_W, h=FIG_W // 2):
     return c
 
 
-def plot_pitch(d, tag="", w=FIG_W, h=FIG_W):
-    """基频自相关：整图一张（单声道）。横轴滞后 ms，纵轴归一化相关系数。
+def plot_pitch(pt, tag="", w=FIG_W, h=FIG_W):
+    """一个声道的基频自相关：横轴滞后 ms，纵轴归一化相关系数。
 
+    pt 是该声道的 pitch 字典（不是整份剖析结果）——L / R 各画一张，
+    双声道时上下拼接，和 level / peak 的排法一致。
     和参考的「音频自相关」一个意思：周期那个峰在 3.31ms，倒数就是 302.46Hz。
     """
-    pt = (d or {}).get("pitch") or {}
+    pt = pt or {}
     xs = np.asarray(pt.get("curve_ms") or [], dtype=float)
     ys = np.asarray(pt.get("curve") or [], dtype=float)
     c = Canvas(w, h)
@@ -626,7 +628,7 @@ def plot_pitch(d, tag="", w=FIG_W, h=FIG_W):
                 if a * a + b * b <= 16:
                     c.px(px + a, py + b, TXT)
 
-    c.text(x0, 12, _tag_title(tag, "AUTOCORRELATION"), TXT, 3)
+    c.text(x0, 12, _tag_title(tag, "AUTOCORRELATION"), TXT, 3 if h >= 0.9 * FIG_W else 2)
     # 保留位数按列宽定：一行四列、每列 158px，scale 3 下一字符 18px，
     # 超过 8 个字符就会压到下一列的标签上（1000.00HZ 正好 9 个）。
     fhz = ("%.0fHZ" % freq) if freq >= 1000 else ("%.1fHZ" % freq)
@@ -646,26 +648,36 @@ def plot_pitch(d, tag="", w=FIG_W, h=FIG_W):
     return c
 
 
-def plot_history(d, tag="", w=FIG_W, h=FIG_W):
-    """基频 / 周期随时间变化，上下两幅（对齐参考的「历史频率」界面）。
+def plot_history(tr, tag="", w=FIG_W, h=FIG_W):
+    """一个声道的基频 / 周期随时间变化，上下两幅（对齐参考的「历史频率」界面）。
 
-    上：频率，对数轴（100–5000 Hz，和参考图同一组刻度）。
-    下：周期，线性轴，单位秒——周期就是 1/频率，同一批点换种说法，
-    所以不多算一遍，直接从基频轨迹换算。
+    tr 是该声道的轨迹 [[t, f, conf], ...]，tag 是声道名。
+    h 是这一段占的高度：双声道时传整图的一半，单声道时传整张。
 
-    短窗逐帧测（默认 25ms，由 engine 的 frame_ms 决定），块仍偏短，
-    两幅都只给趋势；精确读数看 pitch 的单帧结果。
+    上：频率，对数轴（100–5000 Hz）。下：周期，线性轴，单位秒——周期就是
+    1/频率，同一批点换种说法，所以不多算一遍，直接从基频轨迹换算。
+
+    **面板位置跟着 h 走**。以前是写死的 58/318/386/664（768 的刻度），
+    只有右边界和内联的页脚是相对的，于是 detail 一放大就只剩上半张：
+    1024 空 30%、1280 空 44%、1536 空 53%，而服务端按 1024 token 回缩之后，
+    1536 那张里的图反而比 768 档还小。现在按 h/768 等比换算。
     """
-    tr = (d or {}).get("pitch_track") or []
+    tr = tr or []
     c = Canvas(w, h)
+    k = float(h) / float(FIG_W)
+    big = k >= 0.9
     x0, x1 = 120, w - 22
-    ay0, ay1 = 58, 318          # 频率面板
-    by0, by1 = 386, 664         # 周期面板
+    c.text(x0, 8, _tag_title(tag, "FREQUENCY HISTORY"), TXT, 3 if big else 2)
+
+    head = 56 if big else 32          # 标题行占高
+    foot = 34                         # 页脚 + 底边距
+    gap = 46                          # 两幅之间：x 轴标签 + 第二幅的标题
+    ph = max(56.0, (h - head - foot - gap) / 2.0)
+    ay0, ay1 = head, int(round(head + ph))
+    by0, by1 = int(round(ay1 + gap)), max(int(round(ay1 + gap)) + 40, h - foot)
 
     ts = [float(t) for t, _f, _c in tr]
     fs = [float(f) for _t, f, _c in tr]
-    c.text(x0, 10, _tag_title(tag, "FREQUENCY HISTORY"), TXT, 3)
-
     t0, t1 = (ts[0], ts[-1]) if ts else (0.0, 1.0)
     if t1 - t0 < 1e-9:
         t1 = t0 + 1e-3
@@ -680,13 +692,13 @@ def plot_history(d, tag="", w=FIG_W, h=FIG_W):
     for a0, a1 in ((ay0, ay1), (by0, by1)):
         c.rect(x0, a0, x1, a1, AXIS)
         for v, lab in xt:
-            c.ctext(X(v), a1 + 10, lab, DIM, 2)
-        c.text(x1 - c.tw("TIME (S)", 1), a1 + 30, "TIME (S)", DIM, 1)
+            c.ctext(X(v), a1 + 8, lab, DIM, 2)
+    c.text(x1 - c.tw("TIME (S)", 2), by0 - 20, "TIME (S)", DIM, 2)
 
     # ---- 上：频率，对数轴，下限 100 Hz（25ms 窗能到 40Hz，画到 100 够用）----
     fl, fh = 100.0, 5000.0
     lg = math.log10
-    c.text(x0, ay0 - 22, "FREQ (HZ)", DIM, 2)
+    c.text(x0 + 8, ay0 + 8, "FREQ (HZ)", DIM, 2)
     c.vtext(6, ay0 + 4, "FREQ (HZ)", DIM, 1)
 
     def AF(f):
@@ -700,7 +712,7 @@ def plot_history(d, tag="", w=FIG_W, h=FIG_W):
         c.text(x0 - c.tw("%d" % f) - 10, yy - 7, "%d" % f, DIM, 2)
 
     # ---- 下：周期，线性轴（秒）----
-    c.text(x0, by0 - 22, "PERIOD (S)", DIM, 2)
+    c.text(x0 + 8, by0 + 8, "PERIOD (S)", DIM, 2)
     c.vtext(6, by0 + 4, "PERIOD (S)", DIM, 1)
     # 用 P98 定轴，别让一两个低八度跳点（周期翻倍）把整幅压到底部；
     # 超出轴顶的点贴边画，轴顶刻度仍如实标出来
@@ -739,7 +751,7 @@ def plot_history(d, tag="", w=FIG_W, h=FIG_W):
 
     if fs:
         med = float(np.median(fs))
-        c.text(x0, h - 20, "%dMS WINDOWS  N=%d  MEDIAN %dHZ"
+        c.text(x0 + 8, by0 + 26, "%dMS WINDOWS  N=%d  MEDIAN %dHZ"
                % (round(1000.0 * (ts[1] - ts[0])) if len(ts) > 1 else 0, len(fs), med), DIM, 1)
     return c
 
@@ -748,7 +760,8 @@ def render(d, views, out_dir, stem="audio", size=FIG_W):
     """views: level / spectrum / spectrogram / peak / wave 的子集。
 
     每张图 size×size（默认 768）：上半 L、下半 R，中间一条分隔线。
-    pitch / history 是单声道量，整张图只画一张。
+    pitch / history 也一样分声道（以前混成单声道，见 engine 里的说明）；
+    只有真正的单声道音轨才只画一张。
     size 就是 detail 档位换算出的边长（见 mcp_server 的 AUDIO_DETAIL_PX），
     画布和坐标轴等比放大；点、线、字都是按像素画的，放大后不会变细。
     返回 {view: png 路径}。
@@ -764,15 +777,24 @@ def render(d, views, out_dir, stem="audio", size=FIG_W):
     tl = "L (MONO)" if d.get("mono") else "L"
     tr = "R (MONO)" if d.get("mono") else "R"
     for view in views:
-        if view == "pitch":
-            # 基频在单声道混合上测，L/R 上下两半会画出两条一模一样的线，
-            # 没有意义，所以整张图只画一条。
-            out[view] = plot_pitch(d, tag="MONO MIX", w=W, h=H).save(
-                out_dir / (stem + "-" + view + ".png"))
-            continue
-        if view == "history":
-            out[view] = plot_history(d, tag="MONO MIX", w=W, h=H).save(
-                out_dir / (stem + "-" + view + ".png"))
+        if view in ("pitch", "history"):
+            # 两个声道各画一份，上下拼接，和 level / peak 一致。
+            # 真·单声道音轨只画一张：ffmpeg 把同一路复制到两边，画两遍是浪费。
+            half = H if d.get("mono") else H // 2
+            if view == "pitch":
+                top = plot_pitch(d["pitch"]["left"], tag=tl, w=W, h=half)
+                bot = None if d.get("mono") else plot_pitch(d["pitch"]["right"], tag=tr, w=W, h=half)
+            else:
+                top = plot_history(d["pitch_track"]["left"], tag=tl, w=W, h=half)
+                bot = None if d.get("mono") else plot_history(d["pitch_track"]["right"], tag=tr, w=W, h=half)
+            if bot is None:
+                out[view] = top.save(out_dir / (stem + "-" + view + ".png"))
+            else:
+                c = Canvas(W, H)
+                c.blit(top.buf, 0, 0)
+                c.blit(bot.buf, 0, H // 2)
+                c.hline(H // 2, 0, W - 1, FG, 2)
+                out[view] = c.save(out_dir / (stem + "-" + view + ".png"))
             continue
         if view == "level":
             top = plot_level(d["left"], d["_start"], d["_end"], tag=tl, w=W, h=H // 2)
