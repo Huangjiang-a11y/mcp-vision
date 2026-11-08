@@ -109,8 +109,9 @@ check("audio enum 没有 all", "all" in _audio_schema["properties"]["view"]["enu
 
 # --- 音频图尺寸 ---
 # 上下两半必须正好拼成正方形，且 blit 偏移跟着 H//2 走（别留硬编码 512）。
-check("音频图边长 768", engine.audiochart.FIG_W, 768)
-_src_render = inspect.getsource(engine.audiochart.render)
+import audiochart as _ac
+check("音频图边长 768", _ac.FIG_W, 768)
+_src_render = _inspect.getsource(_ac.render)
 check("下半接 H//2 而非写死 512", "c.blit(bot.buf, 0, H // 2)" in _src_render, True)
 check("分隔线也在 H//2", "c.hline(H // 2" in _src_render, True)
 check("render 不留硬编码 1024", "1024" in _src_render, False)

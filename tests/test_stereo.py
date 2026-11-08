@@ -37,7 +37,7 @@ for k, p in paths.items():
     with open(p, "rb") as fh:
         head = fh.read(33)
     w, h = struct.unpack(">II", head[16:24])
-    good = (w, h) == (1024, 1024)
+    good = (w, h) == (audiochart.FIG_W, audiochart.FIG_W)
     ok &= good
     print("  %-12s %dx%d %s" % (k, w, h, "OK" if good else "FAIL"))
 

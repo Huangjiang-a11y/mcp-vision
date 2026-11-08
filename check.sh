@@ -31,11 +31,24 @@ echo "冒烟：MCP tools/list"
 printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}\n{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n' | python3 mcp_server.py | tail -1 | python3 -c "import sys,json; d=json.load(sys.stdin); print('  工具:', [t['name'] for t in d['result']['tools']]); print('  action:', d['result']['tools'][0]['inputSchema']['properties']['action']['enum'])"
 
 # --test：跑不需要模型、不需要素材的回归测试
+# 测试跑挂了必须让整个脚本失败。
+# 原来写的是 `python3 x.py | sed ... || exit 1`：管道的退出码取最后一个命令，
+# sed 正常退出就是 0，于是 Python 报错/断言失败全被吞掉，CI 一直是假绿。
+# （真事：加了一条引用了不存在属性的测试，CI 照样 ✓。）
+run_test() {
+  _t=$(mktemp)
+  python3 "$1" >"$_t" 2>&1
+  _rc=$?
+  sed 's/^/  /' "$_t"
+  rm -f "$_t"
+  [ "$_rc" -eq 0 ] || exit "$_rc"
+}
+
 if [ "$1" = "--test" ]; then
   echo "测试：L/R 分层出图"
-  python3 tests/test_stereo.py | sed 's/^/  /' || exit 1
+  run_test tests/test_stereo.py
   echo "测试：取窗与参数校验"
-  python3 tests/test_windows.py | sed 's/^/  /' || exit 1
+  run_test tests/test_windows.py
   echo "测试：整页文字判定"
-  python3 tests/test_page_like.py | sed 's/^/  /' || exit 1
+  run_test tests/test_page_like.py
 fi
