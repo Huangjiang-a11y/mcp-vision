@@ -317,7 +317,7 @@ def _channel_metrics(x, sr, start, size):
     """单个声道的样本 -> 电平 / 频谱 / 时频图。L、R 各算一遍，参数完全一致。"""
     x = np.asarray(x, dtype=np.float32)
     if x.size == 0:
-        raise RuntimeError("窗口内没有音频样本")
+        raise RuntimeError("no audio samples in this window")
 
     # 电平曲线：20ms 一帧的 RMS
     hop = max(1, int(sr * 0.02))
@@ -436,7 +436,7 @@ def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None):
     info = audio_info(media)
     sr = info["sample_rate"]
     if sr <= 0:
-        raise RuntimeError("没有音轨")
+        raise RuntimeError("no audio track")
     if out_dir is None:
         out_dir = media.parent / (media.stem + "_audio")
     out_dir = Path(out_dir)
@@ -450,7 +450,7 @@ def analyze_spectrum(media, start, end, fft_size=4096, out_dir=None):
     # 交错 L/R 16bit：先按样本对齐，再切出两路
     keep = len(raw) - (len(raw) % 4)
     if keep <= 0:
-        raise RuntimeError("音频解码失败")
+        raise RuntimeError("audio decode failed")
     arr = np.frombuffer(raw[:keep], dtype="<i2").astype(np.float32) / 32768.0
     pair = arr.reshape(-1, 2)
     nsmp = pair.shape[0]
@@ -589,10 +589,10 @@ def asr_models():
     for name in ASR_ENV:
         v = (os.environ.get(name) or "").strip()
         if not v:
-            raise RuntimeError("未设置 %s。转写需要三个模型路径，见 INSTALL.md" % name)
+            raise RuntimeError("%s is not set; transcription needs three model paths, see INSTALL.md" % name)
         p = Path(v).expanduser()
         if not p.is_file():
-            raise RuntimeError("%s 指向的文件不存在：%s" % (name, p))
+            raise RuntimeError("%s points to a missing file: %s" % (name, p))
         vals.append(str(p))
     _ASR_CACHE["paths"] = tuple(vals)
     return _ASR_CACHE["paths"]
@@ -621,9 +621,9 @@ def pcm16k(media, start=0.0, end=None, timeout=1800):
     p = subprocess.run(cmd, capture_output=True, timeout=timeout)
     if p.returncode != 0:
         err = (p.stderr or b"").decode("utf-8", "ignore")[:500]
-        raise RuntimeError("ffmpeg 提取音频失败：%s" % err)
+        raise RuntimeError("ffmpeg audio extraction failed: %s" % err)
     if not p.stdout:
-        raise RuntimeError("ffmpeg 没有输出音频（该视频可能没有音轨）")
+        raise RuntimeError("ffmpeg produced no audio (the video may have no audio track)")
     return np.frombuffer(p.stdout, dtype=np.int16).astype(np.float32) / 32768.0
 
 

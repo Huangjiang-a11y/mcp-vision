@@ -32,13 +32,13 @@ check("seconds 非数字被拒", M._pos_seconds({"seconds": "abc"}) is not None,
 s, e, note = M._window({"time": 99999}, ASSET)
 check("time 越界回到 0", (s, e), (0.0, 276.0))
 check("time 越界只有一条 note", note.count("；"), 0)
-check("time 越界 note 提回退", "回退到 0" in note, True)
-check("time 越界不提结尾", "已到视频结尾" in note, False)
+check("time 越界 note 提回退", "backtracked to 0" in note, True)
+check("time 越界不提结尾", "reached the end" in note, False)
 
 # --- time 负数 ---
 s, e, note = M._window({"time": -10}, ASSET)
 check("负 time 从 0 开始", s, 0.0)
-check("负 time 有提示", "负数" in note, True)
+check("负 time 有提示", "negative" in note, True)
 
 # --- 正常窗口 ---
 s, e, note = M._window({"time": 10, "seconds": 5}, ASSET)
@@ -50,7 +50,7 @@ check("正常窗口", (s, e, note), (10.0, 15.0, ""))
 LONG = {"duration": 2000.0, "width": 1280, "height": 720}
 s, e, note = M._window({"time": 0, "seconds": 5000}, LONG)
 check("超出上限被夹", e, 900.0)
-check("上限有提示", "上限" in note, True)
+check("上限有提示", "capped at" in note, True)
 # 短片：600 秒请求落在 276 秒里，应该只夹结尾，不提上限
 s, e, note = M._window({"time": 0, "seconds": 600}, ASSET)
 check("短片夹结尾", e, 276.0)
@@ -89,6 +89,24 @@ check("标签空值", engine._tag(None), "")
 check("标签 NONE", engine._tag("<|NONE|>"), "")
 check("标签普通字符串", engine._tag("zh"), "zh")
 
+# --- 面向模型的文字统一用英文 ---
+# note / hint / error 都是给模型读的，schema 也是英文，混着来没道理。
+import re as _re
+_HAN = _re.compile(r"[\u4e00-\u9fff]")
+for _args, _lab in (({"time": -5}, "负 time"), ({"time": 99999}, "越界"),
+                    ({"time": 270, "seconds": 10}, "报结尾"),
+                    ({"time": 0, "seconds": 5000}, "报上限")):
+    _n = M._window(_args, ASSET)[2]
+    check("%s note 无中文" % _lab, _HAN.search(_n), None)
+
+import inspect as _inspect
+_src_audio = _inspect.getsource(M.tool_audio)
+check("audio 缺 view 要报错", 'view is required' in _src_audio, True)
+check("audio 不再有 all 分支", '== "all"' in _src_audio, False)
+_audio_schema = [t for t in M.TOOLS if t["name"] == "audio"][0]["inputSchema"]
+check("audio schema 把 view 设为必填", _audio_schema.get("required"), ["view"])
+check("audio enum 没有 all", "all" in _audio_schema["properties"]["view"]["enum"], False)
+
 # --- 单帧取窗：别为不存在的窗口报警 ---
 # 以前 quantity=1 时仍走完整窗口逻辑，t=100 会附赠一句「已到视频结尾 276 秒」，
 # 但单帧只用起点，结尾根本不参与取图。
@@ -96,10 +114,10 @@ s, e, note = M._window({"time": 100}, ASSET, single=True)
 check("单帧不报结尾", note, "")
 check("单帧起点终点重合", (s, e), (100.0, 100.0))
 check("单帧忽略 seconds 上限", M._window({"time": 100, "seconds": 5000}, ASSET, single=True)[2], "")
-check("单帧仍报负时间", "负数" in M._window({"time": -5}, ASSET, single=True)[2], True)
-check("单帧仍报越界回退", "回退到 0" in M._window({"time": 99999}, ASSET, single=True)[2], True)
+check("单帧仍报负时间", "negative" in M._window({"time": -5}, ASSET, single=True)[2], True)
+check("单帧仍报越界回退", "backtracked to 0" in M._window({"time": 99999}, ASSET, single=True)[2], True)
 # 多帧时该报的还得报
-check("多帧报结尾", "已到视频结尾" in M._window({"time": 270, "seconds": 10}, ASSET)[2], True)
+check("多帧报结尾", "reached the end" in M._window({"time": 270, "seconds": 10}, ASSET)[2], True)
 
 # --- 声学字段的边界 ---
 # emotion / event / lang 来自 SenseVoice，只有 stt 模式有。

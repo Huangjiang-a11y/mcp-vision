@@ -93,10 +93,10 @@ def _dump(obj, limit=0, compact=False):
     while len(json.dumps(o, ensure_ascii=False, indent=ind)) > limit:
         cand = [k for k in o if isinstance(o[k], list) and len(o[k]) > 1]
         if not cand:
-            return json.dumps({"_truncated": True, "note": "结果过大"}, ensure_ascii=False, indent=ind)
+            return json.dumps({"_truncated": True, "note": "result too large"}, ensure_ascii=False, indent=ind)
         k = max(cand, key=lambda x: len(json.dumps(o[x], ensure_ascii=False)))
         o[k] = o[k][: max(1, len(o[k]) // 2)]
-        o.setdefault("_truncated", {})[k] = "只保留前 %d 条" % len(o[k])
+        o.setdefault("_truncated", {})[k] = "kept only the first %d" % len(o[k])
     return json.dumps(o, ensure_ascii=False, indent=2)
 
 
@@ -114,9 +114,9 @@ def _pos_seconds(a):
     try:
         s = float(a["seconds"])
     except (TypeError, ValueError):
-        return "seconds 必须是数字"
+        return "seconds must be a number"
     if s <= 0:
-        return "seconds 必须大于 0（想看完整段就别传 seconds）"
+        return "seconds must be > 0 (omit it to see the whole span)"
     return None
 
 
@@ -145,29 +145,29 @@ def _window(a, asset, default_span=None, cap=None, single=False):
         span = cap
     notes = []
     if raw_time < 0:
-        notes.append("time 为负数，按 0 处理")
+        notes.append("time is negative, using 0")
 
     # time 已经越过结尾：什么都没有可看，直接回开头。
     # 这里要提前返回——否则会先算出 end>dur 又补一条「已到视频结尾」，
     # 两条 note 一起出现自相矛盾（都回退到 0 了，还说看到了结尾）。
     if dur > 0 and start >= dur:
-        notes.append("time 超出时长 %.0f 秒，回退到 0" % dur)
-        return 0.0, min(dur, cap), "；".join(notes)
+        notes.append("time is past the %.0fs clip, backtracked to 0" % dur)
+        return 0.0, min(dur, cap), "; ".join(notes)
 
     if single:
         # 单帧只用起点，seconds 和结尾都不参与取图。
         # 此处若还报「单次上限」「已到视频结尾」，都是在描述一个不存在的窗口。
-        return start, start, "；".join(notes)
+        return start, start, "; ".join(notes)
 
     if span > cap:
         span = cap
-        notes.append("单次上限 %.0f 秒" % cap)
+        notes.append("capped at %.0fs per call" % cap)
 
     end = start + span
     if dur > 0 and end > dur:
         end = dur
-        notes.append("已到视频结尾 %.0f 秒" % dur)
-    return start, max(start, end), "；".join(notes)
+        notes.append("reached the end of the %.0fs clip" % dur)
+    return start, max(start, end), "; ".join(notes)
 
 
 def _load_asset(cwd, vid=None):
@@ -198,7 +198,7 @@ def _load_asset(cwd, vid=None):
 
 def _missing(a):
     v = a.get("video_id")
-    return ("找不到视频文件夹: %s（用 workspace.list 看有哪些）" % v) if v else "先 open 一个视频"
+    return ("no such video folder: %s (use workspace.list to see what is there)" % v) if v else "open a video first"
 
 
 def _normalize_source(src):
@@ -270,11 +270,11 @@ def _opened(asset):
     于是 MVV_KEEP_WORKSPACES=5 从来没有生效过，目录只增不减。
     """
     gone = _prune_workspaces(engine.workspace_root(Path(__file__).resolve().parent))
-    msg = ("已打开 %s\n时长 %.2fs  %sx%s  音频=%s" % (
+    msg = ("opened %s\nduration %.2fs  %sx%s  audio=%s" % (
         asset["title"], asset["duration"], asset["width"], asset["height"],
-        "有" if asset["has_audio"] else "无"))
+        "yes" if asset["has_audio"] else "no"))
     if gone:
-        msg += "\n（按 MVV_KEEP_WORKSPACES=%d 清理了 %d 个旧工作区：%s）" % (
+        msg += "\n(MVV_KEEP_WORKSPACES=%d: pruned %d old workspaces: %s)" % (
             KEEP_WORKSPACES, len(gone), "、".join(gone))
     return msg
 
@@ -282,7 +282,7 @@ def _opened(asset):
 def tool_open(a):
     src = (a.get("source") or "").strip()
     if not src:
-        return "要给 source（视频路径或链接）", []
+        return "source is required (a file path or a URL)", []
     # 本地文件用 file:// 协议。显式声明是本地文件时，
     # 找不到就直说找不到——不要掉进下面的 yt-dlp 分支，
     # 那会把 /nope/a.mp4 当 URL 去解析，报「is not a valid URL」，跟用户输入毫无关系。
@@ -295,7 +295,7 @@ def tool_open(a):
         if not pth.is_absolute():
             pth = (Path(Path(__file__).resolve().parent) / pth).resolve()
         if not pth.exists():
-            return "本地文件不存在: %s" % pth, []
+            return "local file not found: %s" % pth, []
         asset = engine.open_local(str(Path(__file__).resolve().parent), str(pth))
         return _opened(asset), []
     src = _normalize_source(src)
@@ -311,7 +311,7 @@ def tool_open(a):
     try:
         import yt_dlp
     except ImportError:
-        return "需要 yt-dlp（pip install yt-dlp）才能下载链接", []
+        return "downloading URLs needs yt-dlp (pip install yt-dlp)", []
     out_dir = Path(cwd) / DEFAULT_CACHE / "downloads"
     out_dir.mkdir(parents=True, exist_ok=True)
     max_h = _QUALITY_MAP(a.get("quality"))
@@ -349,7 +349,7 @@ def tool_open(a):
                     if cand.suffix in (".mp4", ".mkv", ".webm"):
                         fname = str(cand); break
     except Exception as e:
-        return ("下载失败: %s" % str(e)[:300], [])
+        return ("download failed: %s" % str(e)[:300], [])
     asset = engine.open_local(cwd, fname, title=info.get("title"), url=src)
     return _opened(asset), []
 
@@ -361,10 +361,17 @@ def tool_audio(a):
     if asset is None:
         return _missing(a), []
     if not asset.get("has_audio"):
-        return (_dump({"ok": False, "error": "这条视频没有音轨"}), [])
-    view = str(a.get("view") or "all").lower()
-    views = ["level", "spectrum", "spectrogram", "peak", "wave"] if view == "all" else [view]
-    if any(v not in ("level", "spectrum", "spectrogram", "peak", "wave") for v in views):
+        return (_dump({"ok": False, "error": "this video has no audio track"}), [])
+    # 一次只出一张图，而且必须显式指定 view。
+    # 以前 view=all 默认把五张全画出来：五张 PNG 的 base64 比数字大两个数量级，
+    # 而模型通常只需要其中一张。改成"有默认值"也不对——默认值会被无声接受，
+    # 模型根本不会意识到自己选了什么。所以不给默认，缺了就报错让它显式说。
+    view = str(a.get("view") or "").strip().lower()
+    if not view:
+        return (_dump({"ok": False,
+                       "error": "view is required: level | spectrum | spectrogram | peak | wave"}), [])
+    views = [view]
+    if view not in ("level", "spectrum", "spectrogram", "peak", "wave"):
         return (_dump({"ok": False, "error": "unknown view: %s" % view}), [])
     err = _pos_seconds(a)
     if err:
@@ -372,7 +379,7 @@ def tool_audio(a):
     dur_total = float(asset.get("duration") or 0)
     if dur_total > 0 and float(a.get("time") or 0) >= dur_total:
         return (_dump({"ok": False,
-                       "error": "time=%.1f 超出时长 %.1f" % (float(a.get("time") or 0), dur_total)}), [])
+                       "error": "time=%.1f is past the %.1f clip" % (float(a.get("time") or 0), dur_total)}), [])
     start, end, note = _window(a, asset, default_span=10.0, cap=15.0)
     try:
         d = engine.analyze_spectrum(asset["media_path"], start, end,
@@ -415,11 +422,11 @@ def tool_audio(a):
         summary["right"] = _chan(d["right"])
     notes = []
     if d["mono"]:
-        notes.append("单声道音轨，只有 left")
+        notes.append("mono track, left only")
     if note:
         notes.append(note)
     if notes:
-        summary["note"] = "；".join(notes)
+        summary["note"] = "; ".join(notes)
 
     images = []
     try:
@@ -445,16 +452,16 @@ def _parse_band(v):
         return "auto"
     if isinstance(v, (list, tuple)):
         if len(v) != 2:
-            raise ValueError("band 需要两个数：[y0, y1]")
+            raise ValueError("band needs two numbers: [y0, y1]")
         y0, y1 = float(v[0]), float(v[1])
     else:
         txt = str(v).strip().strip("[](){}")
         parts = [p for p in re.split(r"[,;\s]+", txt) if p]
         if len(parts) != 2:
-            raise ValueError("band 要写成 auto 或 \"0.10,0.27\"（纵向起止比例）")
+            raise ValueError("band must be auto or \"0.10,0.27\" (vertical start,end ratios)")
         y0, y1 = float(parts[0]), float(parts[1])
     if not (0.0 <= y0 < y1 <= 1.0):
-        raise ValueError("band 需满足 0 ≤ y0 < y1 ≤ 1")
+        raise ValueError("band must satisfy 0 <= y0 < y1 <= 1")
     return (y0, y1)
 
 
@@ -462,7 +469,7 @@ def tool_subtitles(a):
     """识字幕：mode=ocr 走画面逐帧 OCR，mode=stt 走语音转写。"""
     mode = str(a.get("mode") or "ocr").lower()
     if mode not in ("ocr", "stt"):
-        return ("mode 只能是 ocr 或 stt", [])
+        return ("mode must be ocr or stt", [])
     if mode == "stt":
         return _subs_stt(a)
     return _subs_ocr(a)
@@ -511,9 +518,9 @@ def _subs_stt(a):
     if window_note:
         notes.append(window_note)
     if any(c.get("event") == "BGM" for c in cues):
-        notes.append("带 BGM 的段转写可能掉字")
+        notes.append("speech over BGM may drop words")
     if notes:
-        out["note"] = "；".join(notes)
+        out["note"] = "; ".join(notes)
     return (_dump(out), [])
 
 
@@ -534,7 +541,7 @@ def _subs_ocr(a):
     try:
         import ocr as ocrmod
     except Exception as e:
-        return ("OCR 不可用: %s" % e, [])
+        return ("OCR unavailable: %s" % e, [])
     asset = _load_asset(cwd, a.get("video_id"))
     if asset is None:
         return (_missing(a), [])
@@ -554,7 +561,7 @@ def _subs_ocr(a):
             band=band,
             engine=ocrmod.get_engine())
     except Exception as e:
-        return ("字幕提取失败: %s" % e, [])
+        return ("caption extraction failed: %s" % e, [])
     segs = ocrmod.fold_segments(res["results"], step=1.0)
     # band_auto 恒等于 band（自动检测时两者同源，显式指定时它必为 None），零额外信息
     out = {"mode": "ocr", "frames": res["frames"], "ocr_runs": res["ocr_runs"],
@@ -567,17 +574,17 @@ def _subs_ocr(a):
         out["page_like"] = True
         out["text_clusters"] = res.get("text_clusters")
         out["text_span"] = res.get("text_span")
-        out["hint"] = ("画面里有 %s 处互不相连的文字、纵向跨度 %.0f%%，是整页文字"
-                       "（幻灯片/截图/文档），不是一行字幕。这条带只截到页面的一部分，"
-                       "segments 多半是半句话，别直接当内容用。建议改用 mode=stt："
-                       "这类讲解片通常有口播，转出来是连贯的成句；"
-                       "要看版面就用 video quantity=1 看单页。"
+        out["hint"] = ("%s disconnected text clusters spanning %.0f%% of the height: this is a full page "
+                       "of text (slide/screenshot/document), not a single caption line. The band only "
+                       "cut out part of that page, so segments are mostly half-sentences—don't use them "
+                       "as content. Prefer mode=stt: talking-head clips usually have speech, which comes "
+                       "out as coherent sentences. To see the layout, use video with quantity=1."
                        % (res.get("text_clusters"), 100.0 * float(res.get("text_span") or 0)))
     if not segs and band == "auto" and not out.get("page_like"):
         # 自动检测只搜下方 40%；一个字的没有时，多半是字幕根本不在下面，别让人以为这片子没字幕
-        out["hint"] = ("自动检测在下方 40%% 没找到字幕（band=%s）。"
-                       "字幕可能在上方或画面中部：先用 video（quantity=1）看一眼位置，"
-                       "再用 band=\"y0,y1\" 手动指定，例如 \"0.10,0.27\"。" % (res.get("band"),))
+        out["hint"] = ("auto-detect found no captions in the bottom 40%% (band=%s). Captions may be "
+                       "at the top or in the middle: use video with quantity=1 to see where they are, "
+                       "then pass band=\"y0,y1\" explicitly, e.g. \"0.10,0.27\"." % (res.get("band"),))
     if window_note:
         out["note"] = window_note
     return (_dump(out), [])
@@ -635,17 +642,19 @@ TOOLS = [
          "spectrum (peak frequency / note / cents), time-frequency map, pitch track, "
          "waveform. Sample rate follows the video's audio track. L and R are measured "
          "separately, L on the upper half of each picture, R on the lower. view picks "
-         "which picture; the numbers always come back for both channels."
+         "which picture; the numbers come back for each channel."
      ),
      "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number", "description": "window length in seconds, must be > 0; default 10, max 15"},
          "view": {"type": "string",
-                  "enum": ["all", "level", "spectrum", "spectrogram", "peak", "wave"],
+                  "enum": ["level", "spectrum", "spectrogram", "peak", "wave"],
                   "description": ("level = loudness over time; spectrum = frequency content at one frame; "
                                   "spectrogram = frequency over time; peak = pitch track; wave = raw samples. "
-                                  "Which to pick: how loud -> level, what notes -> spectrum or peak, how it changes -> spectrogram. Default all")}}}},
+                                  "Which to pick: how loud -> level, what notes -> spectrum or peak, "
+                                  "how it changes -> spectrogram. Required—pick one.")}},
+        "required": ["view"]}},
 
     {"name": "subtitles",
      "description": (
@@ -699,10 +708,10 @@ def _parse_crop(spec):
         return None
     m = re.match(r"^(\d+)x(\d+)\+(\d+)\+(\d+)$", str(spec).strip())
     if not m:
-        raise ValueError("crop 格式应为 WxH+X+Y")
+        raise ValueError("crop must look like WxH+X+Y")
     w, h, x, y = (int(v) for v in m.groups())
     if w <= 0 or h <= 0:
-        raise ValueError("crop 宽高须为正")
+        raise ValueError("crop width and height must be positive")
     return "crop=%d:%d:%d:%d" % (w, h, x, y)
 
 
@@ -891,9 +900,9 @@ def _scene_times(a, asset, start, end, n, timeout=None):
         scores = engine.scene_scores(media, start, end, timeout=timeout)
     except Exception as e:
         # 退回等分，但要说出来——否则用户以为看到的是变化点，其实是等分
-        return engine.sample_times(start, end, n), 0, "画面扫描失败（%s），已退回按时间等分" % e
+        return engine.sample_times(start, end, n), 0, "scene scan failed (%s), fell back to even spacing" % e
     if not scores:
-        return engine.sample_times(start, end, n), 0, "窗口内没扫到帧，已退回按时间等分"
+        return engine.sample_times(start, end, n), 0, "no frames in window, fell back to even spacing"
     ts, filled = _pick_scene(scores, n, start, end)
     if cache is not None:
         try:
@@ -912,7 +921,7 @@ def tool_video(a):
         return (_missing(a), [])
     duration = float(asset.get("duration") or 0)
     if duration <= 0:
-        return ("视频时长为 0，无法抽帧", [])
+        return ("video duration is 0, cannot sample frames", [])
     err = _pos_seconds(a)
     if err:
         return (_dump({"ok": False, "error": err}), [])
@@ -929,7 +938,7 @@ def tool_video(a):
         # 越界裁剪 ffmpeg 不会报错，只会吐一张纯黑小图——必须自己拦
         if vw and vh and (cx + cw > vw or cy + ch > vh):
             return (_dump({"ok": False,
-                           "error": "crop %s 超出画面 %dx%d（x+w≤%d、y+h≤%d）"
+                           "error": "crop %s exceeds the %dx%d frame (need x+w<=%d, y+h<=%d)"
                                     % (spec, vw, vh, vw, vh)}), [])
         sw, sh = float(cw), float(ch)
     else:
@@ -941,11 +950,11 @@ def tool_video(a):
     try:
         n = max(1, min(int(raw_q), 30)) if raw_q is not None else 15
     except (TypeError, ValueError):
-        return (_dump({"ok": False, "error": "quantity 必须是整数"}), [])
+        return (_dump({"ok": False, "error": "quantity must be an integer"}), [])
     win_start, win_end, note = _window(a, asset, single=(n == 1))
     if raw_q is not None and int(raw_q) != n:
-        extra = "quantity 夹到 %d（允许 1–30）" % n
-        note = extra if not note else note + "；" + extra
+        extra = "quantity clamped to %d (allowed 1-30)" % n
+        note = extra if not note else note + "; " + extra
     out_dir = asset.get("video_dir")
 
     # 单帧：不拼页，按整帧（或裁剪后）的像素上限出图
@@ -954,7 +963,7 @@ def tool_video(a):
         got = engine.extract_frames(asset["media_path"], [win_start], out_dir=out_dir,
                                     duration=duration, size=(tw, th), crop=crop)
         if not got:
-            return ("取帧失败 @%.3fs" % win_start, [])
+            return ("frame grab failed @%.3fs" % win_start, [])
         f = got[0]
         # 路径只留文件名：图片本身走 image 内容块，模型读不了本地路径。
         # 绝对路径前缀（workspace/<标题>/video/）每处 55 字符，纯重复。
@@ -972,7 +981,7 @@ def tool_video(a):
     frames = engine.extract_frames(asset["media_path"], ts, out_dir=out_dir, duration=duration,
                                    size=(cell_w, cell_h), crop=crop)
     if not frames:
-        return ("抽帧失败（%d 个时间点都没取到）" % len(ts), [])
+        return ("frame grab failed (all %d timestamps missed)" % len(ts), [])
     # 缓存键必须含实际取到的帧时间点。
     # 以前等分采样时 ts 完全由 (win_start, win_end, n) 决定，键里不写也对；
     # 现在按画面变化取，同样窗口两次调用可能取到完全不同的帧，
@@ -995,10 +1004,10 @@ def tool_video(a):
            "range": [round(min(ts), 3), round(max(ts), 3)],
            "timeline": [f["seconds"] for f in frames]}
     for msg in ((degraded or ""),
-                ("窗口里只找到 %d 处明显画面变化，其余 %d 格是在变化点之间插值补的，"
-                 "不代表新的画面" % (n - filled, filled)) if filled else ""):
+                ("only %d clear scene changes in this window; the other %d cells are "
+                 "interpolated between them and are not new content" % (n - filled, filled)) if filled else ""):
         if msg:
-            note = msg if not note else note + "；" + msg
+            note = msg if not note else note + "; " + msg
     if note:
         out["note"] = note
     return (json.dumps(out, ensure_ascii=False, indent=2), _attach(jpg))
