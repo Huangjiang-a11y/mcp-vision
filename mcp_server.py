@@ -831,7 +831,12 @@ TOOLS = [
          "frame, and returns a per-cue confidence - use it for songs and any text the pixels show. "
          "mode=stt transcribes the speech and adds per-cue emotion, audio event and language, plus "
          "a summary; use it when the speech is not written on screen. BGM is reported as an event "
-         "because music that drowns out the voice costs words."
+         "because music that drowns out the voice costs words.\n"
+         "\n"
+         "Long clips: fill the window here too. ocr steps one frame a second but skips frames whose "
+         "band did not change (roughly half on a talking head or an MV), and stt runs faster than "
+         "realtime, so a 900s page is the cheap way to read a long clip: time=0, 900, 1800 ... "
+         "until the end. Narrow the window only when you already know where to look."
      ),
      "inputSchema": {"type": "object", "properties": {
          "mode": {"type": "string", "enum": ["ocr", "stt"],
@@ -839,7 +844,8 @@ TOOLS = [
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number",
-                     "description": "window length, must be > 0; default to the clip end"},
+                     "description": ("window length, must be > 0; default to the clip end, capped at 900. "
+                                     "For a long clip pass 900 (or omit it) rather than a short slice")},
          "band": {"type": "string",
                   "description": "ocr: band range, 'auto' (default) or ratios like \"0.10,0.27\""}}}},
 
@@ -1132,14 +1138,7 @@ def tool_video(a):
     # 长片小窗的提示：一页的代价是「页」，不是「秒」。
     # 15 格铺 900 秒是 1 格/分钟，铺 60 秒是 1 格/4 秒——同样的钱少看 15 倍。
     # 写在返回里而不仅写进 schema：描述只在开头读一遍，模型中途会忘。
-    if n > 1:
-        _span = win_end - win_start
-        if duration > _span * 3 and _span < MAX_ANALYZE_SECONDS * 0.5:
-            _reads = int(math.ceil(duration / max(1e-6, _span)))
-            _pages = int(math.ceil(duration / MAX_ANALYZE_SECONDS))
-            _t = ("%.0fs clip, %.0fs window: omitting seconds or passing seconds=%.0f covers it "
-                  "in %d page(s) instead of %d reads" % (duration, _span, MAX_ANALYZE_SECONDS, _pages, _reads))
-            note = _t if not note else note + "; " + _t
+
     if raw_q is not None and int(raw_q) != n:
         extra = "quantity clamped to %d (allowed 1-30)" % n
         note = extra if not note else note + "; " + extra
