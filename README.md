@@ -29,6 +29,7 @@
 - `numpy`
 - `onnxruntime`（可选，OCR 用）
 - `sherpa-onnx`（可选，转写用）
+- `yt-dlp`（可选，链接下载）
 
 模型不随仓库分发，路径全部走环境变量：
 
@@ -38,7 +39,6 @@
 | `MVV_ASR_MODEL` / `MVV_ASR_TOKENS` / `MVV_VAD_MODEL` | SenseVoice + silero VAD |
 
 没配就只缺对应能力，抽帧和电平分析不受影响。详见 [INSTALL.md](INSTALL.md)。
-- `yt-dlp`（可选，链接下载）
 
 ## 快速开始
 
@@ -62,7 +62,7 @@ python3 mcp_server.py --http 8765
 - `video`：给窗口 + 张数，拼成一页网格。默认 **按画面变化取帧**（分数从高到低取满为止，
   不够就在变化点之间插值补齐并在 `note` 里说明）；`pick=even` 退回按时间等分。
   `quantity=1` 时不出页，直接给单帧原图（可 `crop`）
-  - `quantity` 抽帧数（默认 15，上限 30；1 = 单帧）；`detail` 图片质量（像素预算）：low=512 medium=1024 high=1536 max=2048，数值是等面积正方形的边长（拼页时管整页、按格子均分，单帧时管裁剪后那张），只缩不放；下载分辨率**另有一个** `quality`（按短边筛，竖屏不误杀），两者无关，别混
+  - `quantity` 抽帧数（默认 15，上限 30；1 = 单帧）；`detail` 图片质量（像素预算）：low=768（默认）medium=1024 high=1280 max=1536，数值是等面积正方形的边长（拼页时管整页、按格子均分，单帧时管裁剪后那张），只缩不放；下载分辨率**另有一个** `quality`（按短边筛，竖屏不误杀），两者无关，别混
 - `audio`：按 `view` 出图，一次一张，**缺省 `level`** —— `level`（20ms RMS 电平）/
   `spectrum`（FFT 幅度谱）/ `spectrogram`（时频图）/ `peak`（峰值频率轨迹）/ `wave`（原始波形）/
   `pitch`（按声道测基频：周期 / 频率 / 音名 / 音分 / 置信度，附自相关曲线；双声道上下两半）/
@@ -82,8 +82,8 @@ python3 mcp_server.py --http 8765
 视频固定在工作区 `workspace/<文件夹名>/`。
 `video` / `audio` / `subtitles` 默认作用于最近打开的那个，可用 `video_id` 传文件夹名指定。
 
-所有产物落到 `workspace/<标题>/{video,audio,subtitles}/`，可直接用文件系统管理（`ls`/`rm`/`cp`），
-不再用不透明的 `.mvv-cache`。
+所有产物落到 `workspace/<标题>/{video,audio,subtitles}/`，可直接用文件系统管理（`ls`/`rm`/`cp`）；
+`.mvv-cache/` 现在只放链接下载的临时文件（`downloads/`），不再当产物缓存。
 
 ## OCR
 
@@ -96,7 +96,7 @@ pkg install python-onnxruntime
 python3 ocr.py out/ocr_test.png      # 单图
 ```
 
-- 加速器：优先 `XnnpackExecutionProvider`，可回落 `CPU`；Android 上另有 `NnapiExecutionProvider`
+- 加速器：默认 `CPU`；可用 `MVV_ORT_PROVIDERS` 指定 `xnnpack` / `nnapi`（实测 CPU 最快，见「性能」）
 - 调参：`DET_MAX_SIDE`（默认 720）、`DET_TH`（默认 0.2）、`MVV_ORT_THREADS`
 - 实测：880x320 三行中英混排，1.0s 识别完毕，置信度 0.94–0.98
 
@@ -109,7 +109,7 @@ python3 ocr.py out/ocr_test.png      # 单图
 | `time` | 从哪个时间戳开始，默认 0（frame 里是第一帧的时刻） |
 | `seconds` | 看多久；不传则用该工具的默认值 |
 
-各工具的上限：`audio` **15 秒**（不传默认 10 秒）、`video` / `subtitles` **900 秒**（15 分钟）。
+各工具的上限：`audio` **15 秒**（不传默认 15 秒）、`video` / `subtitles` **900 秒**（15 分钟）。
 
 超过上限会被夹住，并在返回里带 `note` 说明夹到了哪里。长视频靠 `time` 翻页，
 不会一次跑到底。
@@ -148,7 +148,7 @@ python3 ocr.py out/ocr_test.png      # 单图
 | 电平 | 20 ms 不重叠帧的 RMS，单位 dBFS；`frame_ms` 可改 5–200（只影响曲线的粗细，不改口径）|
 | 纵轴 / 色标范围 | 顶端 = 峰值**向上取整到 10 的整数次幂**，底端退 3~6 个十进位档 |
 | 时频图峰值格 | 每列单独补扇贝损失，纯音不论落在 bin 哪个位置都读准 |
-| 基频轨迹 | 20 ms 块逐帧测基频（`frame_ms` 可调 5–200），默认 20 ms 一帧一进，10 s 窗口 500 点；20 ms 正好容纳 50 Hz 的一个整周期，下限就是搜索下限 50 Hz（更短的帧按 1000/`frame_ms` 抬高）。块仍偏短，只给趋势。**按声道各出一份**，图仍是上下两幅（上频率对数轴 100–5000 Hz、下周期线性轴）；用散点不连线，帧间跳变太碎；周期轴按 P98 定标，个别低八度跳点贴顶不压扁全图 |
+| 基频轨迹 | 20 ms 块逐帧测基频（`frame_ms` 可调 5–200），默认 20 ms 一帧一进，15 s 窗口 750 点；20 ms 正好容纳 50 Hz 的一个整周期，下限就是搜索下限 50 Hz（更短的帧按 1000/`frame_ms` 抬高）。块仍偏短，只给趋势。**按声道各出一份**，图仍是上下两幅（上频率对数轴 100–5000 Hz、下周期线性轴）；用散点不连线，帧间跳变太碎；周期轴按 P98 定标，个别低八度跳点贴顶不压扁全图 |
 | 基频 | **按声道各测**（L / R 各自的归一化自相关，帧长 `frame_ms` 默认 100ms，下限自动抬到 1000/`frame_ms` Hz）；**只读 `time` 处那一帧**——窗口给多长都不改变读数，两个声道读的是同一个起点，天然同一时刻。不加窗（55Hz 上加汉宁窗会偏 21 音分）；**峰挑选用「数峰法」**——只留超过全局最大一半的局部极大，周期 = 最后一个峰位置 ÷ 峰数（比单取第一个峰稳，谐波强时不会被倍频骗走）。搜索范围 50–5000 Hz。置信度 = 峰值处相关系数。**为什么不混成单声道**：两路装不同声音时（双耳素材、左右不同音轨），混合的自相关会把两条周期的公倍当成基频，报出一个两边都没有的音——实测本表素材 t=53.5s，L=266.9Hz C4、R=375.0Hz F#4，混合却报 320.9Hz E4（−46.7 音分）。mono 音轨 ffmpeg 把同一路复制到两边，两边读数相同，只报 left |
 
 频域图横轴对数 10 Hz–Nyquist，时频图 20 Hz–Nyquist，波形取的就是那 100ms 帧。
@@ -526,7 +526,7 @@ CI（`.github/workflows/ci.yml`）跑在 **ubuntu-latest / Python 3.10 + 3.13**�
 ### 取窗与字幕
 
 - **取窗改成 `start_seconds + seconds`**（`916b305`）：默认 15 分钟上限，结果不截断；
-  字幕可导出 SRT（秒级精度）。
+  字幕统一到秒（`MM:SS`），SRT 由调用方用 `from` / `to` / `text` 自行拼，工具不落盘。
 - **字幕带搜索区一路收窄**（`85db918` → `3d22dc4` → `83dc9f9`）：全屏 → 下半屏 → 下方 4/10；
   检不到就直接判“无字幕”，不再给 0.45 的兜底——兜底会把画面里的大字误当字幕。
 - **字幕带检测窗口封顶 3 分钟 + 稀疏采样**（`e32235b`），后来改成**一次解码取全采样帧**（`1c38517`）：
@@ -581,7 +581,7 @@ v0.4 已通：`workspace`（open / list）、`video`、
 模型与依赖：
 
 - **PP-OCRv4**，来自 [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)（Apache-2.0）
-- **SenseVoice**，来自 [FunAudioLLM / FunASR](https://github.com/FunAudioLLM/SenseVoice)。
+- **SenseVoice**，来自 [FunAudioLLM / FunASR](https://github.com/FunAudioLLM/SenseVoice)（© 阿里巴巴集团）。
   代码 MIT；**模型权重是另一套**：FunASR Model Open Source License v1.1，须保留模型名与署名
 - **Silero VAD**（MIT）、**sherpa-onnx**（Apache-2.0）
 

@@ -428,7 +428,7 @@ def tool_audio(a):
                          % (int(fmin), ms))
         note = "; ".join(notes)
     else:
-        start, end, note = _window(a, asset, default_span=10.0, cap=15.0)
+        start, end, note = _window(a, asset, default_span=15.0, cap=15.0)
         extra = ""
         if view == "history":
             # 轨迹本来就只给趋势，块短是设计的一部分
@@ -721,9 +721,9 @@ def tool_list(a):
 
 TOOLS = [
     {"name": "workspace",
-     "description": "Start here for a new clip: open it by URL or local path, or list what is already open. "
-                     "video, audio and subtitles act on the most recently opened clip unless you "
-                     "pass `video_id`.",
+     "description": "Start here: open a clip from a URL or local path (URLs are downloaded), or list what is "
+                     "already open. video, audio and subtitles act on the most recently opened clip "
+                     "unless you pass `video_id`.",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["open", "list"],
                     "description": "open = download and open (default); list = show opened videos"},
@@ -740,17 +740,12 @@ TOOLS = [
 
     {"name": "video",
      "description": (
-         "See a clip as one page of frames, or one frame.\n"
-         "\n"
-         "`quantity` frames go on one page (default 15, max 30), taken at scene changes (default) "
-         "or evenly; quantity=1 gives one full-detail frame and honours `crop`.\n"
-         "\n"
-         "Fill the window: a page costs the same at 60s and at 900s, so read long clips in 900s "
-         "pages (time=0, 900, 1800 ...) and narrow only when you know where to look."
-         "\n"
-         "\n"
-         "Frames are pictures only: for what is said use subtitles with mode=stt, for "
-         "loudness or spectra use audio."
+         "See a clip as one page of frames, or one frame. `quantity` frames go on one page "
+         "(default 15, max 30), taken at scene changes (default) or evenly. quantity=1 returns "
+         "one full-detail frame and honours `crop`. Fill the window: a page costs the same at "
+         "60s and at 900s, so read long clips in 900s pages (time=0, 900, 1800 ...) and narrow "
+         "only when you know where to look. Frames are pictures only: for what is said use "
+         "subtitles with mode=stt, for loudness or spectra use audio."
      ),     "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
@@ -765,25 +760,23 @@ TOOLS = [
          "crop": {"type": "string",
                   "description": "crop before scaling, WxH+X+Y (e.g. 720x300+0+880), every cell"},
          "detail": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                    "description": ("page pixel budget: low=512 medium=1024 (default) high=1536 "
-                                    "max=2048, split across cells and only ever scaled down. Raise it "
-                                    "to read small text, lower it to save tokens")}}}},
+                    "description": ("page pixel budget: low=768 (default) medium=1024 high=1280 "
+                                    "max=1536, split across cells and only ever scaled down. Raise it "
+                                    "to read small text, keep it at low to save tokens")}}}},
 
     {"name": "audio",
      "description": (
          "Measure a window's audio: one figure plus the numbers behind it. L on the upper half, "
-         "R on the lower; `view` picks the measurement.\n"
-         "\n"
+         "R on the lower; `view` picks the measurement (default level: loudness over time). "
          "spectrum, wave and pitch read the single frame at `time` - `seconds` does not apply. "
-         "The rest take a window (default 10s, max 15s).\n"
-         "\n"
-         "This is sound, not speech: for the words use subtitles with mode=stt. The "
-         "numbers behind the figure come back with it - read them instead of eyeballing."
+         "The rest take a window, defaulting to the full 15s cap. This is sound, not speech: "
+         "for the words use subtitles with mode=stt. The numbers behind the figure come back "
+         "with it - read them instead of eyeballing."
      ),
      "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "window length in seconds, must be > 0; default 10, max 15. Ignored by spectrum, wave and pitch, which read a single frame at time"},
+         "seconds": {"type": "number", "description": "window length in seconds, must be > 0; default 15, max 15. Ignored by spectrum, wave and pitch, which read a single frame at time"},
          "view": {"type": "string",
                   "enum": ["level", "spectrum", "spectrogram", "peak", "wave", "pitch", "history"],
                   "default": "level",
@@ -811,16 +804,12 @@ TOOLS = [
 
     {"name": "subtitles",
      "description": (
-         "Read a window's text as cues (from/to/text, MM:SS).\n"
-         "\n"
-         "mode=ocr (default) reads burned-in captions and on-screen text per frame, with a per-cue "
-         "confidence; mode=stt transcribes speech and adds emotion, audio event and language. BGM "
-         "shows up as an event because it costs words.\n"
-         "\n"
-         "Fill the window here too: ocr skips frames whose band did not change and stt runs faster "
-         "than realtime, so read 900s pages (time=0, 900, 1800 ...).\n"
-         "\n"
-         "Text only: for the picture use video, for the sound use audio."
+         "Read a window's text as cues (from/to/text, MM:SS). mode=ocr (default) reads burned-in "
+         "captions and on-screen text per frame, with a per-cue confidence; mode=stt "
+         "transcribes speech and adds emotion, audio event and language. BGM shows up as an "
+         "event because it costs words. Fill the window here too: ocr skips frames whose band "
+         "did not change and stt runs faster than realtime, so read 900s pages (time=0, 900, "
+         "1800 ...). Text only: for the picture use video, for the sound use audio."
      ),
      "inputSchema": {"type": "object", "properties": {
          "mode": {"type": "string", "enum": ["ocr", "stt"],
@@ -839,7 +828,7 @@ TOOLS = [
 # detail 档位 = 画布边长（像素）。两套阶梯别混：
 #   视频帧   一页 N 格，预算按整页面积算，看的是「还能不能看清脸/字」
 #   音频图   一张图就是一块画布，看的是「曲线和刻度要不要更细」
-VIDEO_DETAIL_PX = {"low": 512, "medium": 1024, "high": 1536, "max": 2048}
+VIDEO_DETAIL_PX = {"low": 768, "medium": 1024, "high": 1280, "max": 1536}
 AUDIO_DETAIL_PX = {"low": 768, "medium": 1024, "high": 1280, "max": 1536}
 
 
@@ -854,7 +843,7 @@ def _detail_level(a, ladder, default):
 
 
 def _max_pixels(a):
-    n = VIDEO_DETAIL_PX[_detail_level(a, VIDEO_DETAIL_PX, "medium")]
+    n = VIDEO_DETAIL_PX[_detail_level(a, VIDEO_DETAIL_PX, "low")]
     return float(n) * n
 
 
@@ -1159,7 +1148,7 @@ def tool_video(a):
     # 不把 ts 写进键就等于拿旧图冒充新结果。
     ts_key = ",".join("%.3f" % t for t in ts)
     key = "%s|%d|%s|%s|%s|%dx%d|%dx%d|%s" % (asset.get("id") or "", n,
-                                              _detail_level(a, VIDEO_DETAIL_PX, "medium"),
+                                              _detail_level(a, VIDEO_DETAIL_PX, "low"),
                                               note, spec, cols, rows, cell_w, cell_h, ts_key)
     sheet_path, jpg = _compose(a, asset, frames, cols, rows, cell_w, cell_h, key, "sheet", win_start)
     # 只留模型用得上的：片长、实际窗口、每格时间点、提示。

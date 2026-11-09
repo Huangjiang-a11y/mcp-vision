@@ -79,7 +79,7 @@ curl -L -o ~/models/keys.txt "$MS/ppocr_keys_v1.txt"
 
 ### 3.2 转写（语音 → 文字，约 229 MB）
 
-两个模型：断句用 **silero VAD**，识别用 **SenseVoice**。
+两个模型：断句用 **silero VAD**，识别用 **SenseVoice**（来自 FunAudioLLM / FunASR，© 阿里巴巴集团）。
 
 ```sh
 MS="https://www.modelscope.cn/models/xiaowangge/sherpa-onnx-sense-voice-small/resolve/master"
@@ -161,17 +161,25 @@ python3 mcp_server.py --http 8765
 sh check.sh
 ```
 
-期望输出：
+期望输出（版本号随机器不同）：
 
 ```
-  [OK] python3 / ffmpeg / ffprobe / numpy / onnxruntime / yt_dlp
+mcp-vision 环境体检
+  [OK] python3
+  [OK] ffmpeg
+  [OK] ffprobe
+  [OK] numpy <版本>
+  [OK] onnxruntime <版本>
+  [OK] yt_dlp
   [OK] sherpa_onnx
   [OK] STT 模型（MVV_ASR_MODEL / MVV_ASR_TOKENS / MVV_VAD_MODEL）
   [OK] OCR 模型
+冒烟：MCP tools/list
   工具: ['workspace', 'video', 'audio', 'subtitles']
+  action: ['open', 'list']
 ```
 
-任何一项是 `[--]`，就少了个可选能力，其余照样能跑。
+`[--]` 表示少了个可选能力，其余照样能跑；`[!!]` 表示命令本身不在 PATH 上。
 
 冒烟测试（带 `--test` 会额外跑不需要模型和素材的回归测试）：
 
@@ -185,8 +193,8 @@ sh check.sh --test
 workspace open  "file:///path/to/a.mp4"
 video     quantity=15
 audio     view=pitch time=0
-audio     view=history time=0 seconds=10 [frame_ms=5~200]
-audio     view=spectrogram time=0 seconds=10
+audio     view=history time=0 seconds=15 [frame_ms=5~200]
+audio     view=spectrogram time=0 seconds=15
 subtitles mode=stt time=0 seconds=30
 ```
 
@@ -198,9 +206,12 @@ mcp-vision/
 ├── tests/             不需要模型/素材的回归测试
 ├── scripts/           基准脚本（需要模型或运行中的服务）
 ├── workspace/         产物：每个视频一个文件夹（gitignore）
+│   ├── latest.txt     最近打开的媒体路径
 │   └── <标题>/
-│       ├── video/     probe.json / frame_*.jpg / sheet_*.png
-│       ├── audio/     a-<窗口>.pcm，以及 level/spectrum/spectrogram/peak/wave/pitch/history 的 png
+│       ├── meta.json  id / 标题 / 时长 / 媒体路径
+│       ├── <原文件名>  媒体副本
+│       ├── video/     t<毫秒>-<宽>x<高>.jpg 帧、sheet_<MMSS>_<列>x<行>_<hash>.png/.jpg 网格页、.scene-<hash>.json 扫描缓存
+│       ├── audio/     s-<起>-<止>.pcm（分析临时文件）、a-<起>-<止>-<view>.png
 │       └── subtitles/ 字幕段直接写在返回里，不落盘
 ├── cookies.txt        B 站登录态（gitignore，**绝不要提交**）
 └── out/               实验产物（gitignore）
@@ -218,7 +229,7 @@ Termux 上 `pkg install python-onnxruntime` 后再 `pip install sherpa-onnx`；�
 `curl -C -` 可以续传：`curl -C - -L -o 目标文件 "地址"`。下完用 `ls -l` 对一下字节数。
 
 **转写结果错字多**
-唱腔、强 BGM、方言都会掉准确率。可以对同一段换 `language`（`zh`/`en`/`ja`/`ko`）或用更小的 `max_speech` 重试。
+唱腔、强 BGM、方言都会掉准确率。转写没有 `language` / `max_speech` 这类调参口径：语种由 SenseVoice 自己判（结果里的 `lang`），断句由 VAD 自动切。错字多时换更干净的窗口（`time` / `seconds`）重试，或用 `mode=ocr` 核对画面原文。
 
 **OCR 报 `No module named onnxruntime`**
 装 `python-onnxruntime`（Termux）或 `pip install onnxruntime`。
@@ -227,7 +238,7 @@ Termux 上 `pkg install python-onnxruntime` 后再 `pip install sherpa-onnx`；�
 把浏览器 cookies 导出成 Netscape 格式存为 `cookies.txt`。该文件含账号凭证，别分享、别提交。
 
 **抽帧很慢**
-`detail` 调 `low`，`quantity` 调小；解码本身受手机 CPU 限制。
+`detail` 默认已是 `low`；再想快就调小 `quantity`、用 `crop` 缩小取景，或者接受解码本身受手机 CPU 限制。
 
 ---
 

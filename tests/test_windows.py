@@ -275,8 +275,8 @@ check("下载用 res: 排序短边", '"res:%d"' in src_open_full, True)
 check("不写死格式过滤（避免无匹配回落）", 'fmt = "bv*+ba/b"' in src_open_full, True)
 check("quality 档位仍是短边语义", M._QUALITY_MAP("medium"), 720)
 # detail 是图片质量（像素预算），和下载分辨率的 quality 是两回事
-check("video detail 默认 1024", M.VIDEO_DETAIL_PX[M._detail_level({}, M.VIDEO_DETAIL_PX, "medium")], 1024)
-check("detail 不再认旧名 quality", M._detail_level({"quality": "high"}, M.VIDEO_DETAIL_PX, "medium"), "medium")
+check("video detail 默认 768", M.VIDEO_DETAIL_PX[M._detail_level({}, M.VIDEO_DETAIL_PX, "low")], 768)
+check("detail 不再认旧名 quality", M._detail_level({"quality": "high"}, M.VIDEO_DETAIL_PX, "low"), "low")
 
 # --- schema 的必填要和实际行为一致 ---
 # source 只在 action=open 时才必要：写成无条件 required，list 就得凭空编路径；
@@ -300,13 +300,13 @@ _src_audio = inspect.getsource(M.tool_audio)
 # 默认值会被无声接受，所以走了默认就在 note 里说一句
 check("走缺省时 note 里说清楚", 'view defaulted to %s' in _src_audio, True)
 check("显式传 view 时不加 note", "if view_defaulted:" in _src_audio, True)
-# history 是窗口视图，不是单帧：它走 _window(default_span=10.0, cap=15.0)，
+# history 是窗口视图，不是单帧：它走 _window(default_span=15.0, cap=15.0)，
 # seconds=2 和 seconds=8 应该拿到不同的 range。曾经在注释里把它写成"只读一帧"，是错的。
 check("单帧分支只有 spectrum/wave/pitch", '("spectrum", "wave", "pitch")' in _src_audio, True)
 check("history 不在单帧分支", '("spectrum", "wave", "pitch", "history")' in _src_audio, False)
-check("history 按窗口取", 'default_span=10.0, cap=15.0' in _src_audio, True)
-check("detail 认新名", M._detail_level({"detail": "max"}, M.VIDEO_DETAIL_PX, "medium"), "max")
-check("detail 乱填回落默认", M._detail_level({"detail": "huge"}, M.VIDEO_DETAIL_PX, "medium"), "medium")
+check("history 按窗口取", 'default_span=15.0, cap=15.0' in _src_audio, True)
+check("detail 认新名", M._detail_level({"detail": "max"}, M.VIDEO_DETAIL_PX, "low"), "max")
+check("detail 乱填回落默认", M._detail_level({"detail": "huge"}, M.VIDEO_DETAIL_PX, "low"), "low")
 check("音频 detail 四档", sorted(M.AUDIO_DETAIL_PX.values()), [768, 1024, 1280, 1536])
 check("音频默认 low=768（和以前一样大）", M.AUDIO_DETAIL_PX[M._detail_level({}, M.AUDIO_DETAIL_PX, "low")], 768)
 
