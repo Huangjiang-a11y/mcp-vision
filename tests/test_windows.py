@@ -47,15 +47,19 @@ check("正常窗口", (s, e, note), (10.0, 15.0, ""))
 
 # --- 超过上限 ---
 # 注意用 2000 秒的长片测：276 秒的片子会先夹上限再夹结尾，
-# 断言 900 会失败，看不出究竟是哪一步生效。
+# 断言 900/1000 会失败，看不出究竟是哪一步生效。
 LONG = {"duration": 2000.0, "width": 1280, "height": 720}
 s, e, note = M._window({"time": 0, "seconds": 5000}, LONG)
-check("超出上限被夹", e, 900.0)
+check("超出上限被夹", e, 1000.0)
 check("上限有提示", "capped at" in note, True)
 # 短片：600 秒请求落在 276 秒里，应该只夹结尾，不提上限
 s, e, note = M._window({"time": 0, "seconds": 600}, ASSET)
 check("短片夹结尾", e, 276.0)
 check("短片不提上限", "上限" in note, False)
+
+# 不传 seconds 时按 DEFAULT_ANALYZE_SECONDS 取窗，而不是整片或上限
+s, e, note = M._window({}, LONG, default_span=M.DEFAULT_ANALYZE_SECONDS)
+check("默认窗口 100 秒", (s, e, note), (0.0, 100.0, ""))
 
 # --- crop 越界 ---
 # 以前 ffmpeg 不报错，只吐一张 295 字节的黑图，还标 ok=True。

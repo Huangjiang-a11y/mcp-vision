@@ -100,7 +100,8 @@ def _dump(obj, limit=0):
     return json.dumps(o, ensure_ascii=False, separators=(",", ":"))
 
 
-MAX_ANALYZE_SECONDS = 900.0   # 单次分析硬上限 15 分钟
+MAX_ANALYZE_SECONDS = 1000.0      # 单次分析硬上限
+DEFAULT_ANALYZE_SECONDS = 100.0   # 不传 seconds 时的默认窗口
 
 
 def _pos_seconds(a):
@@ -116,7 +117,7 @@ def _pos_seconds(a):
     except (TypeError, ValueError):
         return "seconds must be a number"
     if s <= 0:
-        return "seconds must be > 0 (omit it to see the whole span)"
+        return "seconds must be > 0 (omit it for the default %.0fs window)" % DEFAULT_ANALYZE_SECONDS
     return None
 
 
@@ -152,7 +153,7 @@ def _window(a, asset, default_span=None, cap=None, single=False):
     # 两条 note 一起出现自相矛盾（都回退到 0 了，还说看到了结尾）。
     if dur > 0 and start >= dur:
         notes.append("time is past the %.0fs clip, backtracked to 0" % dur)
-        return 0.0, min(dur, cap), "; ".join(notes)
+        return 0.0, min(dur, span), "; ".join(notes)
 
     if single:
         # 单帧只用起点，seconds 和结尾都不参与取图。
@@ -607,7 +608,7 @@ def _subs_stt(a):
     err = _pos_seconds(a)
     if err:
         return (_dump({"ok": False, "mode": "stt", "error": err}), [])
-    start, end, window_note = _window(a, asset)
+    start, end, window_note = _window(a, asset, default_span=DEFAULT_ANALYZE_SECONDS)
     try:
         segs, _dur = engine.transcribe(asset["media_path"], start, end, language="auto")
     except RuntimeError as e:
@@ -672,7 +673,7 @@ def _subs_ocr(a):
     if err:
         return (_dump({"ok": False, "mode": "ocr", "error": err}), [])
     media = asset["media_path"]
-    start, end, window_note = _window(a, asset)
+    start, end, window_note = _window(a, asset, default_span=DEFAULT_ANALYZE_SECONDS)
     try:
         band = _parse_band(a.get("band", "auto"))
     except ValueError as e:
@@ -750,7 +751,7 @@ TOOLS = [
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number",
-                     "description": "window length, must be > 0; default: to the clip end, capped at 900"},
+                     "description": "window length, must be > 0; default: 100s, capped at 1000"},
          "quantity": {"type": "integer",
                       "description": "frames per page, default 15, max 30; 1 = one full-detail frame"},
          "pick": {"type": "string", "enum": ["scene", "even"],
@@ -813,7 +814,7 @@ TOOLS = [
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number",
-                     "description": "window length, must be > 0; default to the clip end, capped at 900"},
+                     "description": "window length, must be > 0; default: 100s, capped at 1000"},
          "band": {"type": "string",
                   "description": "ocr: 'auto' (default) or ratios like \"0.10,0.27\""}}}},
 
@@ -1102,9 +1103,9 @@ def tool_video(a):
         n = max(1, min(int(raw_q), 30)) if raw_q is not None else 15
     except (TypeError, ValueError):
         return (_dump({"ok": False, "error": "quantity must be an integer"}), [])
-    win_start, win_end, note = _window(a, asset, single=(n == 1))
-    # 长片小窗的提示：一页的代价是「页」，不是「秒」。
-    # 15 格铺 900 秒是 1 格/分钟，铺 60 秒是 1 格/4 秒——同样的钱少看 15 倍。
+    win_start, win_end, note = _window(a, asset, default_span=DEFAULT_ANALYZE_SECONDS,
+                                       single=(n == 1))
+    # 一页的代价是「页」，不是「秒」：窗口给多给少，格子数不变。
     # 写在返回里而不仅写进 schema：描述只在开头读一遍，模型中途会忘。
 
     if raw_q is not None and int(raw_q) != n:
