@@ -429,7 +429,8 @@ def tool_audio(a):
                          % (int(fmin), ms))
         note = "; ".join(notes)
     else:
-        start, end, note = _window(a, asset, default_span=15.0, cap=15.0)
+        start, end, note = _window(a, asset, default_span=DEFAULT_ANALYZE_SECONDS,
+                                   cap=MAX_ANALYZE_SECONDS)
         extra = ""
         if view == "history":
             # 轨迹本来就只给趋势，块短是设计的一部分
@@ -768,14 +769,14 @@ TOOLS = [
          "Measure a window's audio: one figure plus the numbers behind it. L on the upper half, "
          "R on the lower; `view` picks the measurement (default level: loudness over time). "
          "spectrum, wave and pitch read the single frame at `time` - `seconds` does not apply. "
-         "The rest take a window, defaulting to the full 15s cap. This is sound, not speech: "
+         "The rest take a window, defaulting to 100s and capped at 1000s. This is sound, not speech: "
          "for the words use subtitles with mode=stt. The numbers behind the figure come back "
          "with it - read them instead of eyeballing."
      ),
      "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "window length in seconds, must be > 0; default 15, max 15. Ignored by spectrum, wave and pitch, which read a single frame at time"},
+         "seconds": {"type": "number", "description": "window length in seconds, must be > 0; default 100, max 1000. Ignored by spectrum, wave and pitch, which read a single frame at time"},
          "view": {"type": "string",
                   "enum": ["level", "spectrum", "spectrogram", "peak", "wave", "pitch", "history"],
                   "default": "level",

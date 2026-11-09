@@ -109,7 +109,7 @@ python3 ocr.py out/ocr_test.png      # 单图
 | `time` | 从哪个时间戳开始，默认 0（frame 里是第一帧的时刻） |
 | `seconds` | 看多久；不传则用该工具的默认值 |
 
-各工具的范围：`audio` **15 秒**（不传默认 15 秒）、`video` / `subtitles` **1000 秒**（约 17 分钟），
+各工具的范围：`video` / `subtitles` / `audio` **1000 秒**（约 17 分钟），
 不传 `seconds` 默认看 100 秒。
 
 超过上限会被夹住，并在返回里带 `note` 说明夹到了哪里。长视频靠 `time` 翻页，
@@ -127,8 +127,8 @@ python3 ocr.py out/ocr_test.png      # 单图
 大一点」，既占 token 又像在教训人。规矩写在工具定义里，`description` 每次调用
 都在，不缺提示的机会。
 
-`audio` 是唯一的例外：它的窗口上限 15 秒，因为一张音频图读的是同一段波形，
-窗口越长越糊，不是越省。
+`audio` 也能开长窗口，但一张图是定宽的：窗口越长，同样的像素铺得越开、越糊。
+要读细就把窗口收窄，或者把 `detail` 提到 medium / high / max。
 
 ```jsonc
 {"mode":"stt","time":1200,"seconds":600}   // 从 20 分开始，转 10 分钟
@@ -449,7 +449,7 @@ OCR 只看像素，画面里没有「情感」和「有没有 BGM」这两样信
   - 协议层问题 → JSON-RPC `error`：请求不合法 `-32600`、JSON 解析失败 `-32700`、未知方法 `-32601`、
     未知工具 `-32602`、handler 抛异常 `-32000`。
 - **窗口范围**：`video` / `subtitles` 单次最多 1000 秒（`MAX_ANALYZE_SECONDS`），不传 `seconds` 默认 100 秒
-  （`DEFAULT_ANALYZE_SECONDS`）；`audio` 的窗口视图 15 秒，
+  （`DEFAULT_ANALYZE_SECONDS`）；`audio` 的窗口视图同样 1000 秒（默认 100），
   而 `spectrum` / `wave` / `pitch` 只读单帧、不认 `seconds`。长片靠 `time=0, 1000, 2000 …` 翻页，没有别的分段开关。
 - **扫描缓存**：`video` 的 scene 扫描按窗口写到 `workspace/<标题>/video/.scene-<hash>.json`，
   同一段重复调用不重扫；缓存损坏时静默重扫。

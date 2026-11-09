@@ -303,6 +303,9 @@ F0_MIN_CONF = 0.25
 FRAME_MS = 100.0
 # 电平曲线的 RMS 块长（非重叠）。20ms 是 phyphox Audio Amplitude 的口径。
 LEVEL_MS = 20.0
+# 轨迹点上限：长窗口逐 20ms 扫太贵（1000 秒 = 5 万帧 x 两声道，自相关要三分钟），
+# 超过就把 step 放宽到这个点数——它只用来画趋势，2000 点足够铺满一张图。
+MAX_TRACK_FRAMES = 2000
 HISTORY_MS = 20.0
 
 
@@ -673,6 +676,11 @@ def analyze_spectrum(media, start, end, fft_size=None, out_dir=None, track=False
         fft_size = int(round(sr * float(fft_ms or FRAME_MS) / 1000.0))
     size = int(min(max(64, fft_size), nsmp))
 
+    _span_ms = 1000.0 * dur
+    _trk_step = float(history_ms)
+    if track and _span_ms / max(1e-6, _trk_step) > MAX_TRACK_FRAMES:
+        _trk_step = _span_ms / float(MAX_TRACK_FRAMES)
+
     left = _channel_metrics(pair[:, 0], sr, start, size, level_ms)
     right = _channel_metrics(pair[:, 1], sr, start, size, level_ms)
     # 基频**按声道各测一遍**，不混成单声道。
@@ -708,9 +716,9 @@ def analyze_spectrum(media, start, end, fft_size=None, out_dir=None, track=False
         # 逐帧轨迹同样按声道分开：两路各扫一遍，耗时翻倍，所以仍按需才算。
         "pitch_track": {
             "left": (pitch_track(pair[:, 0], sr, start, frame_ms=history_ms,
-                                 step_ms=history_ms, fmin=fmin) if track else []),
+                                 step_ms=_trk_step, fmin=fmin) if track else []),
             "right": (pitch_track(pair[:, 1], sr, start, frame_ms=history_ms,
-                                  step_ms=history_ms, fmin=fmin) if track else []),
+                                  step_ms=_trk_step, fmin=fmin) if track else []),
         },
         "left": left,
         "right": right,
