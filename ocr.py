@@ -15,7 +15,11 @@ STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 DET_MAX_SIDE = int(os.environ.get("DET_MAX_SIDE", "720"))
 # 识别输入的最大宽度：字幕行短，320 够；手写长行降到 256/192 明显掉字，别乱调
 REC_MAX_W = int(os.environ.get("MVV_REC_MAX_W", "320"))
+REC_H = int(os.environ.get("MVV_REC_H", "48"))
 DET_TH = float(os.environ.get("DET_TH", "0.2"))
+# 窗口短于这个秒数就不开进程池：启动 4 个进程（各自加载模型）比省下的时间还贵
+PARALLEL_MIN_SPAN = float(os.environ.get("MVV_OCR_PARALLEL_MIN", "240"))
+FFMPEG_THREADS = int(os.environ.get("MVV_FFMPEG_THREADS", "2"))
 
 
 def _providers():
@@ -141,35 +145,66 @@ class PPOCR:
 
     @staticmethod
     def _connected_boxes(mask, W, H):
-        """4 邻域连通域 → bbox。纯 numpy + BFS。"""
-        visited = np.zeros((H, W), dtype=bool)
-        idx = np.argwhere(mask)
-        results = []
-        for sy, sx in idx:
-            if visited[sy, sx]:
-                continue
-            stack = [(sy, sx)]
-            visited[sy, sx] = True
-            minx = maxx = sx; miny = maxy = sy; count = 0
-            while stack:
-                y, x = stack.pop()
-                count += 1
-                if x < minx: minx = x
-                elif x > maxx: maxx = x
-                if y < miny: miny = y
-                elif y > maxy: maxy = y
-                if x + 1 < W and mask[y, x+1] and not visited[y, x+1]:
-                    visited[y, x+1] = True; stack.append((y, x+1))
-                if x - 1 >= 0 and mask[y, x-1] and not visited[y, x-1]:
-                    visited[y, x-1] = True; stack.append((y, x-1))
-                if y + 1 < H and mask[y+1, x] and not visited[y+1, x]:
-                    visited[y+1, x] = True; stack.append((y+1, x))
-                if y - 1 >= 0 and mask[y-1, x] and not visited[y-1, x]:
-                    visited[y-1, x] = True; stack.append((y-1, x))
-            results.append((minx, miny, maxx, maxy, count))
-            if len(results) > 400:
-                break
-        return results
+        """4 邻域连通域 → bbox。行内 run + 并查集：逐像素 BFS 在 720x96 上要 34ms，
+        这里只要 3ms 左右，900 帧能省十几秒。"""
+        rows = []                 # 每行 [(x0, x1, run_id), ...]
+        runs = []                 # run: [y, x0, x1, run_id]
+        for y in range(H):
+            row = mask[y]
+            cur = []
+            if row.any():
+                d = np.diff(row.astype(np.int8), prepend=np.int8(0), append=np.int8(0))
+                for a, b in zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1)):
+                    rid = len(runs)
+                    runs.append([y, int(a), int(b) - 1])
+                    cur.append((int(a), int(b) - 1, rid))
+            rows.append(cur)
+
+        parent = list(range(len(runs)))
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(i, j):
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[rj] = ri
+
+        # 相邻两行的 run 只要 x 区间相交就是同一个连通域
+        for y in range(1, H):
+            prev, cur = rows[y - 1], rows[y]
+            i = j = 0
+            while i < len(prev) and j < len(cur):
+                a0, b0, r0 = prev[i]
+                a1, b1, r1 = cur[j]
+                if b0 < a1:
+                    i += 1
+                elif b1 < a0:
+                    j += 1
+                else:
+                    union(r0, r1)
+                    if b0 <= b1:
+                        i += 1
+                    else:
+                        j += 1
+
+        agg = {}
+        for rid, (y, a, b) in enumerate(runs):
+            r = find(rid)
+            cnt = b - a + 1
+            e = agg.get(r)
+            if e is None:
+                agg[r] = [a, y, b, y, cnt]
+            else:
+                if a < e[0]: e[0] = a
+                if y < e[1]: e[1] = y
+                if b > e[2]: e[2] = b
+                if y > e[3]: e[3] = y
+                e[4] += cnt
+        return [(e[0], e[1], e[2], e[3], e[4]) for e in agg.values()]
 
     # ---- rec ----
     def recognize(self, rgb, box):
@@ -180,7 +215,7 @@ class PPOCR:
         if crop.size == 0:
             return "", 0.0
         bw, bh = crop.shape[1], crop.shape[0]
-        target_h = 48
+        target_h = REC_H
         target_w = int(max(16, min(REC_MAX_W, round((bw / max(bh, 1)) * target_h))))
         resized = resize_bilinear(crop, target_w, target_h).astype(np.float32) / 255.0 - 0.5
         x = np.transpose(resized, (2, 0, 1))[None].astype(np.float32)
@@ -319,7 +354,10 @@ def _stream_frames(media, start=0.0, end=None, step=1.0, width=None, crop=None):
         parts.append("crop=%d:%d:0:%d" % (w0, bh, y0))
     if width:
         parts.append("scale=%d:%d" % (W, H))
+    # 解码线程固定 2：默认是 auto（按核数开满），手机上 8 路抢 8 个小核，
+    # 实测反而比 2 路慢（120 帧 6.01s → 5.67s），也更容易把 OCR 挤慢。
     cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+           "-threads", "2",
            "-ss", str(start), "-i", str(media)]
     if end is not None:
         cmd += ["-t", str(max(0.0, float(end) - float(start)))]
@@ -612,9 +650,12 @@ def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
     return None
 
 def _text_sig(arr, th):
-    """字幕的视觉签名：高亮像素掩码。背景在动也不影响文字轮廓。"""
-    g = arr.astype(np.float32).mean(axis=2)
-    return g > float(th)
+    """字幕的视觉签名：高亮像素掩码。背景在动也不影响文字轮廓。
+
+    用 uint16 求和代替 float32 平均：判据等价（和 > 3*th ⇔ 均值 > th），
+    但不用把整幅 1280x144x3 转成 float，900 帧能省好几秒。
+    """
+    return arr.astype(np.uint16).sum(axis=2) > int(3 * float(th))
 
 
 def fold_segments(results, min_len=2, max_edit_ratio=0.2, max_gap=5.0, step=1.0):
@@ -686,7 +727,8 @@ def _keep_wide(res, W):
 
 
 def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
-                  width=None, skip_th=1.0, text_th=223, min_conf=0.0, engine=None):
+                  width=None, skip_th=1.0, text_th=223, min_conf=0.0, engine=None,
+                  workers=None):
     """字幕带 OCR：ffmpeg 管道流出带帧（不落盘），字幕没变的帧跳过不识别。
 
     band: (y0_ratio, y1_ratio) 显式指定；"auto" 用 OCR 框坐标自动定位；None 等价 auto。
@@ -709,14 +751,68 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
         band_auto = det["band"]
         band_used = band_auto
     y0r, y1r = float(band_used[0]), float(band_used[1])
+    # 长窗口切段并行：每段自己解码 / 检测 / 识别，最后按时间合并。
+    # 单机 8 核，串行时 ffmpeg 与 ORT 各跑 2 线程只占一半核，纯浪费。
+    span = max(0.0, float(end if end is not None else start + step) - float(start))
+    if workers is None:
+        workers = int(os.environ.get("MVV_OCR_WORKERS", "2") or 0)
+    if workers > 1 and span >= PARALLEL_MIN_SPAN:
+        n = max(2, min(int(workers), 8))
+        cuts = [start + span * i / n for i in range(n + 1)]
+        tasks = [(media, cuts[i], cuts[i + 1], step, (y0r, y1r), width,
+                  skip_th, text_th, min_conf) for i in range(n)]
+        import concurrent.futures as _cf
+        with _cf.ProcessPoolExecutor(max_workers=n) as ex:
+            parts = list(ex.map(_ocr_window, tasks))
+        res = []
+        n_ocr = n_skip = 0
+        W = H = 0
+        for p in parts:
+            res.extend(p["results"])
+            n_ocr += p["ocr_runs"]
+            n_skip += p["skipped"]
+            if not W:
+                W, H = p["band_px"][0], p["band_px"][1]
+        res.sort(key=lambda r: r["seconds"])
+        ret = {"frames": len(res), "ocr_runs": n_ocr, "skipped": n_skip,
+               "band": [y0r, y1r], "band_auto": band_auto, "band_px": [W, H],
+               "step": float(step), "results": res, "workers": n}
+        if det is not None:
+            ret["page_like"] = bool(det.get("page_like"))
+            ret["text_clusters"] = det.get("clusters")
+            ret["text_span"] = det.get("span")
+        return ret
+
+    one = _ocr_window((media, start, end, step, (y0r, y1r), width, skip_th, text_th, min_conf),
+                      engine=engine)
+    ret = {"frames": one["frames"], "ocr_runs": one["ocr_runs"], "skipped": one["skipped"],
+           "band": [y0r, y1r], "band_auto": band_auto, "band_px": one["band_px"],
+           "step": float(step), "results": one["results"]}
+    if det is not None:
+        ret["page_like"] = bool(det.get("page_like"))
+        ret["text_clusters"] = det.get("clusters")
+        ret["text_span"] = det.get("span")
+    return ret
+
+
+def _ocr_window(task, engine=None):
+    """一段窗口的逐帧 OCR。串行与并行走同一份代码，结果才不会有差别。"""
+    media, start, end, step, band_used, width, skip_th, text_th, min_conf = task
+    if engine is None:
+        # 并行时每个进程只留一条 ORT 线程：2 进程 x 1 线程 = 2，
+        # 跟单进程 2 线程同样的算力，但不会和别的进程抢核。
+        os.environ.setdefault("MVV_ORT_THREADS", "1")
+        engine = get_engine()
+    y0r, y1r = float(band_used[0]), float(band_used[1])
     out, prev, prev_res = [], None, None
+    prev_sig = None
     n_ocr = n_skip = 0
     W = H = 0
     for i, t, arr in _stream_frames(media, start, end, step=step, width=width,
                                     crop=(y0r, y1r)):
         H, W = arr.shape[0], arr.shape[1]
         if prev is not None and skip_th >= 0:
-            ps = _text_sig(prev, text_th)
+            ps = prev_sig
             cs = _text_sig(arr, text_th)
             if not ps.any() and not cs.any():
                 d = 0.0
@@ -735,20 +831,12 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
         img = np.pad(arr, ((pad, pad), (0, 0), (0, 0)), mode="edge") if pad else arr
         res = _keep_wide(engine.ocr_image(img, min_conf=min_conf), W)
         n_ocr += 1
-        prev, prev_res = arr, res
+        prev, prev_res, prev_sig = arr, res, _text_sig(arr, text_th)
         conf = round(sum(r["conf"] for r in res) / len(res), 4) if res else 0.0
         out.append({"seconds": round(t, 3), "timestamp": _tc(t), "skipped": False,
                     "conf": conf, "lines": [r["text"] for r in res]})
-    ret = {"frames": len(out), "ocr_runs": n_ocr, "skipped": n_skip,
-           "band": [y0r, y1r], "band_auto": band_auto, "band_px": [W, H],
-           "step": float(step), "results": out}
-    if det is not None:
-        # 整页文字的视频会「看起来有字幕」，实际读到的是页面碎片。
-        # 把判断依据一起交出去，让上层能提醒调用方换条路。
-        ret["page_like"] = bool(det.get("page_like"))
-        ret["text_clusters"] = det.get("clusters")
-        ret["text_span"] = det.get("span")
-    return ret
+    return {"frames": len(out), "ocr_runs": n_ocr, "skipped": n_skip,
+            "band": [y0r, y1r], "band_px": [W, H], "step": float(step), "results": out}
 
 
 def _lev(a, b):
