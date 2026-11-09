@@ -744,17 +744,13 @@ TOOLS = [
      "description": (
          "See a clip as one page of frames, or one frame. `quantity` frames go on one page "
          "(default 15, max 30), taken at scene changes (default) or evenly. quantity=1 returns "
-         "one full-detail frame and honours `crop`. Fill the window: a page costs the same at "
-         "60s and at 900s, so read long clips in 900s pages (time=0, 900, 1800 ...) and narrow "
-         "only when you know where to look. Frames are pictures only: for what is said use "
+         "one full-detail frame and honours `crop`. Frames are pictures only: for what is said use "
          "subtitles with mode=stt, for loudness or spectra use audio."
      ),     "inputSchema": {"type": "object", "properties": {
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number",
-                     "description": ("window length, must be > 0; default: to the clip end, capped at 900. "
-                                     "For a long clip pass 900 (or omit it) rather than a short slice - "
-                                     "the page costs the same either way")},
+                     "description": "window length, must be > 0; default: to the clip end, capped at 900"},
          "quantity": {"type": "integer",
                       "description": "frames per page, default 15, max 30; 1 = one full-detail frame"},
          "pick": {"type": "string", "enum": ["scene", "even"],
@@ -809,9 +805,7 @@ TOOLS = [
          "Read a window's text as cues (from/to/text, MM:SS). mode=ocr (default) reads burned-in "
          "captions and on-screen text per frame, with a per-cue confidence; mode=stt "
          "transcribes speech and adds emotion, audio event and language. BGM shows up as an "
-         "event because it costs words. Fill the window here too: ocr skips frames whose band "
-         "did not change and stt runs faster than realtime, so read 900s pages (time=0, 900, "
-         "1800 ...). Text only: for the picture use video, for the sound use audio."
+         "event because it costs words. Text only: for the picture use video, for the sound use audio."
      ),
      "inputSchema": {"type": "object", "properties": {
          "mode": {"type": "string", "enum": ["ocr", "stt"],
@@ -819,8 +813,7 @@ TOOLS = [
          "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
          "seconds": {"type": "number",
-                     "description": ("window length, must be > 0; default to the clip end, capped at 900. "
-                                     "For a long clip pass 900 (or omit it) rather than a short slice")},
+                     "description": "window length, must be > 0; default to the clip end, capped at 900"},
          "band": {"type": "string",
                   "description": "ocr: 'auto' (default) or ratios like \"0.10,0.27\""}}}},
 
