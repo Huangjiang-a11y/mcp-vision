@@ -211,7 +211,7 @@ def plot_level(d, start, end, tag="", w=FIG_W, h=FIG_W // 2):
         yy = Y(dv)
         c.hline(yy, x0, x1, GRID)
         lab = _nice_db(round(dv, 1))
-        c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
+        c.text(x0 - c.tw(lab, 1) - 10, yy - 7, lab, DIM, 1)
         dv += dstep
     for k in range(5):
         frac = k / 4.0
@@ -219,7 +219,7 @@ def plot_level(d, start, end, tag="", w=FIG_W, h=FIG_W // 2):
         xx = x0 + (x1 - x0) * frac
         c.vline(xx, y0, y1, GRID)
         lab = "%.1f" % tt
-        c.ctext(xx, y1 + 12, lab, DIM, 2)
+        c.ctext(xx, y1 + 12, lab, DIM, 1)
     c.rect(x0, y0, x1, y1, AXIS)
     c.curve(np.array([X(i) for i in range(len(v))]), np.array([Y(x) for x in v]),
             x0, y0, x1, y1)
@@ -229,7 +229,7 @@ def plot_level(d, start, end, tag="", w=FIG_W, h=FIG_W // 2):
     c.text(bx, 8, big, FG, 5)
     c.text(bx + c.tw(big, 5) + 8, 30, "DB", DIM, 2)
     c.text(x0, 48, "TIME (S)", DIM, 2)
-    c.text(x0 + 6, y0 + 6, "DB", DIM, 2)
+    c.text(x0 + 6, y0 + 6, "DB", DIM, 1)
     _caption(c, d, x1, 52)
     return c
 
@@ -312,11 +312,11 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=FIG_W, h=FIG_W // 2, fmax=None
         yy = Y(db)
         c.hline(yy, x0, x1, GRID)
         ty = yy + 5 if yy < y0 + 16 else yy - 7   # 顶格那条往下写，别压标题行
-        c.text(x0 - c.tw(lab) - 10, ty, lab, DIM, 2)
+        c.text(x0 - c.tw(lab, 1) - 10, ty, lab, DIM, 1)
     for fr in _freq_ticks(fmax):
         xx = X(fr)
         c.vline(xx, y0, y1, GRID)
-        c.ctext(xx, y1 + 12, "%g" % fr, DIM, 2)
+        c.ctext(xx, y1 + 12, "%g" % fr, DIM, 1)
     c.rect(x0, y0, x1, y1, AXIS)
     # 1kHz 以上每个像素列挤着 5 个 bin，逐 bin 连线会在像素里来回折、看着全是锯齿；
     # 低频段反过来，几个像素才摊到一个 bin，直接取最近 bin 又成了台阶。
@@ -355,7 +355,7 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=FIG_W, h=FIG_W // 2, fmax=None
         c.text(xx, 48, lab, DIM, 2)
         c.text(xx, 66, val, FG, 3)
     c.text(x1 - c.tw("FREQ (HZ)", 2), 14, "FREQ (HZ)", DIM, 2)
-    c.vtext(8, y0 + 8, "FFT AMP (REL)", DIM, 2)
+    c.vtext(8, y0 + 8, "FFT AMP", DIM, 2)
     return c
 
 
@@ -369,6 +369,18 @@ def _nice_step(span, want=5):
     return 10 * mag
 
 
+def _snap_time_end(t1, t0):
+    """末端显示成一位小数后离整数不到 0.1，就贴过去，顶格刻度才画得出来。
+
+    15 秒窗口最后一列常是 14.893，直接比差会差 0.107 而漏掉；按一位小数
+    （14.9）判断，正好落在 ±0.1 里。
+    """
+    r = float(round(t1))
+    if r > t0 and abs(round(t1, 1) - r) <= 0.1 + 1e-9:
+        return r
+    return t1
+
+
 def _time_ticks(t0, t1, want=5):
     """窗口内的等距刻度，落在 step 的整数倍上，不出现 6.4 / 6.9 这种歪数。"""
     step = _nice_step(t1 - t0, want)
@@ -378,7 +390,9 @@ def _time_ticks(t0, t1, want=5):
         v = k * step
         if v > t1 + 1e-9:
             break
-        ticks.append((v, txt % v))
+        # 14.9 / 15.0 离整数只有 0.1 的值显示成整数，轴上不写 14.9
+        lab = ("%d" % int(round(v))) if abs(v - round(v)) <= 0.1 + 1e-9 else (txt % v)
+        ticks.append((v, lab))
         k += 1
     return ticks
 
@@ -403,9 +417,9 @@ def plot_spectrogram(d, tag="", w=FIG_W, h=FIG_W // 2, fmax=None):
         xx = x0 + frac * (x1 - x0)
         c.vline(xx, by + 1, by + bh - 2, GRID, 1)      # 刻度刺
         if frac > 0.97:
-            c.text(x1 - c.tw(lab, 2), by + bh + 2, lab, DIM, 2)
+            c.text(x1 - c.tw(lab, 1), by + bh + 2, lab, DIM, 1)
         else:
-            c.ctext(xx, by + bh + 2, lab, DIM, 2)
+            c.ctext(xx, by + bh + 2, lab, DIM, 1)
     y0, y1 = 76, h - 38
     H, W = y1 - y0, x1 - x0
     nt = rel.shape[1]
@@ -432,18 +446,19 @@ def plot_spectrogram(d, tag="", w=FIG_W, h=FIG_W // 2, fmax=None):
     c.text(x0, 12, title, TXT, 3)
     c.text(x0 + c.tw(title, 3) + 14, 17, "FFT AMP (REL)", DIM, 2)
     c.text(x1 - c.tw("FREQ (HZ, LOG)", 2), 14, "FREQ (HZ, LOG)", DIM, 2)
-    c.vtext(8, y0 + 8, "TIME (S)", DIM, 2)
+    c.vtext(8, y0 + 8, "TIME", DIM, 2)
     ticks = _freq_ticks(fmax)
     for fr in ticks:
         xx = X(fr)
         c.vline(xx, y0, y1, (0, 0, 0), 1)
-        c.ctext(xx, y1 + 10, "%g" % fr, DIM, 2)
+        c.ctext(xx, y1 + 10, "%g" % fr, DIM, 1)
     t0, t1 = (float(times[0]), float(times[-1])) if times.size > 1 else (0.0, 1.0)
+    t1 = _snap_time_end(t1, t0)
     for val, lab in _time_ticks(t0, t1):
         frac = (val - t0) / max(1e-9, t1 - t0)
         yy = y1 - (y1 - y0) * frac
         c.hline(yy, x0, x1, (0, 0, 0), 1)
-        c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
+        c.text(x0 - c.tw(lab, 1) - 10, yy - 7, lab, DIM, 1)
     return c
 
 
@@ -464,21 +479,22 @@ def plot_peak(d, tag="", w=FIG_W, h=FIG_W // 2):
         hi = lo + step
     def Y(f): return y1 - (f - lo) / (hi - lo) * (y1 - y0)
     c.text(x0, 12, _tag_title(tag, "PEAK FREQ TRACK"), TXT, 3)
-    c.vtext(8, y0 + 8, "FREQ (HZ)", DIM, 2)
+    c.vtext(8, y0 + 8, "FREQ", DIM, 2)
     v = lo
     while v <= hi + 1e-9:
         yy = Y(v)
         c.hline(yy, x0, x1, GRID)
         lab = "%g" % round(v, 2)
-        c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
+        c.text(x0 - c.tw(lab, 1) - 10, yy - 7, lab, DIM, 1)
         v += step
     c.rect(x0, y0, x1, y1, AXIS)
     t0, t1 = (float(times[0]), float(times[-1])) if times.size > 1 else (0.0, 1.0)
+    t1 = _snap_time_end(t1, t0)
     for val, lab in _time_ticks(t0, t1):
         frac = (val - t0) / max(1e-9, t1 - t0)
         xx = x0 + (x1 - x0) * frac
         c.vline(xx, y0, y1, GRID)
-        c.ctext(xx, y1 + 12, lab, DIM, 2)
+        c.ctext(xx, y1 + 12, lab, DIM, 1)
     if tr:
         span = (t1 - t0) if t1 > t0 else 1.0
         pts = []
@@ -521,7 +537,7 @@ def plot_wave(d, tag="", w=FIG_W, h=FIG_W // 2):
         yy = Y(v)
         c.hline(yy, x0, x1, AXIS if abs(v) < step * 1e-9 else GRID)
         lab = fmt % v
-        c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
+        c.text(x0 - c.tw(lab, 1) - 10, yy - 7, lab, DIM, 1)
         v += step
     ms = float(wv.get("ms") or 40.0)
     xstep = _nice_step(ms, 5)
@@ -530,7 +546,7 @@ def plot_wave(d, tag="", w=FIG_W, h=FIG_W // 2):
         xx = x0 + (x1 - x0) * (t / ms)
         if t > 0:
             c.vline(xx, y0, y1, GRID)
-        c.ctext(xx, y1 + 12, ("%.0f" % t) if xstep >= 1 else ("%.1f" % t), DIM, 2)
+        c.ctext(xx, y1 + 12, ("%.0f" % t) if xstep >= 1 else ("%.1f" % t), DIM, 1)
         t += xstep
     c.rect(x0, y0, x1, y1, AXIS)
     W = x1 - x0
@@ -553,7 +569,7 @@ def plot_wave(d, tag="", w=FIG_W, h=FIG_W // 2):
         c.curve(xs, np.array([Y(v) for v in s]), x0, y0, x1, y1)
     c.text(x0, 12, _tag_title(tag, "WAVE"), TXT, 3)
     c.text(x0, 48, "T %.3fS  %.0fMS" % (float(wv.get("t0") or 0.0), ms), DIM, 2)
-    c.vtext(8, y0 + 8, "AMP (REL)", DIM, 2)
+    c.vtext(8, y0 + 8, "AMP", DIM, 2)
     cap = "PEAK %.3f  RMS %.3f" % (float(wv.get("peak") or 0.0), float(wv.get("rms") or 0.0))
     c.text(x1 - c.tw(cap, 2), 30, cap, DIM, 2)
     c.text(x1 - c.tw("TIME (MS)", 2), h - 14, "TIME (MS)", DIM, 2)
@@ -594,7 +610,7 @@ def plot_pitch(pt, tag="", w=FIG_W, h=FIG_W):
         yy = Y(v)
         c.hline(yy, x0, x1, AXIS if abs(v) < 1e-9 else GRID)
         lab = "%.2f" % v
-        c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
+        c.text(x0 - c.tw(lab, 1) - 10, yy - 7, lab, DIM, 1)
         v += ystep
 
     xstep = _nice_step(span, 5)
@@ -603,7 +619,7 @@ def plot_pitch(pt, tag="", w=FIG_W, h=FIG_W):
         xx = X(t)
         if t > 0:
             c.vline(xx, y0, y1, GRID)
-        c.ctext(xx, y1 + 12, ("%.0f" % t) if xstep >= 1 else ("%.1f" % t), DIM, 2)
+        c.ctext(xx, y1 + 12, ("%.0f" % t) if xstep >= 1 else ("%.1f" % t), DIM, 1)
         t += xstep
     c.rect(x0, y0, x1, y1, AXIS)
 
@@ -644,7 +660,7 @@ def plot_pitch(pt, tag="", w=FIG_W, h=FIG_W):
     cap = "CONF %.2f" % conf
     c.text(x1 - c.tw(cap, 2), 30, cap, DIM, 2)
     c.text(x1 - c.tw("LAG (MS)", 2), h - 20, "LAG (MS)", DIM, 2)
-    c.vtext(8, y0 + 8, "R (NORM)", DIM, 2)
+    c.vtext(8, y0 + 8, "R", DIM, 2)
     return c
 
 
@@ -681,6 +697,7 @@ def plot_history(tr, tag="", w=FIG_W, h=FIG_W):
     t0, t1 = (ts[0], ts[-1]) if ts else (0.0, 1.0)
     if t1 - t0 < 1e-9:
         t1 = t0 + 1e-3
+    t1 = _snap_time_end(t1, t0)
 
     def X(t):
         return x0 + (x1 - x0) * ((t - t0) / (t1 - t0))
@@ -692,14 +709,14 @@ def plot_history(tr, tag="", w=FIG_W, h=FIG_W):
     for a0, a1 in ((ay0, ay1), (by0, by1)):
         c.rect(x0, a0, x1, a1, AXIS)
         for v, lab in xt:
-            c.ctext(X(v), a1 + 8, lab, DIM, 2)
+            c.ctext(X(v), a1 + 8, lab, DIM, 1)
     c.text(x1 - c.tw("TIME (S)", 2), by0 - 20, "TIME (S)", DIM, 2)
 
     # ---- 上：频率，对数轴，下限 100 Hz（25ms 窗能到 40Hz，画到 100 够用）----
     fl, fh = 100.0, 5000.0
     lg = math.log10
     c.text(x0 + 8, ay0 + 8, "FREQ (HZ)", DIM, 2)
-    c.vtext(6, ay0 + 4, "FREQ (HZ)", DIM, 1)
+    c.vtext(6, ay0 + 4, "FREQ", DIM, 1)
 
     def AF(f):
         f = min(max(f, fl), fh)
@@ -709,11 +726,11 @@ def plot_history(tr, tag="", w=FIG_W, h=FIG_W):
     for f in (500, 1000, 5000):
         yy = AF(f)
         c.hline(yy, x0, x1, GRID)
-        c.text(x0 - c.tw("%d" % f) - 10, yy - 7, "%d" % f, DIM, 2)
+        c.text(x0 - c.tw("%d" % f, 1) - 10, yy - 7, "%d" % f, DIM, 1)
 
     # ---- 下：周期，线性轴（秒）----
     c.text(x0 + 8, by0 + 8, "PERIOD (S)", DIM, 2)
-    c.vtext(6, by0 + 4, "PERIOD (S)", DIM, 1)
+    c.vtext(6, by0 + 4, "PERIOD", DIM, 1)
     # 用 P98 定轴，别让一两个低八度跳点（周期翻倍）把整幅压到底部；
     # 超出轴顶的点贴边画，轴顶刻度仍如实标出来
     ps = [1.0 / f for f in fs if f > 0]
@@ -730,7 +747,7 @@ def plot_history(tr, tag="", w=FIG_W, h=FIG_W):
         yy = BP(v)
         c.hline(yy, x0, x1, GRID)
         lab = "%.3f" % v
-        c.text(x0 - c.tw(lab) - 10, yy - 7, lab, DIM, 2)
+        c.text(x0 - c.tw(lab, 1) - 10, yy - 7, lab, DIM, 1)
         v += pstep
 
     if not ts:

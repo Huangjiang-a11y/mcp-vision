@@ -514,6 +514,8 @@ def tool_audio(a):
         summary["frame_ms"] = d["period_ms"]
         summary["resolution_hz"] = d["resolution_hz"]
     def _pitch_of(p):
+        if not p:
+            return None
         return {
             "freq_hz": p["freq_hz"], "period_ms": p["period_ms"],
             "note": p["note"], "cents": p["cents"],
