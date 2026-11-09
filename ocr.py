@@ -18,7 +18,7 @@ REC_MAX_W = int(os.environ.get("MVV_REC_MAX_W", "320"))
 REC_H = int(os.environ.get("MVV_REC_H", "48"))
 DET_TH = float(os.environ.get("DET_TH", "0.2"))
 # 窗口短于这个秒数就不开进程池：启动 4 个进程（各自加载模型）比省下的时间还贵
-PARALLEL_MIN_SPAN = float(os.environ.get("MVV_OCR_PARALLEL_MIN", "240"))
+PARALLEL_MIN_SPAN = float(os.environ.get("MVV_OCR_PARALLEL_MIN", "30"))
 FFMPEG_THREADS = int(os.environ.get("MVV_FFMPEG_THREADS", "2"))
 
 
