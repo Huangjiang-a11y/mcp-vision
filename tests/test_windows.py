@@ -197,9 +197,10 @@ check("默认 fft_size 按采样率折算", engine.analyze_spectrum.__defaults__
 # 上下两半必须正好拼成正方形，且 blit 偏移跟着 H//2 走（别留硬编码 512）。
 import audiochart as _ac
 check("音频图边长 768", _ac.FIG_W, 768)
-# detail 放大画布时，ctext 的留白与字号要跟着等比，不能还是 768 的像素
-check("画布留白随 detail 等比", round(_ac.Canvas(1024, 512).pad, 4),
-      round(4.0 * 1024 / _ac.FIG_W, 4))
+# 字号与留白是固定像素：detail 放大画布只是给刻度腾地方，不把字吹大
+check("画布留白固定像素", round(_ac.Canvas(1024, 512).pad, 4), 4.0)
+check("768 的时间轴五条刻度", _ac._tick_want(768), 5)
+check("1536 的时间轴九条刻度", _ac._tick_want(1536), 9)
 _src_render = _inspect.getsource(_ac.render)
 check("下半接 H//2 而非写死 512", "c.blit(bot.buf, 0, H // 2)" in _src_render, True)
 check("分隔线也在 H//2", "c.hline(H // 2" in _src_render, True)

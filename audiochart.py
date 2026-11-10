@@ -66,7 +66,7 @@ class Canvas:
         self.w, self.h = w, h
         self.buf = np.zeros((h, w, 3), dtype=np.uint8)
         self.buf[:] = bg
-        self.pad = 4.0 * w / float(FIG_W)   # ctext 的左右留白，随画布等比
+        self.pad = 4.0                       # ctext 的左右留白，固定像素
 
     def px(self, x, y, c):
         x, y = int(x), int(y)
@@ -128,7 +128,11 @@ class Canvas:
             self.vline(x0, y0, y1, c); self.vline(x1, y0, y1, c)
 
     def text(self, x, y, s, c=TXT, scale=2):
-        """scale 允许小数：detail 把画布放大时，字号跟着等比放大。"""
+        """scale 是字号（点阵按 scale 倍铺），允许小数。
+
+        注意 scale 不跟画布走：detail 把边长从 768 加到 1536，字还是这个大小，
+        多出来的地方给刻度和曲线，不是把整张图吹大。
+        """
         k = float(scale)
         cx, y = float(x), float(y)
         for ch in str(s).upper():
@@ -187,12 +191,12 @@ def _tag_title(tag, name):
     return ("%s  %s" % (tag, name)) if tag else name
 
 
-def _caption(c, d, x1, y=None, K=1.0):
+def _caption(c, d, x1, y=None):
     """右上角一行小字：峰值频率 / 音名 / 最大电平，和文本输出对得上。"""
     sp, lv = d["spectrum"], d["level"]
     txt = "PEAK %.1fHZ  %s  MAX %.1fDB" % (sp["peak_freq_hz"], sp["note"], lv["max"])
-    y = int(round(30 * K)) if y is None else y
-    c.text(x1 - c.tw(txt, 2 * K), y, txt, DIM, 2 * K)
+    y = 30 if y is None else y
+    c.text(x1 - c.tw(txt, 2), y, txt, DIM, 2)
 
 
 # 音频图整图边长。上下两半各 FIG_W//2，合起来是正方形。
@@ -207,9 +211,7 @@ def plot_level(d, start, end, tag="", w=FIG_W, h=FIG_W // 2):
     step = max(1, len(v) // 900)
     t, v = t[::step], v[::step]
     c = Canvas(w, h)
-    K = float(w) / float(FIG_W)
-    R = lambda v: int(round(v * K))
-    x0, y0, x1, y1 = R(64), R(72), w - R(22), h - R(42)
+    x0, y0, x1, y1 = 64, 72, w - 22, h - 42
     lo = math.floor(min(v.min(), lv["mean"] - 6) / 5.0) * 5.0
     hi = math.ceil(max(v.max(), lv["mean"] + 6) / 5.0) * 5.0
     if hi - lo < 6:
@@ -223,28 +225,29 @@ def plot_level(d, start, end, tag="", w=FIG_W, h=FIG_W // 2):
         yy = Y(dv)
         c.hline(yy, x0, x1, GRID)
         lab = _nice_db(round(dv, 1))
-        c.text(x0 - c.tw(lab, K) - R(10), yy - R(7), lab, DIM, K)
+        c.text(x0 - c.tw(lab, 1) - 10, yy - 7, lab, DIM, 1)
         dv += dstep
     # 窗口超过一分钟就别带小数：1000 秒的轴上写 250.0 / 1000.0 只是变宽
     tfmt = "%.0f" if (end - start) >= 60 else "%.1f"
-    for k in range(5):
-        frac = k / 4.0
+    nseg = _tick_want(w) - 1
+    for k in range(nseg + 1):
+        frac = k / float(nseg)
         tt = start + (end - start) * frac
         xx = x0 + (x1 - x0) * frac
         c.vline(xx, y0, y1, GRID)
         lab = tfmt % tt
-        c.ctext(xx, y1 + R(12), lab, DIM, K)
+        c.ctext(xx, y1 + 12, lab, DIM, 1)
     c.rect(x0, y0, x1, y1, AXIS)
     c.curve(np.array([X(i) for i in range(len(v))]), np.array([Y(x) for x in v]),
             x0, y0, x1, y1)
     big = "%.1f" % lv["db"]
-    c.text(x0, R(14), _tag_title(tag, "SOUND LEVEL"), TXT, 3 * K)
-    bx = x1 - c.tw(big, 5 * K) - R(44)
-    c.text(bx, R(8), big, FG, 5 * K)
-    c.text(bx + c.tw(big, 5 * K) + R(8), R(30), "DB", DIM, 2 * K)
-    c.text(x0, R(48), "TIME (S)", DIM, 2 * K)
-    c.text(x0 + R(6), y0 + R(6), "DB", DIM, K)
-    _caption(c, d, x1, R(52), K)
+    c.text(x0, 14, _tag_title(tag, "SOUND LEVEL"), TXT, 3)
+    bx = x1 - c.tw(big, 5) - 44
+    c.text(bx, 8, big, FG, 5)
+    c.text(bx + c.tw(big, 5) + 8, 30, "DB", DIM, 2)
+    c.text(x0, 48, "TIME (S)", DIM, 2)
+    c.text(x0 + 6, y0 + 6, "DB", DIM, 1)
+    _caption(c, d, x1, 52)
     return c
 
 
@@ -313,9 +316,7 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=FIG_W, h=FIG_W // 2, fmax=None
     f = np.asarray(sp["freqs"], dtype=float)
     m = np.asarray(sp["mag_db"], dtype=float)
     c = Canvas(w, h)
-    K = float(w) / float(FIG_W)
-    R = lambda v: int(round(v * K))
-    x0, y0, x1, y1 = R(112), R(92), w - R(22), h - R(40)
+    x0, y0, x1, y1 = 112, 92, w - 22, h - 40
     # 横轴对数，尾端取实际 Nyquist（44.1k 素材是 22050）
     fmin = 10.0
     fmax = _nyq(d, fmax)
@@ -327,12 +328,12 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=FIG_W, h=FIG_W // 2, fmax=None
         db = 20.0 * math.log10(amp)
         yy = Y(db)
         c.hline(yy, x0, x1, GRID)
-        ty = yy + R(5) if yy < y0 + R(16) else yy - R(7)   # 顶格那条往下写，别压标题行
-        c.text(x0 - c.tw(lab, K) - R(10), ty, lab, DIM, K)
+        ty = yy + 5 if yy < y0 + 16 else yy - 7   # 顶格那条往下写，别压标题行
+        c.text(x0 - c.tw(lab, 1) - 10, ty, lab, DIM, 1)
     for fr in _freq_ticks(fmax):
         xx = X(fr)
         c.vline(xx, y0, y1, GRID)
-        c.ctext(xx, y1 + R(12), "%g" % fr, DIM, K)
+        c.ctext(xx, y1 + 12, "%g" % fr, DIM, 1)
     c.rect(x0, y0, x1, y1, AXIS)
     # 1kHz 以上每个像素列挤着 5 个 bin，逐 bin 连线会在像素里来回折、看着全是锯齿；
     # 低频段反过来，几个像素才摊到一个 bin，直接取最近 bin 又成了台阶。
@@ -362,7 +363,7 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=FIG_W, h=FIG_W // 2, fmax=None
     pk = sp["peak_freq_hz"]
     if pk > fmin:
         c.vline(X(pk), y0, y1, (255, 255, 255), 1)
-    c.text(x0, R(12), _tag_title(tag, "SPECTRUM"), TXT, 3 * K)
+    c.text(x0, 12, _tag_title(tag, "SPECTRUM"), TXT, 3)
     rows = [("PEAK FREQ", "%.2f HZ" % pk), ("NOTE", "%s" % sp["note"]),
             ("CENTS", "%+.2f" % sp["cents"]), ("RES", "%.2f HZ" % resolution_hz)]
     colw = (x1 - x0) // 4
@@ -370,12 +371,12 @@ def plot_spectrum(d, tag="", resolution_hz=0.0, w=FIG_W, h=FIG_W // 2, fmax=None
         xx = x0 + k * colw
         # 列宽是固定的，字一放大就会顶到下一列（652.21 HZ 正好 9 个字符）。
         # 每列按自己的内容收字号，宁可小一点，也别压字。
-        ls = min(2 * K, (colw - R(6)) / (6.0 * max(1, len(lab))))
-        vs = min(3 * K, (colw - R(6)) / (6.0 * max(1, len(val))))
-        c.text(xx, R(48), lab, DIM, ls)
-        c.text(xx, R(66), val, FG, vs)
-    c.text(x1 - c.tw("FREQ (HZ)", 2 * K), R(14), "FREQ (HZ)", DIM, 2 * K)
-    c.vtext(R(8), y0 + R(8), "FFT AMP", DIM, 2 * K, gap=2 * K)
+        ls = min(2, (colw - 6) / (6.0 * max(1, len(lab))))
+        vs = min(3, (colw - 6) / (6.0 * max(1, len(val))))
+        c.text(xx, 48, lab, DIM, ls)
+        c.text(xx, 66, val, FG, vs)
+    c.text(x1 - c.tw("FREQ (HZ)", 2), 14, "FREQ (HZ)", DIM, 2)
+    c.vtext(8, y0 + 8, "FFT AMP", DIM, 2, gap=2)
     return c
 
 
@@ -399,6 +400,15 @@ def _snap_time_end(t1, t0):
     if r > t0 and abs(round(t1, 1) - r) <= 0.1 + 1e-9:
         return r
     return t1
+
+
+def _tick_want(w):
+    """时间轴给几条刻度：768 五条，1024 五条，1280 七条，1536 九条。
+
+    字号和边距都是固定像素，画布宽出来的就是「地方」：多加刻度、曲线摊得
+    更开，高 detail 才真的比低 detail 多一份信息，而不是同一张图拉大。
+    """
+    return max(5, int(round(float(w) / 190.0)) | 1)
 
 
 def _time_ticks(t0, t1, want=5):
@@ -426,11 +436,9 @@ def plot_spectrogram(d, tag="", w=FIG_W, h=FIG_W // 2, fmax=None):
     # 全程按「相对值」处理：顶端 = 本窗口峰值 = 1，底端自动退到整十档
     rel, alo, ahi = _amp_range(spec)   # 顶端 = 峰值向上取整到 10 的幂
     c = Canvas(w, h)
-    K = float(w) / float(FIG_W)
-    R = lambda v: int(round(v * K))
-    x0, x1 = R(72), w - R(22)
+    x0, x1 = 72, w - 22
     # 每半幅一条色标，范围和绘图用的 alo..ahi 一一对应
-    by, bh = R(40), R(12)
+    by, bh = 40, 12
     ramp = np.repeat(np.linspace(0, 1, x1 - x0)[None, :], bh, axis=0)
     c.blit(_cmap(ramp), x0, by)
     c.rect(x0, by, x1, by + bh, AXIS)
@@ -439,10 +447,10 @@ def plot_spectrogram(d, tag="", w=FIG_W, h=FIG_W // 2, fmax=None):
         xx = x0 + frac * (x1 - x0)
         c.vline(xx, by + 1, by + bh - 2, GRID, 1)      # 刻度刺
         if frac > 0.97:
-            c.text(x1 - c.tw(lab, K), by + bh + R(2), lab, DIM, K)
+            c.text(x1 - c.tw(lab, 1), by + bh + 2, lab, DIM, 1)
         else:
-            c.ctext(xx, by + bh + R(2), lab, DIM, K)
-    y0, y1 = R(76), h - R(38)
+            c.ctext(xx, by + bh + 2, lab, DIM, 1)
+    y0, y1 = 76, h - 38
     H, W = y1 - y0, x1 - x0
     nt = rel.shape[1]
     if nt < 2:
@@ -465,22 +473,22 @@ def plot_spectrogram(d, tag="", w=FIG_W, h=FIG_W // 2, fmax=None):
     c.blit(_cmap(v), x0, y0)
     c.rect(x0, y0, x1, y1, AXIS)
     title = _tag_title(tag, "SPECTROGRAM")
-    c.text(x0, R(12), title, TXT, 3 * K)
-    c.text(x0 + c.tw(title, 3 * K) + R(14), R(17), "FFT AMP (REL)", DIM, 2 * K)
-    c.text(x1 - c.tw("FREQ (HZ, LOG)", 2 * K), R(14), "FREQ (HZ, LOG)", DIM, 2 * K)
-    c.vtext(R(8), y0 + R(8), "TIME", DIM, 2 * K, gap=2 * K)
+    c.text(x0, 12, title, TXT, 3)
+    c.text(x0 + c.tw(title, 3) + 14, 17, "FFT AMP (REL)", DIM, 2)
+    c.text(x1 - c.tw("FREQ (HZ, LOG)", 2), 14, "FREQ (HZ, LOG)", DIM, 2)
+    c.vtext(8, y0 + 8, "TIME", DIM, 2, gap=2)
     ticks = _freq_ticks(fmax)
     for fr in ticks:
         xx = X(fr)
         c.vline(xx, y0, y1, (0, 0, 0), 1)
-        c.ctext(xx, y1 + R(10), "%g" % fr, DIM, K)
+        c.ctext(xx, y1 + 10, "%g" % fr, DIM, 1)
     t0, t1 = (float(times[0]), float(times[-1])) if times.size > 1 else (0.0, 1.0)
     t1 = _snap_time_end(t1, t0)
-    for val, lab in _time_ticks(t0, t1):
+    for val, lab in _time_ticks(t0, t1, _tick_want(w)):
         frac = (val - t0) / max(1e-9, t1 - t0)
         yy = y1 - (y1 - y0) * frac
         c.hline(yy, x0, x1, (0, 0, 0), 1)
-        c.text(x0 - c.tw(lab, K) - R(10), yy - R(7), lab, DIM, K)
+        c.text(x0 - c.tw(lab, 1) - 10, yy - 7, lab, DIM, 1)
     return c
 
 
@@ -490,10 +498,8 @@ def plot_peak(d, tag="", w=FIG_W, h=FIG_W // 2):
     times = np.asarray(sg["times"], dtype=float)
     tr = sg["peak_track"]
     c = Canvas(w, h)
-    K = float(w) / float(FIG_W)
-    R = lambda v: int(round(v * K))
-    x0, x1 = R(84), w - R(22)
-    y0, y1 = R(62), h - R(42)
+    x0, x1 = 84, w - 22
+    y0, y1 = 62, h - 42
     fs = [float(f) for _, f in tr] or [1.0]
     lo, hi = min(fs), max(fs)
     step = _nice_step(max(hi - lo, 1.0), 5)
@@ -502,23 +508,23 @@ def plot_peak(d, tag="", w=FIG_W, h=FIG_W // 2):
     if hi - lo < step:
         hi = lo + step
     def Y(f): return y1 - (f - lo) / (hi - lo) * (y1 - y0)
-    c.text(x0, R(12), _tag_title(tag, "PEAK FREQ TRACK"), TXT, 3 * K)
-    c.vtext(R(8), y0 + R(8), "FREQ", DIM, 2 * K, gap=2 * K)
+    c.text(x0, 12, _tag_title(tag, "PEAK FREQ TRACK"), TXT, 3)
+    c.vtext(8, y0 + 8, "FREQ", DIM, 2, gap=2)
     v = lo
     while v <= hi + 1e-9:
         yy = Y(v)
         c.hline(yy, x0, x1, GRID)
         lab = "%g" % round(v, 2)
-        c.text(x0 - c.tw(lab, K) - R(10), yy - R(7), lab, DIM, K)
+        c.text(x0 - c.tw(lab, 1) - 10, yy - 7, lab, DIM, 1)
         v += step
     c.rect(x0, y0, x1, y1, AXIS)
     t0, t1 = (float(times[0]), float(times[-1])) if times.size > 1 else (0.0, 1.0)
     t1 = _snap_time_end(t1, t0)
-    for val, lab in _time_ticks(t0, t1):
+    for val, lab in _time_ticks(t0, t1, _tick_want(w)):
         frac = (val - t0) / max(1e-9, t1 - t0)
         xx = x0 + (x1 - x0) * frac
         c.vline(xx, y0, y1, GRID)
-        c.ctext(xx, y1 + R(12), lab, DIM, K)
+        c.ctext(xx, y1 + 12, lab, DIM, 1)
     if tr:
         span = (t1 - t0) if t1 > t0 else 1.0
         pts = []
@@ -529,14 +535,14 @@ def plot_peak(d, tag="", w=FIG_W, h=FIG_W // 2):
             xs = np.array([p[0] for p in pts])
             c.curve(xs, np.array([p[1] for p in pts]),
                     x0, y0, float(xs.max()), y1, GRID, lw=1.0)
-        rad = max(1, R(2))
+        rad = max(1, 2)
         for xx, yy in pts:
             for a2 in range(-rad, rad + 1):
                 for b2 in range(-rad, rad + 1):
                     if a2 * a2 + b2 * b2 <= rad * rad:
                         c.px(xx + a2, yy + b2, FG)
-    c.text(x1 - c.tw("TIME (S)", 2 * K), h - R(18), "TIME (S)", DIM, 2 * K)
-    _caption(c, d, x1, R(40), K)
+    c.text(x1 - c.tw("TIME (S)", 2), h - 18, "TIME (S)", DIM, 2)
+    _caption(c, d, x1, 40)
     return c
 
 
@@ -547,9 +553,7 @@ def plot_wave(d, tag="", w=FIG_W, h=FIG_W // 2):
     if s.size < 2:
         s = np.zeros(2)
     c = Canvas(w, h)
-    K = float(w) / float(FIG_W)
-    R = lambda v: int(round(v * K))
-    x0, y0, x1, y1 = R(104), R(62), w - R(22), h - R(58)
+    x0, y0, x1, y1 = 104, 62, w - 22, h - 58
     peak = max(float(np.max(np.abs(s))), 1e-9)
     step = _nice_step(peak * 2.0, 5)
     hi = math.ceil(peak / step - 1e-9) * step
@@ -564,16 +568,16 @@ def plot_wave(d, tag="", w=FIG_W, h=FIG_W // 2):
         yy = Y(v)
         c.hline(yy, x0, x1, AXIS if abs(v) < step * 1e-9 else GRID)
         lab = fmt % v
-        c.text(x0 - c.tw(lab, K) - R(10), yy - R(7), lab, DIM, K)
+        c.text(x0 - c.tw(lab, 1) - 10, yy - 7, lab, DIM, 1)
         v += step
     ms = float(wv.get("ms") or 40.0)
-    xstep = _nice_step(ms, 5)
+    xstep = _nice_step(ms, _tick_want(w))
     t = 0.0
     while t <= ms + 1e-9:
         xx = x0 + (x1 - x0) * (t / ms)
         if t > 0:
             c.vline(xx, y0, y1, GRID)
-        c.ctext(xx, y1 + R(12), ("%.0f" % t) if xstep >= 1 else ("%.1f" % t), DIM, K)
+        c.ctext(xx, y1 + 12, ("%.0f" % t) if xstep >= 1 else ("%.1f" % t), DIM, 1)
         t += xstep
     c.rect(x0, y0, x1, y1, AXIS)
     W = x1 - x0
@@ -594,12 +598,12 @@ def plot_wave(d, tag="", w=FIG_W, h=FIG_W // 2):
         c.curve(xs, np.array([Y(v) for v in s]), x0, y0, x1, y1, AXIS, lw=1.0)
     else:
         c.curve(xs, np.array([Y(v) for v in s]), x0, y0, x1, y1)
-    c.text(x0, R(12), _tag_title(tag, "WAVE"), TXT, 3 * K)
-    c.text(x0, R(48), "T %.3fS  %.0fMS" % (float(wv.get("t0") or 0.0), ms), DIM, 2 * K)
-    c.vtext(R(8), y0 + R(8), "AMP", DIM, 2 * K, gap=2 * K)
+    c.text(x0, 12, _tag_title(tag, "WAVE"), TXT, 3)
+    c.text(x0, 48, "T %.3fS  %.0fMS" % (float(wv.get("t0") or 0.0), ms), DIM, 2)
+    c.vtext(8, y0 + 8, "AMP", DIM, 2, gap=2)
     cap = "PEAK %.3f  RMS %.3f" % (float(wv.get("peak") or 0.0), float(wv.get("rms") or 0.0))
-    c.text(x1 - c.tw(cap, 2 * K), R(30), cap, DIM, 2 * K)
-    c.text(x1 - c.tw("TIME (MS)", 2 * K), h - R(14), "TIME (MS)", DIM, 2 * K)
+    c.text(x1 - c.tw(cap, 2), 30, cap, DIM, 2)
+    c.text(x1 - c.tw("TIME (MS)", 2), h - 14, "TIME (MS)", DIM, 2)
     return c
 
 
@@ -614,10 +618,8 @@ def plot_pitch(pt, tag="", w=FIG_W, h=FIG_W):
     xs = np.asarray(pt.get("curve_ms") or [], dtype=float)
     ys = np.asarray(pt.get("curve") or [], dtype=float)
     c = Canvas(w, h)
-    K = float(w) / float(FIG_W)
-    R = lambda v: int(round(v * K))
     # 上面留给标题 + 一排读数（和 spectrum 的排版一致）
-    x0, y0, x1, y1 = R(112), R(118), w - R(22), h - R(72)
+    x0, y0, x1, y1 = 112, 118, w - 22, h - 72
     span = float(pt.get("span_ms") or 20.0)
     if span <= 0:
         span = 20.0
@@ -639,7 +641,7 @@ def plot_pitch(pt, tag="", w=FIG_W, h=FIG_W):
         yy = Y(v)
         c.hline(yy, x0, x1, AXIS if abs(v) < 1e-9 else GRID)
         lab = "%.2f" % v
-        c.text(x0 - c.tw(lab, K) - R(10), yy - R(7), lab, DIM, K)
+        c.text(x0 - c.tw(lab, 1) - 10, yy - 7, lab, DIM, 1)
         v += ystep
 
     xstep = _nice_step(span, 5)
@@ -648,7 +650,7 @@ def plot_pitch(pt, tag="", w=FIG_W, h=FIG_W):
         xx = X(t)
         if t > 0:
             c.vline(xx, y0, y1, GRID)
-        c.ctext(xx, y1 + R(12), ("%.0f" % t) if xstep >= 1 else ("%.1f" % t), DIM, K)
+        c.ctext(xx, y1 + 12, ("%.0f" % t) if xstep >= 1 else ("%.1f" % t), DIM, 1)
         t += xstep
     c.rect(x0, y0, x1, y1, AXIS)
 
@@ -660,22 +662,22 @@ def plot_pitch(pt, tag="", w=FIG_W, h=FIG_W):
                 x0, y0, x1, y1)
     else:
         c.hline(Y(0.0), x0, x1, FG)
-        c.ctext((x0 + x1) / 2.0, y0 + R(18), "NO PERIODIC SIGNAL", DIM, 2 * K)
+        c.ctext((x0 + x1) / 2.0, y0 + 18, "NO PERIODIC SIGNAL", DIM, 2)
 
     if freq > 0:
         # 周期位置竖虚线 + 相关峰上的点：数字和曲线对得上，不用自己数格子
         px = X(per)
-        for yy in range(y0 + R(4), y1, max(1, R(10))):
-            c.vline(px, yy, min(yy + R(5), y1), (255, 255, 255), 1)
+        for yy in range(y0 + 4, y1, max(1, 10)):
+            c.vline(px, yy, min(yy + 5, y1), (255, 255, 255), 1)
         py = Y(conf)
-        rad = max(1, R(4))
+        rad = max(1, 4)
         for a in range(-rad, rad + 1):
             for b in range(-rad, rad + 1):
                 if a * a + b * b <= rad * rad:
                     c.px(px + a, py + b, TXT)
 
-    c.text(x0, R(12), _tag_title(tag, "AUTOCORRELATION"), TXT,
-           (3 if h >= 0.9 * FIG_W else 2) * K)
+    c.text(x0, 12, _tag_title(tag, "AUTOCORRELATION"), TXT,
+           (3 if h >= 0.9 * FIG_W else 2))
     # 保留位数按列宽定：一行四列、每列 158px，scale 3 下一字符 18px，
     # 超过 8 个字符就会压到下一列的标签上（1000.00HZ 正好 9 个）。
     fhz = ("%.0fHZ" % freq) if freq >= 1000 else ("%.1fHZ" % freq)
@@ -686,14 +688,14 @@ def plot_pitch(pt, tag="", w=FIG_W, h=FIG_W):
     colw = (x1 - x0) // 4
     for k, (lab, val) in enumerate(rows):
         xx = x0 + k * colw
-        ls = min(2 * K, (colw - R(6)) / (6.0 * max(1, len(lab))))
-        vs = min(3 * K, (colw - R(6)) / (6.0 * max(1, len(val))))
-        c.text(xx, R(48), lab, DIM, ls)
-        c.text(xx, R(66), val, FG, vs)
+        ls = min(2, (colw - 6) / (6.0 * max(1, len(lab))))
+        vs = min(3, (colw - 6) / (6.0 * max(1, len(val))))
+        c.text(xx, 48, lab, DIM, ls)
+        c.text(xx, 66, val, FG, vs)
     cap = "CONF %.2f" % conf
-    c.text(x1 - c.tw(cap, 2 * K), R(30), cap, DIM, 2 * K)
-    c.text(x1 - c.tw("LAG (MS)", 2 * K), h - R(20), "LAG (MS)", DIM, 2 * K)
-    c.vtext(R(8), y0 + R(8), "R", DIM, 2 * K, gap=2 * K)
+    c.text(x1 - c.tw(cap, 2), 30, cap, DIM, 2)
+    c.text(x1 - c.tw("LAG (MS)", 2), h - 20, "LAG (MS)", DIM, 2)
+    c.vtext(8, y0 + 8, "R", DIM, 2, gap=2)
     return c
 
 
@@ -706,27 +708,24 @@ def plot_history(tr, tag="", w=FIG_W, h=FIG_W):
     上：频率，对数轴（100–5000 Hz）。下：周期，线性轴，单位秒——周期就是
     1/频率，同一批点换种说法，所以不多算一遍，直接从基频轨迹换算。
 
-    **面板位置跟着 h 走**。以前是写死的 58/318/386/664（768 的刻度），
-    只有右边界和内联的页脚是相对的，于是 detail 一放大就只剩上半张：
-    1024 空 30%、1280 空 44%、1536 空 53%，而服务端按 1024 token 回缩之后，
-    1536 那张里的图反而比 768 档还小。现在按 h/768 等比换算。
+    **面板位置按像素写死，但两幅面板均分剩下的高度**：以前 58/318/386/664
+    是 768 的刻度，画布一高就只剩上半张（1024 空 30%、1536 空 53%）。
+    现在标题 / 页脚 / 面板间距都是固定像素，多出来的高度全给两幅图，
+    所以 1536 档的面板是 768 档的两倍高，点自然看得更清。
     """
     tr = tr or []
     c = Canvas(w, h)
-    K = float(w) / float(FIG_W)
-    k = float(h) / float(FIG_W)
-    R = lambda v: int(round(v * K))
-    big = k >= 0.9
-    x0, x1 = R(120), w - R(22)
-    c.text(x0, R(8), _tag_title(tag, "FREQUENCY HISTORY"), TXT,
-           (3 if big else 2) * K)
+    big = h >= int(FIG_W * 0.9)   # 整张高的 history 才用大一号标题
+    x0, x1 = 120, w - 22
+    c.text(x0, 8, _tag_title(tag, "FREQUENCY HISTORY"), TXT,
+           (3 if big else 2))
 
-    head = R(56) if big else R(32)    # 标题行占高
-    foot = R(34)                      # 页脚 + 底边距
-    gap = R(46)                       # 两幅之间：x 轴标签 + 第二幅的标题
-    ph = max(float(R(56)), (h - head - foot - gap) / 2.0)
+    head = 56 if big else 32    # 标题行占高
+    foot = 34                      # 页脚 + 底边距
+    gap = 46                       # 两幅之间：x 轴标签 + 第二幅的标题
+    ph = max(float(56), (h - head - foot - gap) / 2.0)
     ay0, ay1 = head, int(round(head + ph))
-    by0, by1 = int(round(ay1 + gap)), max(int(round(ay1 + gap)) + R(40), h - foot)
+    by0, by1 = int(round(ay1 + gap)), max(int(round(ay1 + gap)) + 40, h - foot)
 
     ts = [float(t) for t, _f, _c in tr]
     fs = [float(f) for _t, f, _c in tr]
@@ -738,21 +737,21 @@ def plot_history(tr, tag="", w=FIG_W, h=FIG_W):
     def X(t):
         return x0 + (x1 - x0) * ((t - t0) / (t1 - t0))
 
-    xt = _time_ticks(t0, t1)
+    xt = _time_ticks(t0, t1, _tick_want(w))
     for xx, lab in [(X(v), lab) for v, lab in xt]:
         c.vline(xx, ay0, ay1, GRID)
         c.vline(xx, by0, by1, GRID)
     for a0, a1 in ((ay0, ay1), (by0, by1)):
         c.rect(x0, a0, x1, a1, AXIS)
         for v, lab in xt:
-            c.ctext(X(v), a1 + R(8), lab, DIM, K)
-    c.text(x1 - c.tw("TIME (S)", 2 * K), by0 - R(20), "TIME (S)", DIM, 2 * K)
+            c.ctext(X(v), a1 + 8, lab, DIM, 1)
+    c.text(x1 - c.tw("TIME (S)", 2), by0 - 20, "TIME (S)", DIM, 2)
 
     # ---- 上：频率，对数轴，下限 100 Hz（25ms 窗能到 40Hz，画到 100 够用）----
     fl, fh = 100.0, 5000.0
     lg = math.log10
-    c.text(x0 + R(8), ay0 + R(8), "FREQ (HZ)", DIM, 2 * K)
-    c.vtext(R(6), ay0 + R(4), "FREQ", DIM, K, gap=K)
+    c.text(x0 + 8, ay0 + 8, "FREQ (HZ)", DIM, 2)
+    c.vtext(6, ay0 + 4, "FREQ", DIM, 1, gap=1)
 
     def AF(f):
         f = min(max(f, fl), fh)
@@ -762,11 +761,11 @@ def plot_history(tr, tag="", w=FIG_W, h=FIG_W):
     for f in (500, 1000, 5000):
         yy = AF(f)
         c.hline(yy, x0, x1, GRID)
-        c.text(x0 - c.tw("%d" % f, K) - R(10), yy - R(7), "%d" % f, DIM, K)
+        c.text(x0 - c.tw("%d" % f, 1) - 10, yy - 7, "%d" % f, DIM, 1)
 
     # ---- 下：周期，线性轴（秒）----
-    c.text(x0 + R(8), by0 + R(8), "PERIOD (S)", DIM, 2 * K)
-    c.vtext(R(6), by0 + R(4), "PERIOD", DIM, K, gap=K)
+    c.text(x0 + 8, by0 + 8, "PERIOD (S)", DIM, 2)
+    c.vtext(6, by0 + 4, "PERIOD", DIM, 1, gap=1)
     # 用 P98 定轴，别让一两个低八度跳点（周期翻倍）把整幅压到底部；
     # 超出轴顶的点贴边画，轴顶刻度仍如实标出来
     ps = [1.0 / f for f in fs if f > 0]
@@ -783,18 +782,18 @@ def plot_history(tr, tag="", w=FIG_W, h=FIG_W):
         yy = BP(v)
         c.hline(yy, x0, x1, GRID)
         lab = "%.3f" % v
-        c.text(x0 - c.tw(lab, K) - R(10), yy - R(7), lab, DIM, K)
+        c.text(x0 - c.tw(lab, 1) - 10, yy - 7, lab, DIM, 1)
         v += pstep
 
     if not ts:
-        c.ctext((x0 + x1) / 2.0, (ay0 + ay1) / 2.0, "NO PERIODIC SIGNAL", DIM, 2 * K)
+        c.ctext((x0 + x1) / 2.0, (ay0 + ay1) / 2.0, "NO PERIODIC SIGNAL", DIM, 2)
         return c
 
     # 散点而不是连线：帧与帧之间跳变很碎，连线会画成一团锯齿轮廓
     for t, f in zip(ts, fs):
         xx = X(t)
         yy = AF(f)
-        rad = max(1, R(1))
+        rad = max(1, 1)
         for a in range(-rad, rad + 1):
             for b in range(-rad, rad + 1):
                 c.px(xx + a, yy + b, (255, 150, 40))
@@ -805,8 +804,8 @@ def plot_history(tr, tag="", w=FIG_W, h=FIG_W):
 
     if fs:
         med = float(np.median(fs))
-        c.text(x0 + R(8), by0 + R(32), "%dMS WINDOWS  N=%d  MEDIAN %dHZ"
-               % (round(1000.0 * (ts[1] - ts[0])) if len(ts) > 1 else 0, len(fs), med), DIM, K)
+        c.text(x0 + 8, by0 + 36, "%dMS WINDOWS  N=%d  MEDIAN %dHZ"
+               % (round(1000.0 * (ts[1] - ts[0])) if len(ts) > 1 else 0, len(fs), med), DIM, 1)
     return c
 
 
@@ -816,8 +815,10 @@ def render(d, views, out_dir, stem="audio", size=FIG_W):
     每张图 size×size（默认 768）：上半 L、下半 R，中间一条分隔线。
     pitch / history 也一样分声道（以前混成单声道，见 engine 里的说明）；
     只有真正的单声道音轨才只画一张。
-    size 就是 detail 档位换算出的边长（见 mcp_server 的 AUDIO_DETAIL_PX），
-    画布和坐标轴等比放大；点、线、字都是按像素画的，放大后不会变细。
+    size 就是 detail 档位换算出的边长（见 mcp_server 的 AUDIO_DETAIL_PX）。
+    字号、边距、线宽都是固定像素：边长翻倍时字不跟着变大，多出来的是
+    数据区——时间轴刻度更多（768 五条 / 1280 七条 / 1536 九条）、曲线摊得
+    更开、history 的面板更高。分辨率高就是看得更细，不是同一张图拉大。
     返回 {view: png 路径}。
     """
     from pathlib import Path
