@@ -24,3 +24,4 @@ cookies.txt
 workspace/
 env.local
 server.log
+.run/
