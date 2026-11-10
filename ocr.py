@@ -762,8 +762,24 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
         tasks = [(media, cuts[i], cuts[i + 1], step, (y0r, y1r), width,
                   skip_th, text_th, min_conf) for i in range(n)]
         import concurrent.futures as _cf
-        with _cf.ProcessPoolExecutor(max_workers=n) as ex:
-            parts = list(ex.map(_ocr_window, tasks))
+        # 进程池起不来（例如脚本从 stdin / python -c 跑，forkserver 找不到 __main__）
+        # 或某一段的子进程崩了，别把整次识别丢掉：
+        # 起不来就整段串行，个别段失败就只补那一段。
+        parts = []
+        try:
+            with _cf.ProcessPoolExecutor(max_workers=n) as ex:
+                futs = [ex.submit(_ocr_window, t) for t in tasks]
+                for f in futs:
+                    try:
+                        parts.append(f.result())
+                    except Exception:
+                        parts.append(None)
+        except Exception:
+            parts = [None] * len(tasks)
+        serial_fallback = any(p is None for p in parts)
+        for i, part in enumerate(parts):
+            if part is None:
+                parts[i] = _ocr_window(tasks[i], engine=engine)
         res = []
         n_ocr = n_skip = 0
         W = H = 0
@@ -776,7 +792,8 @@ def ocr_subtitles(media, start=0.0, end=None, step=1.0, band="auto",
         res.sort(key=lambda r: r["seconds"])
         ret = {"frames": len(res), "ocr_runs": n_ocr, "skipped": n_skip,
                "band": [y0r, y1r], "band_auto": band_auto, "band_px": [W, H],
-               "step": float(step), "results": res, "workers": n}
+               "step": float(step), "results": res, "workers": n,
+               "serial_fallback": serial_fallback}
         if det is not None:
             ret["page_like"] = bool(det.get("page_like"))
             ret["text_clusters"] = det.get("clusters")
