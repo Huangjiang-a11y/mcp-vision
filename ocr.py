@@ -712,17 +712,42 @@ def fold_segments(results, min_len=2, max_edit_ratio=0.2, max_gap=5.0, step=1.0)
     return out
 
 
+def _flatten_color(arr, sat=60):
+    """把带内的高饱和像素抹黑，再去识别。
+
+    游戏 UI 是彩色的：红心生命值那一行紧贴在字幕下面时，PP-OCR 会把它读成
+    字母并粘到字幕上——实测「这里七言Holiday」被读成「awwww这里七言Holidayw」
+    （conf 0.76）。红心是红的、字幕是白的，抹掉彩色后同一帧读成
+    「这里七言Holiday」（conf 0.91）。
+    """
+    mx = arr.max(axis=2).astype(np.int16)
+    mn = arr.min(axis=2).astype(np.int16)
+    mask = (mx - mn) > sat
+    if not mask.any():
+        return arr
+    out = arr.copy()
+    out[mask] = 0
+    return out
+
+
 def _keep_wide(res, W):
     """带里往往还混着正文/手写小字：字幕是横向铺开的，只留最宽那一档。
 
-    判据：宽度 ≥ 本帧最大框宽的一半，且至少占画面 12%。
-    都不够宽时原样返回，避免把短字幕整帧丢掉。
+    判据：宽度 ≥ 本帧最大框宽的 0.38，且至少占画面 12%；行高还要达到
+    最高行的 55%（正文小字比字幕矮一截）。都不够宽时原样返回，避免把
+    短字幕整帧丢掉。
+
+    宽度只看最宽那一档会误杀短句：同帧里「呦呦呦耶耶耶」只有最宽行的
+    0.44 倍，按 top*0.5 判就被丢掉，而它是真字幕。行高这一条是用来顶住
+    放宽宽度后混进来的正文的。
     """
     if len(res) <= 1:
         return res
     ws = [(r["box"][2] - r["box"][0]) / float(W) for r in res]
-    top = max(ws)
-    keep = [r for r, w in zip(res, ws) if w >= max(0.12, top * 0.5)]
+    hs = [float(r["box"][3] - r["box"][1]) for r in res]
+    top, top_h = max(ws), max(hs)
+    keep = [r for r, w, h in zip(res, ws, hs)
+            if w >= max(0.12, top * 0.38) and h >= 0.55 * top_h]
     return keep or res
 
 
@@ -846,7 +871,7 @@ def _ocr_window(task, engine=None):
         # 纵向补一圈边缘像素再识别，不改判定用的原图。
         pad = max(4, int(round(H * 0.10)))
         img = np.pad(arr, ((pad, pad), (0, 0), (0, 0)), mode="edge") if pad else arr
-        res = _keep_wide(engine.ocr_image(img, min_conf=min_conf), W)
+        res = _keep_wide(engine.ocr_image(_flatten_color(img), min_conf=min_conf), W)
         n_ocr += 1
         prev, prev_res, prev_sig = arr, res, _text_sig(arr, text_th)
         conf = round(sum(r["conf"] for r in res) / len(res), 4) if res else 0.0
