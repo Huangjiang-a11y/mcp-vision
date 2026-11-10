@@ -749,7 +749,7 @@ TOOLS = [
     {"name": "video",
      "description": (
          "See a clip as one page of frames, or one frame. `quantity` frames go on one page "
-         "(default 15, max 30), taken at scene changes (default) or evenly. quantity=1 returns "
+         "(default 9, max 36), taken at scene changes (default) or evenly. quantity=1 returns "
          "one full-detail frame and honours `crop`. Frames are pictures only: for what is said use "
          "subtitles with mode=stt, for loudness or spectra use audio."
      ),     "inputSchema": {"type": "object", "properties": {
@@ -758,7 +758,7 @@ TOOLS = [
          "seconds": {"type": "number",
                      "description": "window length, must be > 0; default: 100s, capped at 1000"},
          "quantity": {"type": "integer",
-                      "description": "frames per page, default 15, max 30; 1 = one full-detail frame"},
+                      "description": "frames per page, default 9, max 36; 1 = one full-detail frame"},
          "pick": {"type": "string", "enum": ["scene", "even"],
                   "description": "scene (default) = the frames where the picture changes most; even = spaced by time"},
          "crop": {"type": "string",
@@ -1105,7 +1105,7 @@ def tool_video(a):
 
     raw_q = a.get("quantity")
     try:
-        n = max(1, min(int(raw_q), 30)) if raw_q is not None else 15
+        n = max(1, min(int(raw_q), 36)) if raw_q is not None else 9
     except (TypeError, ValueError):
         return (_dump({"ok": False, "error": "quantity must be an integer"}), [])
     win_start, win_end, note = _window(a, asset, default_span=DEFAULT_ANALYZE_SECONDS,
@@ -1114,7 +1114,7 @@ def tool_video(a):
     # 写在返回里而不仅写进 schema：描述只在开头读一遍，模型中途会忘。
 
     if raw_q is not None and int(raw_q) != n:
-        extra = "quantity clamped to %d (allowed 1-30)" % n
+        extra = "quantity clamped to %d (allowed 1-36)" % n
         note = extra if not note else note + "; " + extra
     out_dir = asset.get("video_dir")
 
