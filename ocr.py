@@ -712,13 +712,24 @@ def fold_segments(results, min_len=2, max_edit_ratio=0.2, max_gap=5.0, step=1.0)
     return out
 
 
-def _flatten_color(arr, sat=60):
+def _flatten_color(arr, sat=64):
     """把带内的高饱和像素抹黑，再去识别。
 
     游戏 UI 是彩色的：红心生命值那一行紧贴在字幕下面时，PP-OCR 会把它读成
     字母并粘到字幕上——实测「这里七言Holiday」被读成「awwww这里七言Holidayw」
     （conf 0.76）。红心是红的、字幕是白的，抹掉彩色后同一帧读成
     「这里七言Holiday」（conf 0.91）。
+
+    抹黑就够了，别再往上叠黑白化（试过，都更差）：
+    - 转灰度：同一行会被切成两段（「这里」+「里七言Holiday」），
+      67.5 秒那帧直接识别为空，整行字幕丢掉；
+    - 二值化（固定 128 / Otsu）：抗锯齿的灰阶没了、笔画发硬，小字开始出
+      别字（「三叶虾尾片」→「主叶虾尾片」），17.2 / 30.2 秒还多出 UI 噪音。
+    三通道留着反而帮检测切行，这是灰度输的原因。
+
+    sat 的可用区间实测很窄：56-64 结果一致；48 多出标点；72 会把
+    「这里七言Holiday」整行抹掉（红心之外的彩色被误伤）；90 明显出噪音。
+    所以取中间的 64。
     """
     mx = arr.max(axis=2).astype(np.int16)
     mn = arr.min(axis=2).astype(np.int16)
