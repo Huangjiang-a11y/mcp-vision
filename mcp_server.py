@@ -692,6 +692,10 @@ def _subs_ocr(a):
     out = {"mode": "ocr", "frames": res["frames"], "ocr_runs": res["ocr_runs"],
            "skipped": res["skipped"], "band": res.get("band"),
            "band_px": res["band_px"], "segments": segs}
+    if res.get("serial_fallback"):
+        # 进程池没起来（或某段子进程崩了），退回串行跑的。结果一样，只是慢；
+        # 之前这个信息只在 ocr 内部，出问题时看不出来。
+        out["serial_fallback"] = True
     if res.get("page_like"):
         # 幻灯片 / 截图 / 作文纸：一屏几十行字，各自成行，没有「字幕带」这回事。
         # 硬选一条带读出来的是页面碎片（「1档压成172」「then分档」），

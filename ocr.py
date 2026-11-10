@@ -727,9 +727,15 @@ def _keep_wide(res, W):
         return res
     ws = [(r["box"][2] - r["box"][0]) / float(W) for r in res]
     hs = [float(r["box"][3] - r["box"][1]) for r in res]
-    # 行高基准取中位数，不取最大值：检测器偶尔把两行并成一个高框，
-    # 拿它当基准（0.55×两倍行高）会把所有正常字幕行全判成"小字"。
-    top, top_h = max(ws), float(np.median(hs))
+    # 宽度标尺怕离群值：横跨画面的水印条/整行横线会把 max 抬到 0.9 画面宽，
+    # 正常字幕行全被判窄。先剔掉比中位数宽 2.5 倍的框再取 max。
+    #
+    # 行高基准仍用 max：试过中位数，多留下来的多半是游戏 UI（成就提示 /
+    # 死亡消息 / 玩家聊天），真字幕没救回来——那几帧是检测框把字幕截断了，
+    # 不是筛选层的问题。见 revert 提交的说明。
+    med_w = float(np.median(ws))
+    top = max([w for w in ws if w <= med_w * 2.5] or ws)
+    top_h = max(hs)
     keep = [r for r, w, h in zip(res, ws, hs)
             if w >= max(0.12, top * 0.38) and h >= 0.55 * top_h]
     return keep or res

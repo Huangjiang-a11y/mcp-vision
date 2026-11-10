@@ -30,12 +30,13 @@ def box(y0, h, w, x=0):
 three = [box(34, 29, 218), box(69, 36, 442), box(111, 31, 558)]
 check("短句不被丢（218 vs 558）", len(ocr._keep_wide(three, W)), 3)
 
-# 高框（检测器把两行并成一行）不该把正常行判矮
-merged = [box(0, 72, 600), box(80, 36, 440), box(120, 36, 438)]
-check("合并高框不误杀正常行", len(ocr._keep_wide(merged, W)), 3)
+# 横跨画面的超宽离群框（水印条 / 整行横线）不该把宽度标尺抬高，
+# 否则正常字幕行全被判窄丢掉
+wide = [box(0, 40, 1200), box(60, 36, 440), box(100, 36, 438)]
+check("超宽离群框不抬高标尺", len(ocr._keep_wide(wide, W)), 3)
 
 # 真正的窄小字（正文）仍该丢：宽 60px、高 12px
-check("窄小字仍被丢", len(ocr._keep_wide(merged + [box(200, 12, 60)], W)), 3)
+check("窄小字仍被丢", len(ocr._keep_wide(three + [box(200, 12, 60)], W)), 3)
 
 # 边界：空 / 单框原样返回
 check("空列表原样", ocr._keep_wide([], W), [])
