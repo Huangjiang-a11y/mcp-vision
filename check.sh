@@ -51,4 +51,6 @@ if [ "$1" = "--test" ]; then
   run_test tests/test_windows.py
   echo "测试：整页文字判定"
   run_test tests/test_page_like.py
+  echo "测试：字幕行筛选"
+  run_test tests/test_keep_wide.py
 fi

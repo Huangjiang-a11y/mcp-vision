@@ -690,7 +690,6 @@ def analyze_spectrum(media, start, end, fft_size=None, out_dir=None, track=False
     # 实测 t=53.5s，L 是 266.92 Hz C4、R 是 374.99 Hz F#4，混合却报 320.86 Hz E4
     # （−46.65 音分）——自相关把两条周期的最小公倍当成了基频。
     # mono 文件 ffmpeg 会把同一路复制到两边，两边的结果逐字节相同，只报 left。
-    mono = int(info["channels"] or 0) < 2
     _empty = lambda: {
         "freq_hz": 0.0, "period_ms": 0.0, "note": "", "cents": 0.0,
         "confidence": 0.0, "range_hz": [fmin, F0_MAX_HZ],
