@@ -7,6 +7,10 @@ WORKSPACE_DIRNAME = "workspace"
 CACHE_DIRNAME = WORKSPACE_DIRNAME  # 兼容别名
 DEFAULT_FRAME_WIDTH = 1280
 MAX_FRAMES = 12
+# ffmpeg 解码线程数：默认 auto 会按核数开满，手机上把 8 个小核全抢走，
+# 反而拖慢同时跑的 ONNX/ASR，实测还更慢。锁 2。
+# 和 ocr.py 的 MVV_FFMPEG_THREADS 是同一个开关。
+FF_THREADS = int(os.environ.get("MVV_FFMPEG_THREADS", "2"))
 
 
 def _run(args, timeout=300, cwd=None):
@@ -39,6 +43,7 @@ def scene_scores(path, start, end, timeout=None):
     if dur <= 0:
         return []
     cmd = ["ffmpeg", "-nostdin", "-hide_banner",
+           "-threads", str(FF_THREADS),
            "-ss", "%.3f" % start, "-t", "%.3f" % dur, "-i", str(path),
            "-vf", "select='gte(scene,0)',metadata=print", "-f", "null", "-"]
     proc = subprocess.run(cmd, capture_output=True, text=True,
@@ -133,6 +138,7 @@ def _extract_jpeg(media, t, width, out_path, timeout=120, size=None, crop=None):
     if crop:
         vf = "%s,%s" % (crop, vf)
     _run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+          "-threads", str(FF_THREADS),
           "-ss", str(t), "-i", str(media), "-frames:v", "1", "-an",
           "-vf", vf, "-pix_fmt", "yuvj420p", "-q:v", "2", str(out_path)], timeout=timeout)
 
@@ -206,7 +212,8 @@ def _write_png(path, rgb, w, h):
 
 def _load_raw_rgb(media, t, w, h, timeout=120):
     # decode one frame to raw rgb24 at target size；t=None 时直接把 media 当图片读，不 seek
-    head = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y"]
+    head = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+            "-threads", str(FF_THREADS)]
     if t is not None:
         head += ["-ss", str(t)]
     out = subprocess.run(
@@ -658,6 +665,7 @@ def analyze_spectrum(media, start, end, fft_size=None, out_dir=None, track=False
     out_dir.mkdir(parents=True, exist_ok=True)
     pcm_path = out_dir / ("s-%d-%d.pcm" % (round(start * 1000), round(end * 1000)))
     _run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+          "-threads", str(FF_THREADS),
           "-ss", "%.3f" % float(start), "-i", str(media),
           "-t", "%.3f" % max(0.0, float(end) - float(start)),
           "-vn", "-ac", "2", "-ar", str(sr), "-f", "s16le", str(pcm_path)], timeout=300)
@@ -865,6 +873,7 @@ def _asr_recognizer(threads=2, language="zh"):
 def pcm16k(media, start=0.0, end=None, timeout=1800):
     """ffmpeg 直出 16k 单声道 float32，不落盘。"""
     cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+           "-threads", str(FF_THREADS),
            "-ss", "%.3f" % max(0.0, float(start))]
     if end is not None:
         cmd += ["-t", "%.3f" % (float(end) - float(start))]

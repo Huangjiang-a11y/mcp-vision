@@ -53,4 +53,6 @@ if [ "$1" = "--test" ]; then
   run_test tests/test_page_like.py
   echo "测试：字幕行筛选"
   run_test tests/test_keep_wide.py
+  echo "测试：ffmpeg 线程数"
+  run_test tests/test_ff_threads.py
 fi
