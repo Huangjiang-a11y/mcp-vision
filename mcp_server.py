@@ -783,99 +783,74 @@ def tool_list(a):
 
 TOOLS = [
     {"name": "workspace",
-     "description": "Start here: open a clip from a URL or local path (URLs are downloaded), or list what is "
-                     "already open. video, audio and subtitles act on the most recently opened clip "
-                     "unless you pass `video_id`.",
+     "description": "Open a clip (URL, or file:// path) or list what is open. video/audio/subtitles use the most "
+                    "recently opened clip unless video_id is given.",
      "inputSchema": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["open", "list"],
-                    "description": "open = download and open (default); list = show opened videos"},
+                    "description": "open (default) or list"},
          "source": {"type": "string",
-                    "description": "Video path or URL; use the file:// scheme for local files"},
+                    "description": "path or URL; local files must use file://"},
          "quality": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                     "description": "download height: low=480p medium=720p (default) high=1080p max=source, filtered by the short edge"},
-         "cookies": {"type": "boolean", "description": "true = use cookies.txt from the repo root; default false"}},
+                     "description": "download height: low 480p / medium 720p (default) / high 1080p / max, "
+                                    "capped by the short edge"},
+         "cookies": {"type": "boolean", "description": "use cookies.txt from the repo root"}},
          # source 只在 open 时才必要：写成无条件 required，action=list 就得凭空编一个路径。
-         # action 缺省也是 open（properties 对缺省字段不约束，所以这个 if 会命中），
-         # 正好对上默认值，模型不必知道「缺省=open」这条隐含规则。
+         # action 缺省也是 open，所以这个 if 会命中，正好对上默认值。
          "allOf": [{"if": {"properties": {"action": {"const": "open"}}},
                     "then": {"required": ["source"]}}]}},
 
     {"name": "video",
-     "description": (
-         "See a clip as one page of frames, or one frame. `quantity` frames go on one page "
-         "(default 9, max 36), taken at scene changes (default) or evenly. quantity=1 returns "
-         "one full-detail frame and honours `crop`. Frames are pictures only: for what is said use "
-         "subtitles with mode=stt, for loudness or spectra use audio."
-     ),     "inputSchema": {"type": "object", "properties": {
-         "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
+     "description": "One page of `quantity` frames (default 9, max 36) at scene changes (default) or evenly "
+                    "spaced; quantity=1 gives one full-detail frame and honours `crop`. Pictures only: "
+                    "words come from subtitles, sound from audio.",
+     "inputSchema": {"type": "object", "properties": {
+         "video_id": {"type": "string", "description": "folder under workspace/; default: most recent"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number",
-                     "description": "window length, must be > 0; default: 100s, capped at 1000"},
-         "quantity": {"type": "integer",
-                      "description": "frames per page, default 9, max 36; 1 = one full-detail frame"},
+         "seconds": {"type": "number", "description": "window length in seconds, > 0; default 100, max 1000"},
+         "quantity": {"type": "integer", "description": "frames per page, 1-36, default 9"},
          "pick": {"type": "string", "enum": ["scene", "even"],
-                  "description": "scene (default) = the frames where the picture changes most; even = spaced by time"},
-         "crop": {"type": "string",
-                  "description": "crop before scaling, WxH+X+Y (e.g. 720x300+0+880), every cell"},
+                  "description": "scene (default) = biggest picture changes; even = evenly spaced"},
+         "crop": {"type": "string", "description": "WxH+X+Y, applied before scaling, every cell"},
          "detail": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                    "description": ("page pixel budget: low=768 (default) medium=1024 high=1280 "
-                                    "max=1536, split across cells and only ever scaled down. Raise it "
-                                    "to read small text, keep it at low to save tokens")}}}},
+                    "description": "page budget in px: low 768 (default) / medium 1024 / high 1280 / "
+                                   "max 1536; raise it to read small text"}}}},
 
     {"name": "audio",
-     "description": (
-         "Measure a window's audio: one figure plus the numbers behind it. L on the upper half, "
-         "R on the lower; `view` picks the measurement (default level: loudness over time). "
-         "spectrum, wave and pitch read the single frame at `time` - `seconds` does not apply. "
-         "The rest take a window, defaulting to 100s and capped at 1000s. This is sound, not speech: "
-         "for the words use subtitles with mode=stt. The numbers behind the figure come back "
-         "with it - read them instead of eyeballing."
-     ),
+     "description": "One figure plus the numbers behind it; L above, R below. spectrum, wave and pitch read "
+                    "the single frame at `time` (seconds ignored); the rest take a window, default 100s, "
+                    "max 1000s. Sound, not speech: words come from subtitles. Read the numbers - don't "
+                    "eyeball the figure.",
      "inputSchema": {"type": "object", "properties": {
-         "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
+         "video_id": {"type": "string", "description": "folder under workspace/; default: most recent"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number", "description": "window length in seconds, must be > 0; default 100, max 1000. Ignored by spectrum, wave and pitch, which read a single frame at time"},
+         "seconds": {"type": "number", "description": "window length in seconds, > 0; default 100, max 1000; "
+                                                     "ignored by spectrum, wave and pitch"},
          "view": {"type": "string",
                   "enum": ["level", "spectrum", "spectrogram", "peak", "wave", "pitch", "history"],
                   "default": "level",
-                  "description": ("level = loudness over time; spectrum = frequency content at one frame; "
-                                  "spectrogram = frequency over time; peak = spectral peak frequency track; "
-                                  "wave = raw samples; pitch = fundamental of one frame (period / note / "
-                                  "cents by autocorrelation, plus the curve); history = fundamental over "
-                                  "the window (20ms frames, trend only; frequency + period panels). "
-                                  "Pick: how loud -> level, what notes -> spectrum, true fundamental -> "
-                                  "pitch, pitch over time -> history. Default level.")},
-
-        "frame_ms": {"type": "number",
-                     "description": ("block length in ms, 5-200; defaults differ by trade-off: level 20 "
-                                     "(RMS block, finer = faster dynamics), spectrum/wave/pitch 100 (the "
-                                     "frame; longer = finer resolution_hz, shorter = tracks fast change, but "
-                                     "a frame must hold one period so the pitch floor is ~1000/frame_ms Hz), "
-                                     "spectrogram/peak 100 (also sets column spacing), history 20. The note "
-                                     "reports the value used.")},
-
-        "detail": {"type": "string", "enum": ["low", "medium", "high", "max"],
-                   "description": ("figure side in px: low=768 (default) medium=1024 high=1280 max=1536. "
-                                   "Axes scale, readings do not - it only decides how finely they can be "
-                                   "read off. Raise it when lines crowd together.")},
-     }}},
+                  "description": "level (default) loudness over time; spectrum one frame's frequencies; "
+                                 "spectrogram frequency over time; peak dominant frequency track; wave "
+                                 "samples; pitch one frame's fundamental (period / note / cents); "
+                                 "history fundamental over the window"},
+         "frame_ms": {"type": "number",
+                      "description": "block length in ms, 5-200; level and history 20, the rest 100. Longer "
+                                     "= finer frequency, but a frame must hold one period, so the pitch "
+                                     "floor is ~1000/frame_ms Hz. The note reports the value used."},
+         "detail": {"type": "string", "enum": ["low", "medium", "high", "max"],
+                    "description": "figure side in px: low 768 (default) / medium 1024 / high 1280 / "
+                                   "max 1536; scales the axes, not the readings"}}}},
 
     {"name": "subtitles",
-     "description": (
-         "Read a window's text as cues (from/to/text, MM:SS). mode=ocr (default) reads burned-in "
-         "captions and on-screen text per frame, with a per-cue confidence; mode=stt "
-         "transcribes speech and adds emotion, audio event and language. BGM shows up as an "
-         "event because it costs words. Text only: for the picture use video, for the sound use audio."
-     ),
+     "description": "A window's text as cues {from, to, text} in MM:SS. mode=ocr (default) reads burned-in "
+                    "captions and on-screen text per frame, with confidence; mode=stt transcribes speech "
+                    "and adds emotion, event and language (BGM is an event - it costs words). Text only.",
      "inputSchema": {"type": "object", "properties": {
          "mode": {"type": "string", "enum": ["ocr", "stt"],
-                  "description": "ocr = on-screen text (default); stt = speech to text"},
-         "video_id": {"type": "string", "description": "Folder name under workspace/; default: most recently opened"},
+                  "description": "ocr (default) = on-screen text; stt = speech"},
+         "video_id": {"type": "string", "description": "folder under workspace/; default: most recent"},
          "time": {"type": "number", "description": "window start in seconds, default 0"},
-         "seconds": {"type": "number",
-                     "description": "window length, must be > 0; default: 100s, capped at 1000"},
-         "band": {"type": "string",
-                  "description": "ocr: 'auto' (default) or ratios like \"0.10,0.27\""}}}},
+         "seconds": {"type": "number", "description": "window length in seconds, > 0; default 100, max 1000"},
+         "band": {"type": "string", "description": "ocr only: 'auto' (default) or ratios like '0.10,0.27'"}}}},
 
 ]
 
