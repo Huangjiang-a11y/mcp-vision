@@ -232,6 +232,74 @@ def _load_raw_rgb(media, t, w, h, timeout=120):
     return arr
 
 
+# ---------- frame features（选帧去重用） ----------
+def _gray_thumb(path, w=36, h=32, timeout=30):
+    """一帧图片 → 灰度缩略图 (h,w) uint8。读不出来给 None。
+
+    选帧只要一个「这一格长得像不像已经选过的那格」的粗信号，
+    所以比例照撑（scale 不给 force_original_aspect_ratio），反正每帧都被同样地撑过。
+    """
+    out = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                          "-threads", str(FF_THREADS), "-i", str(path),
+                          "-vf", "scale=%d:%d" % (w, h), "-pix_fmt", "gray",
+                          "-f", "rawvideo", "-"], capture_output=True, timeout=timeout)
+    if out.returncode != 0 or len(out.stdout) < w * h:
+        return None
+    return np.frombuffer(out.stdout[: w * h], dtype=np.uint8).reshape(h, w)
+
+
+def _features_from_gray(g):
+    """36x32 灰度图 -> (亮度均值, 亮度标准差, 64 位 dHash)。
+
+    dHash 按 4x4 块求均值降到 9x8，再比每行相邻像素的亮度。
+    实测（柴知道 653s 素材，9 帧窗口）：同一镜头两帧 3-4 位，换镜头 17 位起；
+    同一帧换编码 / 换尺寸后哈希漂 0-5 位。两种画法（块均值 vs 直接取点）
+    在这支片子上没分出高下，块均值的好处只是 9x8 的每格都吃到整块像素，
+    不押在单个采样点上。
+    """
+    small = g.reshape(8, 4, 9, 4).mean(axis=(1, 3))
+    bits = small[:, 1:] > small[:, :-1]
+    h = 0
+    for b in bits.reshape(-1):
+        h = (h << 1) | int(b)
+    return float(g.mean()), float(g.std()), h
+
+
+def frame_features(path, timeout=30):
+    """一帧的 (亮度均值, 亮度标准差, dHash)；读不出来给 (None, None, None)。"""
+    g = _gray_thumb(path, 36, 32, timeout)
+    return (None, None, None) if g is None else _features_from_gray(g)
+
+
+def frame_features_many(paths, timeout=None):
+    """一批帧的特征，顺序跟 paths 一致。
+
+    一张一个进程太贵（手机上一次 spawn 快 0.1 秒，36 格白白多 3 秒），
+    所以拼成一条命令：每个输入缩到 36x32 灰度，hstack 成 36N×32 的长条一次读回。
+    任何一张解不出来就整批退回逐张（慢，但结果一样）。
+    """
+    paths = [str(p) for p in paths]
+    if len(paths) <= 1:
+        return [frame_features(p, timeout or 30) for p in paths]
+    n = len(paths)
+    cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error"]
+    for p in paths:
+        cmd += ["-i", p]
+    chain = "".join("[%d:v]scale=36:32,format=gray[v%d];" % (i, i) for i in range(n))
+    chain += "".join("[v%d]" % i for i in range(n)) + "hstack=inputs=%d" % n
+    try:
+        out = subprocess.run(cmd + ["-filter_complex", chain, "-frames:v", "1",
+                                    "-f", "rawvideo", "-"],
+                             capture_output=True, timeout=timeout or 120)
+        buf = out.stdout[: 36 * 32 * n]
+        if out.returncode != 0 or len(buf) < 36 * 32 * n:
+            raise RuntimeError("batch decode failed")
+        arr = np.frombuffer(buf, dtype=np.uint8).reshape(32, 36 * n)
+    except Exception:
+        return [frame_features(p, timeout or 30) for p in paths]
+    return [_features_from_gray(arr[:, i * 36:(i + 1) * 36]) for i in range(n)]
+
+
 def compose_sheet(media, times, cols, rows, cell_w, cell_h, out_path, title=None, frame_paths=None):
     """frame_paths 给了就直接读这些 jpg（抽帧时已经解码过一次），
     否则退回按 times 回原片逐帧解码 —— 后者会把每个时间点 seek 两遍。"""

@@ -390,12 +390,11 @@ flash = [(i * 0.02, 0.95 if 100 <= i < 120 else 0.01) for i in range(300)]
 ts, filled = M._pick_scene(flash, 5, 0, 6)
 check("同场景连闪只算一处变化", filled, 4)
 
-# 补点必须落在窗口内且不重复
-ts = M._fill([3.0, 7.0], 6, 0.0, 10.0)
-check("补点数对", len(ts), 6)
-check("补点不越界", all(0.0 <= t <= 10.0 for t in ts), True)
-check("补点不重复", len(set(ts)), len(ts))
-check("补点保留锚点", (3.0 in ts) and (7.0 in ts), True)
+# 分桶后不再有「按锚点间隙插值」这回事：空桶直接取桶中点
+b, filled = M._scene_buckets(sparse, 9, 0, 10)
+check("空桶取中点", round(b[0][0], 3), 0.556)
+check("空桶数 = 补齐数", filled, 7)
+check("桶内按分数降序", [round(t, 2) for t in b[4]], [5.0])
 check("n=1 不走场景分析", M._pick_scene([(0, 0.9)], 1, 2.0, 8.0), ([2.0], 0))
 
 # --- 输出里不许有绝对路径 ---
@@ -433,7 +432,7 @@ check("subtitles 不重复给 segment_count", 'segment_count' in src_subs, False
 # 缓存键必须含实际取到的帧时间点：按画面变化取帧时，同一窗口两次调用
 # 可能取到完全不同的帧，键里不写 ts 就会拿旧图冒充新结果。
 check("拼图缓存键含帧时间", "ts_key" in src_video, True)
-check("pick=even 走等分", "even" in inspect.getsource(M._scene_times), True)
+check("pick=even 走等分", "even" in inspect.getsource(M._scene_plan), True)
 
 print("\nRESULT", "ALL OK" if not fails else "HAS FAIL (%d)" % len(fails))
 for f in fails:

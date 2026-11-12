@@ -974,74 +974,148 @@ def _attach_png(png):
         return None
 
 
-def _fill(anchors, n, start, end):
-    """锚点不够 n 个时补点：在锚点之间的空隙里按长度比例均匀插值。
+# 选帧的两道筛子（都在桶内换人，不删格子）。阈值来自实测
+# （柴知道 653s 素材）：黑帧亮度均值 9、正常帧 26 起；同一镜头两帧 dHash
+# 差 3-4 位、换镜头 17 位起。阈值偏一点没关系——桶里还有候选，
+# 桶内全灭才退回首选，最坏情况跟不筛一样。
+BLACK_MEAN = float(os.environ.get("MVV_BLACK_MEAN", "16"))
+FLAT_STD = float(os.environ.get("MVV_FLAT_STD", "4"))
+DEDUP_BITS = int(os.environ.get("MVV_DEDUP_BITS", "10"))
+BUCKET_K = int(os.environ.get("MVV_BUCKET_K", "3"))
 
-    补出来的点会贴着既有变化点分布——变化密集的地方补得少，
-    空白的地方补得多，而不是无视内容硬套等分。
+
+def _scene_buckets(scores, n, start, end, k=None):
+    """C：窗口按时间均分 n 桶，每桶留分数最高的 k 个候选（按分数降序）。
+
+    「变化最猛」和「值得看的格子」不是一回事。老办法只按分数从高到低取，
+    同一段热闹镜头能占掉 4 格，另外几段一个代表帧都没有。
+    改成按时间分桶后每段各出一帧，桶内再用分数挑。
+    桶里一个变化点都没有（静态镜头）就取桶中点，并计一次 filled。
+
+    返回 (buckets, filled)。buckets[i] 是第 i 桶的候选时间表。
     """
-    anchors = sorted(set(anchors))
-    need = n - len(anchors)
-    if need <= 0:
-        return anchors[:n]
-    edges = [start] + anchors + [end]
-    gaps = [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
-    gaps = [g for g in gaps if g[1] - g[0] > 1e-6]
-    if not gaps:
-        return anchors
-    total = sum(b - a for a, b in gaps)
-    # 按长度比例分配，最大余数法保证总数正好是 need
-    share = [need * (b - a) / total for a, b in gaps]
-    alloc = [int(x) for x in share]
-    for i in sorted(range(len(gaps)), key=lambda i: share[i] - alloc[i], reverse=True)[:need - sum(alloc)]:
-        alloc[i] += 1
-    out = list(anchors)
-    for (a, b), k in zip(gaps, alloc):
-        for j in range(1, k + 1):
-            out.append(round(a + (b - a) * j / (k + 1), 3))
-    return sorted(set(out))[:n]
+    k = BUCKET_K if k is None else int(k)
+    span = max(1e-6, end - start)
+    buckets = [[] for _ in range(n)]
+    # 相对下限：分数比最高分小两个量级的，是压缩抖动一类的噪声，不是"变化"。
+    # 没有这条，每个桶都能被噪声填满，桶中点分支永远不会触发。
+    floor = max((sc for _t, sc in scores), default=0.0) * 0.05
+    for t, sc in scores:
+        if sc < floor:
+            continue
+        i = int((t - start) / span * n)
+        i = 0 if i < 0 else (n - 1 if i >= n else i)
+        buckets[i].append((sc, t))
+    out, filled = [], 0
+    for i, b in enumerate(buckets):
+        if b:
+            b.sort(key=lambda x: -x[0])
+            out.append([t for _sc, t in b[:max(1, k)]])
+        else:
+            filled += 1
+            out.append([start + span * (i + 0.5) / n])
+    return out, filled
 
 
 def _pick_scene(scores, n, start, end):
-    """按画面变化取 n 个时间点。返回 (times, 补齐了几个)。
-
-    1. 分数从高到低取，够 n 个就停
-    2. 取一个就把它 ±min_gap 内的候选划掉——
-       同一瞬间的 20 帧分数都高，全取进来等于浪费格子
-    3. 有效变化点不足 n 个，剩下的按间隔均匀插值补齐
-    """
+    """每桶首选拼成 n 个时间点。返回 (times, 补齐了几个)。"""
     if n <= 1:
         return [float(start)], 0
-    span = max(1e-6, end - start)
-    min_gap = span / n
-    cand = sorted(scores, key=lambda x: -x[1])
-    # 相对下限：分数比最高分小两个量级的，是压缩抖动一类的噪声，不是"变化"。
-    # 不设这条的话 NMS 会把满屏噪声点全选进来——它们分数虽低，但离已选点远，
-    # 于是永远能凑满 n 个，补齐分支永远不触发，警告也就永远不会出现。
-    # 用相对值而非固定阈值：不同片子、不同编码的动态范围差很多。
-    if cand:
-        floor = cand[0][1] * 0.05
-        cand = [x for x in cand if x[1] >= floor]
-    picked = []
-    for t, _sc in cand:
-        if all(abs(t - p) >= min_gap for p in picked):
-            picked.append(t)
-            if len(picked) >= n:
-                break
-    if len(picked) >= n:
-        return sorted(picked)[:n], 0
-    got = len(picked)
-    return _fill(picked, n, start, end), n - got
+    buckets, filled = _scene_buckets(scores, n, start, end)
+    return [b[0] for b in buckets], filled
 
 
-def _scene_times(a, asset, start, end, n, timeout=None):
-    """取 n 个时间点：默认按画面变化挑，pick=even 则老办法等分。
+def _hamming(a, b):
+    return bin(a ^ b).count("1")
 
-    返回 (times, 补齐数, 退化原因)。扫描结果按窗口缓存，
-    同一段重复调用不再解一遍码。
+
+def _pick_frames(asset, buckets, out_dir, duration, size, crop):
+    """按桶抽帧，再就地筛掉「黑帧 / 纯色」和「跟已选帧几乎一样」的格子。
+
+    A 黑帧：亮度均值太低，模型从纯黑格子里读不到东西；
+    B 重复：dHash 跟已选帧差不到 DEDUP_BITS 位，就是同一镜头又来一格。
+    两种都是换桶内下一个候选，不是删格子；桶内全灭才退回首选。
+    代价：首选帧一次抽齐 + 特征一条命令解完（跟老路子差不多），
+    只有真换人才多抽一次；把 BUCKET_K 设成 1 等于关掉换人。
+    """
+    media = asset["media_path"]
+    feats = {}
+
+    def take(t):
+        got = engine.extract_frames(media, [t], out_dir=out_dir, duration=duration,
+                                    size=size, crop=crop)
+        return got[0] if got else None
+
+    def feat(path):
+        if path not in feats:
+            feats[path] = engine.frame_features(path)
+        return feats[path]
+
+    def verdict(f, accepted):
+        """(能用吗, 淘汰原因, dHash)。缩略图都读不出来的帧照收，不折腾。"""
+        mean, sd, h = feat(f["path"])
+        if mean is None:
+            return True, None, None
+        if mean < BLACK_MEAN:
+            return False, "dark", h
+        if sd < FLAT_STD:
+            return False, "flat", h
+        if any(x[1] is not None and _hamming(h, x[1]) <= DEDUP_BITS for x in accepted):
+            return False, "dup", h
+        return True, None, h
+
+    firsts = [take(b[0]) for b in buckets]
+    todo = [f["path"] for f in firsts if f is not None]
+    if todo:
+        for path, v in zip(todo, engine.frame_features_many(todo)):
+            feats[path] = v
+
+    accepted, stats = [], {}
+    for cand, first in zip(buckets, firsts):
+        chosen, why = None, []
+        if first is None:
+            why.append("miss")
+        else:
+            ok, reason, h = verdict(first, accepted)
+            if ok:
+                chosen = (first, h)
+            else:
+                why.append(reason)
+        if chosen is None:
+            for t in cand[1:]:
+                f = take(t)
+                if f is None:
+                    why.append("miss")
+                    continue
+                ok, reason, h = verdict(f, accepted)
+                if ok:
+                    chosen = (f, h)
+                    break
+                why.append(reason)
+        if chosen is None:
+            # 桶内候选全灭：退回首选。宁可重复一格，也不要空着。
+            f = first or take(cand[0])
+            if f is None:
+                continue
+            mean, _sd, h = feat(f["path"])
+            stats["kept_worst"] = stats.get("kept_worst", 0) + 1
+            chosen = (f, h if mean is not None else None)
+        elif chosen[0] is not first:
+            stats["moved"] = stats.get("moved", 0) + 1
+            k = "why_" + (why[-1] if why else "miss")
+            stats[k] = stats.get(k, 0) + 1
+        accepted.append(chosen)
+    return [f for f, _h in accepted], stats
+
+
+def _scene_plan(a, asset, start, end, n, timeout=None):
+    """给 n 桶的候选表。返回 (buckets, filled, degraded)。
+
+    pick=even 返回 buckets=None，调用方走等分；扫描失败 / 窗口没帧也一样，
+    但要带一句降级原因回去。变化分数按窗口缓存，同段重复调用不再解一遍码。
     """
     if str(a.get("pick") or "scene").lower() == "even":
-        return engine.sample_times(start, end, n), 0, None
+        return None, 0, None
     media = asset.get("media_path")
     key = "%s|%.3f|%.3f" % (media, start, end)
     cache = None
@@ -1049,25 +1123,24 @@ def _scene_times(a, asset, start, end, n, timeout=None):
         cache = Path(asset.get("video_dir") or ".") / (".scene-%s.json" % _short_hash(key))
         if cache.exists():
             scores = [(float(t), float(sc)) for t, sc in json.loads(cache.read_text())]
-            ts, filled = _pick_scene(scores, n, start, end)
-            return ts, filled, None
+            buckets, filled = _scene_buckets(scores, n, start, end)
+            return buckets, filled, None
     except Exception:
         cache = None
     try:
         scores = engine.scene_scores(media, start, end, timeout=timeout)
     except Exception as e:
-        # 退回等分，但要说出来——否则用户以为看到的是变化点，其实是等分
-        return engine.sample_times(start, end, n), 0, "scene scan failed (%s), fell back to even spacing" % e
+        return None, 0, "scene scan failed (%s), fell back to even spacing" % e
     if not scores:
-        return engine.sample_times(start, end, n), 0, "no frames in window, fell back to even spacing"
-    ts, filled = _pick_scene(scores, n, start, end)
+        return None, 0, "no frames in window, fell back to even spacing"
     if cache is not None:
         try:
-            # 只存两位小数，8279 帧的 json 约 120KB，够用且省
+            # 只存三位小数，8279 帧的 json 约 120KB，够用且省
             cache.write_text(json.dumps([[round(t, 3), round(sc, 4)] for t, sc in scores]))
         except Exception:
             pass
-    return ts, filled, None
+    buckets, filled = _scene_buckets(scores, n, start, end)
+    return buckets, filled, None
 
 
 def tool_video(a):
@@ -1138,11 +1211,18 @@ def tool_video(a):
     # 多帧：拼成一页
     cols, rows = _pick_grid(n, aspect)
     cell_w, cell_h = _sheet_cells(a, aspect, cols, rows)
-    ts, filled, degraded = _scene_times(a, asset, win_start, win_end, n)
-    frames = engine.extract_frames(asset["media_path"], ts, out_dir=out_dir, duration=duration,
-                                   size=(cell_w, cell_h), crop=crop)
+    buckets, filled, degraded = _scene_plan(a, asset, win_start, win_end, n)
+    stats = {}
+    if buckets is None:
+        # pick=even / 扫描失败 / 空窗口：等分补点，不做筛选
+        frames = engine.extract_frames(asset["media_path"], engine.sample_times(win_start, win_end, n),
+                                       out_dir=out_dir, duration=duration,
+                                       size=(cell_w, cell_h), crop=crop)
+    else:
+        frames, stats = _pick_frames(asset, buckets, out_dir, duration, (cell_w, cell_h), crop)
     if not frames:
-        return ("frame grab failed (all %d timestamps missed)" % len(ts), [])
+        return ("frame grab failed (all %d timestamps missed)" % n, [])
+    ts = [f["seconds"] for f in frames]
     # 缓存键必须含实际取到的帧时间点。
     # 以前等分采样时 ts 完全由 (win_start, win_end, n) 决定，键里不写也对；
     # 现在按画面变化取，同样窗口两次调用可能取到完全不同的帧，
@@ -1165,9 +1245,22 @@ def tool_video(a):
     out = {"duration": round(duration, 2),
            "range": [round(min(ts), 3), round(max(ts), 3)],
            "timeline": [f["seconds"] for f in frames]}
-    for msg in ((degraded or ""),
-                ("only %d clear scene changes in this window; the other %d cells are "
-                 "interpolated between them and are not new content" % (n - filled, filled)) if filled else ""):
+    msgs = [degraded or ""]
+    if filled:
+        msgs.append("%d of %d slots have no clear scene change; those cells come from "
+                    "the middle of the slot and are not new content" % (filled, n))
+    if stats.get("moved") or stats.get("kept_worst"):
+        why = ", ".join("%d %s" % (stats.get("why_" + k, 0), w)
+                        for k, w in (("dark", "too dark"), ("flat", "flat colour"),
+                                     ("dup", "same shot as an earlier cell"),
+                                     ("miss", "unreadable"))
+                        if stats.get("why_" + k))
+        msg = "swapped %d of %d cells to the next candidate in their slot (%s)" % (
+            stats.get("moved", 0), n, why or "no reason recorded")
+        if stats.get("kept_worst"):
+            msg += "; %d slot(s) had no usable candidate, kept the first pick" % stats["kept_worst"]
+        msgs.append(msg)
+    for msg in msgs:
         if msg:
             note = msg if not note else note + "; " + msg
     if note:

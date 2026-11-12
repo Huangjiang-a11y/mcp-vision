@@ -55,4 +55,6 @@ if [ "$1" = "--test" ]; then
   run_test tests/test_keep_wide.py
   echo "测试：ffmpeg 线程数"
   run_test tests/test_ff_threads.py
+  echo "测试：选帧筛子"
+  run_test tests/test_pick_frames.py
 fi
