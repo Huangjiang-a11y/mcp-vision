@@ -486,7 +486,7 @@ def _usable(c):
     return True
 
 
-def _page_like(boxes):
+def _page_like(boxes, sub=None, samples=8):
     """判断这一屏是不是「整页文字」，而不是字幕。
 
     字幕只有一行（偶尔两行），换几十句也只在带内挤着；
@@ -498,13 +498,35 @@ def _page_like(boxes):
       歌词片《琵琶行》        1 / 0.00
       实拍片 泡沫满屏         3 / 0.21
 
+    但「簇够多 + 跨度够大」会被垃圾簇凑满：台标和图表标签只有 0.13-0.20 画面宽，
+    它们随镜头换高度，柴知道 653s 那支片 6 个 100s 窗口全凑出 4-5 个簇、跨度
+    0.7-0.87，于是全被判成整页——可底部那条字幕带好得很。
+
+    所以 sub（选中的那条带的统计）给了就加一条豁免：选中的带自己够低（y0≥0.6）、够宽（≥0.30）、
+    大半采样帧都在（count ≥ 采样数一半），那它就是字幕，屏幕上别处的字是内容。
+    这支片的 6 个窗口实测（band 起点 / 段子质量）：
+      0-100   0.827 → 61 段，连贯      → 豁免，判字幕
+      100-200 0.793 → 57 段，连贯      → 豁免
+      200-300 0.559 → 11 段，全是图注   → 不豁免，仍判整页（对）
+      300-400 0.830 → 56 段，连贯      → 豁免
+      400-500 0.787 → 60 段，连贯      → 豁免
+      500-600 0.825 → 54 段，连贯      → 豁免
+
     返回 (是否整页, 可用簇数, 跨度)。
     """
     cl = [c for c in _cluster_boxes(boxes) if _usable(c)]
     if len(cl) < 4:
         return False, len(cl), 0.0
     span = max(c["y1"] for c in cl) - min(c["y0"] for c in cl)
-    return span >= 0.45, len(cl), span
+    if span < 0.45:
+        return False, len(cl), span
+    if sub is not None:
+        # 用带自己的统计（_band_from_boxes 已经算好），别再去簇里找对应项：
+        # 合并相邻行之后两者不一样，500-600 那窗就是这么漏的。
+        if (sub["band"][0] >= 0.6 and sub["w"] >= 0.30
+                and sub["count"] >= max(3, samples // 2)):
+            return False, len(cl), span
+    return True, len(cl), span
 
 
 def _band_from_boxes(boxes, pad):
@@ -622,7 +644,8 @@ def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
         r = _band_from_boxes(_boxes_from_frames(frames, int(H * lower_from), H, H, W, engine), pad)
         if r is None:
             return None
-        page, ncl, span = _page_like(_boxes_from_frames(frames, 0, H, H, W, engine))
+        page, ncl, span = _page_like(_boxes_from_frames(frames, 0, H, H, W, engine),
+                                     r, samples)
         return _ret(r["band"], page, ncl, span, r)
 
     cut = int(H * 0.6)
@@ -634,14 +657,14 @@ def detect_subtitle_band(media, samples=8, start=0.0, end=None, width=None,
         # 它的表格行刚好满足 count/w 的门槛。只有看上半屏才知道
         # 这条带是「字幕」，还是「一整页内容的下半截」。
         all_boxes = low_boxes + _boxes_from_frames(frames, 0, cut, H, W, engine)
-        page, ncl, span = _page_like(all_boxes)
+        page, ncl, span = _page_like(all_boxes, r, samples)
         return _ret(r["band"], page, ncl, span, r)
 
     # 下半屏没命中：补扫上半屏，合并再打分
     all_boxes = low_boxes + _boxes_from_frames(frames, 0, cut, H, W, engine)
     r2 = _band_from_boxes(all_boxes, pad)
     if r2:
-        page, ncl, span = _page_like(all_boxes)
+        page, ncl, span = _page_like(all_boxes, r2, samples)
         return _ret(r2["band"], page, ncl, span, r2)
     if samples < 16:
         return detect_subtitle_band(media, samples=16, start=start, end=end, width=width,
