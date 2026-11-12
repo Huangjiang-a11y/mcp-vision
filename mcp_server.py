@@ -69,6 +69,58 @@ def _prune_workspaces(root, keep=None):
     return gone
 
 
+def _clean_cache(cwd, asset=None, fresh=None, min_age=3600.0):
+    """下载缓存只做中转，别当仓库。
+
+    `.mvv-cache/downloads` 原来是只进不出：工作区里已经拷了一份，缓存这份还留着，
+    一支 51MB 的片子等于占 102MB；`MVV_KEEP_WORKSPACES` 只清工作区，管不到这里。
+
+    规则三条：
+    - 还被某个工作区的 meta.json 指着的（media_path 就在缓存里）不动
+    - 本次刚拷完的那份（fresh）大小对得上就立刻删
+    - 没人认领、且放了一小时以上的，扫掉（一小时的宽限是给正在下载的另一路）
+    """
+    cache = Path(cwd) / DEFAULT_CACHE / "downloads"
+    if not cache.is_dir():
+        return []
+    live = set()
+    root = engine.workspace_root(Path(cwd))
+    if root.exists():
+        for d in root.iterdir():
+            meta = d / "meta.json"
+            if not meta.exists():
+                continue
+            try:
+                mp = json.loads(meta.read_text()).get("media_path")
+            except Exception:
+                continue
+            if mp:
+                live.add(str(Path(mp).resolve()))
+    dest = Path((asset or {}).get("media_path") or "")
+    if dest.exists():
+        live.add(str(dest.resolve()))
+    gone, now = [], time.time()
+    for f in cache.iterdir():
+        if not f.is_file():
+            continue
+        fp = str(f.resolve())
+        if fp in live:
+            continue
+        is_fresh = fresh is not None and fp == str(Path(fresh).resolve())
+        try:
+            if is_fresh:
+                # 拷贝没成（目标不在 / 大小对不上）就别删，那是唯一的一份
+                if str(dest) == "" or not dest.exists() or dest.stat().st_size != f.stat().st_size:
+                    continue
+            elif now - f.stat().st_mtime < min_age:
+                continue
+            f.unlink()
+            gone.append(f.name)
+        except Exception:
+            pass
+    return gone
+
+
 def _mask(s):
     return s
 
@@ -263,14 +315,16 @@ def _QUALITY_MAP(q):
     return {"low": 480, "medium": 720, "high": 1080, "max": None}.get((q or "medium").lower(), 720)
 
 
-def _opened(asset):
+def _opened(asset, fresh=None):
     """打开成功后的统一收尾：报一句状态，并按保留数清理旧工作区。
 
     清理要放在这里，不能只定义 _prune_workspaces 就完事——
     它之前一直是死代码（定义在 line 40，全项目零调用），
     于是 MVV_KEEP_WORKSPACES=5 从来没有生效过，目录只增不减。
     """
-    gone = _prune_workspaces(engine.workspace_root(Path(__file__).resolve().parent))
+    cwd = Path(__file__).resolve().parent
+    gone = _prune_workspaces(engine.workspace_root(cwd))
+    _clean_cache(cwd, asset=asset, fresh=fresh)
     msg = ("opened %s\nduration %.2fs  %sx%s  audio=%s" % (
         asset["title"], asset["duration"], asset["width"], asset["height"],
         "yes" if asset["has_audio"] else "no"))
@@ -352,7 +406,7 @@ def tool_open(a):
     except Exception as e:
         return ("download failed: %s" % str(e)[:300], [])
     asset = engine.open_local(cwd, fname, title=info.get("title"), url=src)
-    return _opened(asset), []
+    return _opened(asset, fresh=fname), []
 
 
 def tool_audio(a):

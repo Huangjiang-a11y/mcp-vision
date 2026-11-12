@@ -363,6 +363,50 @@ with tempfile.TemporaryDirectory() as _td:
 src_open = inspect.getsource(M.tool_open) + inspect.getsource(M._opened)
 check("打开流程会触发清理", "_prune_workspaces" in src_open, True)
 
+# --- 下载缓存 ---
+# .mvv-cache/downloads 原来是只进不出：拷进工作区那份还在，缓存这份就是纯浪费
+with tempfile.TemporaryDirectory() as _td:
+    ws = _os.path.join(_td, "workspace", "t")
+    _os.makedirs(ws)
+    dest = _os.path.join(ws, "v.mp4")
+    open(dest, "wb").write(b"x" * 100)
+    with open(_os.path.join(ws, "meta.json"), "w") as f:
+        _json.dump({"media_path": dest}, f)
+    dl = _os.path.join(_td, M.DEFAULT_CACHE, "downloads")
+    _os.makedirs(dl)
+    fresh = _os.path.join(dl, "v.mp4")          # 刚下完、已拷进工作区
+    open(fresh, "wb").write(b"x" * 100)
+    stale = _os.path.join(dl, "old.mp4")        # 没人认领、放了两小时
+    open(stale, "wb").write(b"y" * 10)
+    _os.utime(stale, (_time.time() - 7200,) * 2)
+    half = _os.path.join(dl, "half.mp4")        # 刚下的半截，可能还有别路在写
+    open(half, "wb").write(b"z" * 5)
+    inuse = _os.path.join(dl, "keep.mp4")       # 某个工作区的 media_path 就指着它
+    open(inuse, "wb").write(b"w" * 7)
+    _os.makedirs(_os.path.join(_td, "workspace", "u"))
+    with open(_os.path.join(_td, "workspace", "u", "meta.json"), "w") as f:
+        _json.dump({"media_path": inuse}, f)
+
+    gone = M._clean_cache(_td, asset={"media_path": dest}, fresh=fresh)
+    check("拷完立刻删中转件", "v.mp4" in gone, True)
+    check("旧的无主文件也删", _os.path.exists(stale), False)
+    check("刚下的半截先留着", _os.path.exists(half), True)
+    check("meta 指着的缓存不动", _os.path.exists(inuse), True)
+    check("工作区那份不动", _os.path.exists(dest), True)
+
+# 拷贝没成的不能删：大小对不上说明目标不是这份
+with tempfile.TemporaryDirectory() as _td:
+    ws = _os.path.join(_td, "workspace", "t")
+    _os.makedirs(ws)
+    dest = _os.path.join(ws, "v.mp4")
+    open(dest, "wb").write(b"x" * 50)
+    dl = _os.path.join(_td, M.DEFAULT_CACHE, "downloads")
+    _os.makedirs(dl)
+    fresh = _os.path.join(dl, "v.mp4")
+    open(fresh, "wb").write(b"x" * 100)
+    check("大小对不上就别删", M._clean_cache(_td, asset={"media_path": dest}, fresh=fresh), [])
+    check("唯一的一份还在", _os.path.exists(fresh), True)
+
 # --- 按画面变化取帧 ---
 # 策略：分数从高到低取，够 N 就停；不够则按变化点间隔插值补齐并告知。
 sparse = [(i * 0.5, 0.001) for i in range(21)]
