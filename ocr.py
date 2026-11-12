@@ -357,7 +357,7 @@ def _stream_frames(media, start=0.0, end=None, step=1.0, width=None, crop=None):
     # 解码线程固定 2：默认是 auto（按核数开满），手机上 8 路抢 8 个小核，
     # 实测反而比 2 路慢（120 帧 6.01s → 5.67s），也更容易把 OCR 挤慢。
     cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-           "-threads", "2",
+           "-threads", str(FFMPEG_THREADS),
            "-ss", str(start), "-i", str(media)]
     if end is not None:
         cmd += ["-t", str(max(0.0, float(end) - float(start)))]

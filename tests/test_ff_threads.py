@@ -72,7 +72,13 @@ for c in ff:
     check("在 -i 之前: %s" % tag, before_i)
 
 check("线程数常量默认 2", want == 2, "实际 %r" % (want,))
-check("跟 ocr.py 同一个开关", engine.FF_THREADS == __import__("ocr").FFMPEG_THREADS)
+ocr = __import__("ocr")
+check("跟 ocr.py 同一个开关", engine.FF_THREADS == ocr.FFMPEG_THREADS)
+# ocr.py 自己那条命令不能写死 2：定义了 FFMPEG_THREADS 却不用，等于环境变量是假的
+import inspect as _insp
+src = _insp.getsource(ocr._stream_frames)
+check("_stream_frames 用常量", "str(FFMPEG_THREADS)" in src)
+check("_stream_frames 没写死 2", '"-threads", "2"' not in src)
 
 print("ff_threads: %d 项检查，%d 项失败" % (ncheck, len(fails)))
 sys.exit(1 if fails else 0)
