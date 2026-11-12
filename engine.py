@@ -7,10 +7,11 @@ WORKSPACE_DIRNAME = "workspace"
 CACHE_DIRNAME = WORKSPACE_DIRNAME  # 兼容别名
 DEFAULT_FRAME_WIDTH = 1280
 MAX_FRAMES = 12
-# ffmpeg 解码线程数：默认 auto 会按核数开满，手机上把 8 个小核全抢走，
-# 反而拖慢同时跑的 ONNX/ASR，实测还更慢。锁 2。
-# 和 ocr.py 的 MVV_FFMPEG_THREADS 是同一个开关。
-FF_THREADS = int(os.environ.get("MVV_FFMPEG_THREADS", "2"))
+# ffmpeg 解码线程数：默认 auto 会按核数开满，手机上把 8 个核全抢走，反而拖慢
+# 同时跑的 ONNX。这里只管视频 / 音频工具那一路（同一时间就一路，给 3 条够用）。
+# 字幕取帧那条在 ocr.py，用 MVV_OCR_FFMPEG_THREADS（默认 2，因为它默认 2 进程并行）。
+# 实测 scene_scores 0-200s：2 条 10.80s → 3 条 9.48s → 8 条 8.69s。
+FF_THREADS = int(os.environ.get("MVV_FFMPEG_THREADS", "3"))
 
 
 def _run(args, timeout=300, cwd=None):
@@ -284,7 +285,8 @@ def frame_features_many(paths, timeout=None):
     n = len(paths)
     cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error"]
     for p in paths:
-        cmd += ["-i", p]
+        # -threads 是「管下一个输入」的选项，写一个在开头只对第一张生效，得每张都写
+        cmd += ["-threads", str(FF_THREADS), "-i", p]
     chain = "".join("[%d:v]scale=36:32,format=gray[v%d];" % (i, i) for i in range(n))
     chain += "".join("[v%d]" % i for i in range(n)) + "hstack=inputs=%d" % n
     try:

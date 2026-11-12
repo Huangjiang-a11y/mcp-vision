@@ -19,7 +19,9 @@ REC_H = int(os.environ.get("MVV_REC_H", "48"))
 DET_TH = float(os.environ.get("DET_TH", "0.2"))
 # 窗口短于这个秒数就不开进程池：启动 4 个进程（各自加载模型）比省下的时间还贵
 PARALLEL_MIN_SPAN = float(os.environ.get("MVV_OCR_PARALLEL_MIN", "30"))
-FFMPEG_THREADS = int(os.environ.get("MVV_FFMPEG_THREADS", "2"))
+# 字幕取帧单独一条开关：默认 2 进程并行（MVV_OCR_WORKERS），每进程 2 条解码线程
+# = 4 条在跑，再往上就是跟 ORT 抢核。engine.py 的工具那条默认 3。
+FFMPEG_THREADS = int(os.environ.get("MVV_OCR_FFMPEG_THREADS", "2"))
 
 
 def _providers():
@@ -419,6 +421,7 @@ def _collect_sample_frames(media, start, end, samples, W, H):
         for i in range(samples):
             t = start + span * (i + 1) / (samples + 1)
             cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                   "-threads", str(FFMPEG_THREADS),
                    "-ss", "%.3f" % t, "-i", str(media), "-frames:v", "1",
                    "-vf", "scale=%d:%d" % (W, H), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
             proc = subprocess.run(cmd, capture_output=True, timeout=15)

@@ -21,7 +21,11 @@ class _Fake:
 
 def fake_run(args, **kw):
     calls.append(list(args))
-    return _Fake()
+    f = _Fake()
+    if "-filter_complex" in args:
+        # 批量缩略图那条要 36x32xN 字节才肯往下走，不然它会退回逐张、多记 N 条命令
+        f.stdout = b"\0" * (36 * 32 * args.count("-i"))
+    return f
 
 
 engine.subprocess.run = fake_run
@@ -60,25 +64,53 @@ with tempfile.TemporaryDirectory() as td:
     except Exception as e:
         check("pcm16k 拿得到音频", False, repr(e))
 
+    # 逐帧特征（_gray_thumb）与批量缩略图（hstack）也是解码，同样要锁
+    jpgs = [os.path.join(td, "a.jpg"), os.path.join(td, "b.jpg")]
+    for j in jpgs:
+        open(j, "wb").write(b"\0" * 16)
+    engine.frame_features(jpgs[0])
+    engine.frame_features_many(jpgs)
+
 ff = [c for c in calls if c and c[0] == "ffmpeg"]
-check("五条 ffmpeg 命令都记到了", len(ff) == 5, "实际 %d 条" % len(ff))
+check("七条 ffmpeg 命令都记到了", len(ff) == 7, "实际 %d 条" % len(ff))
 
 want = engine.FF_THREADS
+
+
+def per_input_ok(c):
+    """每个 -i 前面都得有自己的 -threads：批量那条有 36 个输入，
+    只在开头写一个是只管第一个输入的。"""
+    idx = [i for i, x in enumerate(c) if x == "-i"]
+    ok = True
+    for k, i in enumerate(idx):
+        seg = c[(idx[k - 1] if k else 0):i]
+        if "-threads" not in seg or seg[seg.index("-threads") + 1] != str(want):
+            ok = False
+    return ok
+
+
 for c in ff:
     tag = " ".join(x for x in c[1:] if not x.startswith("-"))[:60]
     has = "-threads" in c and c[c.index("-threads") + 1] == str(want)
-    before_i = "-threads" in c and "-i" in c and c.index("-threads") < c.index("-i")
     check("-threads %d: %s" % (want, tag), has, "命令 %r" % (c[:8],))
-    check("在 -i 之前: %s" % tag, before_i)
+    check("每个 -i 前都有 -threads: %s" % tag, per_input_ok(c),
+          "%d 个输入" % c.count("-i"))
 
-check("线程数常量默认 2", want == 2, "实际 %r" % (want,))
+check("工具那条默认 3 条", want == 3, "实际 %r" % (want,))
 ocr = __import__("ocr")
-check("跟 ocr.py 同一个开关", engine.FF_THREADS == ocr.FFMPEG_THREADS)
+# 两条现在分开了：工具同一时间只跑一路给 3；字幕默认 2 进程 × 2 条
+check("字幕那条默认 2 条", ocr.FFMPEG_THREADS == 2, "实际 %r" % (ocr.FFMPEG_THREADS,))
+import inspect as _i2
+check("工具读 MVV_FFMPEG_THREADS", "MVV_FFMPEG_THREADS" in _i2.getsource(engine)[:2000])
+check("字幕读 MVV_OCR_FFMPEG_THREADS", "MVV_OCR_FFMPEG_THREADS" in _i2.getsource(ocr)[:2000])
 # ocr.py 自己那条命令不能写死 2：定义了 FFMPEG_THREADS 却不用，等于环境变量是假的
 import inspect as _insp
 src = _insp.getsource(ocr._stream_frames)
 check("_stream_frames 用常量", "str(FFMPEG_THREADS)" in src)
 check("_stream_frames 没写死 2", '"-threads", "2"' not in src)
+# 兜底那条（逐点 seek 取采样帧）以前漏了锁，批量缩略图也是
+src2 = _insp.getsource(ocr._collect_sample_frames)
+check("取采样帧的兜底也锁了", '"-threads", str(FFMPEG_THREADS)' in src2)
 
 print("ff_threads: %d 项检查，%d 项失败" % (ncheck, len(fails)))
 sys.exit(1 if fails else 0)
