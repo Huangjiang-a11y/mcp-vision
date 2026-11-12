@@ -298,6 +298,25 @@ ffmpeg 解码分开管：视频 / 音频工具 `MVV_FFMPEG_THREADS=3`（单跑�
 还多出 62×3 个节点、加载慢 3 倍、精度下降（per-tensor，mean diff 0.064）。
 量化工具与产物已删除，结论记录在此。
 
+## 实测素材
+
+参数是在这些片子上试出来的。**只列出处，不随仓库分发任何音视频**，版权归各 up 主——
+谢谢他们把片子放在那儿，让这些数字有地方可测。
+
+| 片子 | 时长 | 画面 | 拿来验什么 |
+|---|---|---|---|
+| [BV1NEW16wEGN](https://www.bilibili.com/video/BV1NEW16wEGN) | 654s | 1280×720，字幕带 y0 0.79–0.83 | 两档 ffmpeg 线程、1:2×2 配置、桶取帧去重、整页豁免、缓存清理 |
+| [BV1Rx54znE7k](https://www.bilibili.com/video/BV1Rx54znE7k) | 328s | 1280×720，字幕逐句烧录，尾短语有独立短 cue | 跳帧阈值、短 cue 是不是噪声、ASR 预处理 |
+| [BV1tx4b6AE6H](https://www.bilibili.com/video/BV1tx4b6AE6H) | 320s | 1280×720，字幕两档高度 | 字幕带切掉第二行、片头标题丢失 |
+| [BV1FRao6yESc](https://www.bilibili.com/video/BV1FRao6yESc) | 276s | 1280×720，字幕贴画面顶部 | 声学字段、BGM 段掉字 |
+| [BV1tWng6FE2Q](https://www.bilibili.com/video/BV1tWng6FE2Q) | 266s | 1024×720，整页文字 + 底部单行 | 整页文字判据（簇数 / 跨度） |
+| [BV1rx4n6FEyg](https://www.bilibili.com/video/BV1rx4n6FEyg) | 164s | 1280×720，整页文字切换 | 整页文字、按画面变化取帧 |
+| [BV1Yasf6XEj1](https://www.bilibili.com/video/BV1Yasf6XEj1) | 25s | 1080×1920，竖屏 | 分辨率判断（短边 vs 长边）、竖屏网格与整页预算 |
+| [BV1FUrNBnE9y](https://www.bilibili.com/video/BV1FUrNBnE9y) | — | 立体声，左右声道不同音高，帧内换音 | 基频按声道各测、`seconds` 对单帧视图无意义 |
+
+文中只写结论、不写片名的地方，指的就是这张表里的某一支；描述（时长 / 分辨率 / 字幕形态）
+留在正文里，够复现判断。
+
 ## 踩坑记录（按改动顺序，细节看提交）
 
 每条都记下当时的**错误判断**和把它推翻的那次实测。数字都能用 `scripts/` 里的基准脚本复现。
@@ -511,7 +530,8 @@ v0.4 已通：`workspace`（open / list）、`video`、
 - [dsh-video-vision](https://github.com/Tests4gptplay/dsh-video-vision) — 链接规范化（`lib/ytdlp.js` 的 `normalizeSource`）、按时间点取原帧。
 - [dsh-bili-watch](https://github.com/ppppiii/dsh-bili-watch) — B 站下载与登录态（cookies）处理的经验。
 
-也感谢 ffmpeg、yt-dlp、numpy、onnxruntime 的作者。
+也感谢 ffmpeg、yt-dlp、numpy、onnxruntime 的作者，以及「实测素材」里那几支片子的作者——
+所有参数都是在它们的画面上试出来的。
 
 模型与依赖：
 
