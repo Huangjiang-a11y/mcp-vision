@@ -334,6 +334,53 @@ def _opened(asset, fresh=None):
     return msg
 
 
+def _partial_note(out_dir, before):
+    """下载失败后，把这次新落下的文件说清楚。
+
+    `bv*+ba` 是**两轨分开下**再合并：视频轨 80 MB 下完了、音频轨被拒，
+    是很常见的半成功。只说一句 "download failed: Connection refused" 会让人
+    以为整支都没下来，于是把 80 MB 再下一次 —— 这里把已经拿到的那部分报出来，
+    顺便说清缺的是哪一轨。
+    """
+    try:
+        old = set(before)
+        fresh = sorted(p for p in Path(out_dir).glob("*")
+                       if p.is_file() and p not in old)
+    except OSError:
+        return ""
+    if not fresh:
+        return ""
+    lines, has_audio = [], False
+    for f in fresh[:4]:
+        kind, dur = f.suffix.lstrip(".") or "file", ""
+        try:
+            info = json.loads(engine._run([
+                "ffprobe", "-v", "error", "-show_entries",
+                "stream=codec_type,width,height,avg_frame_rate:format=duration",
+                "-of", "json", str(f)], timeout=30) or "{}")
+            v = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), None)
+            if v:
+                kind = "video %sx%s" % (v.get("width"), v.get("height"))
+                fr = str(v.get("avg_frame_rate") or "")
+                if "/" in fr and float(fr.split("/")[1] or 0):
+                    num, den = fr.split("/")
+                    kind += " %d fps" % round(float(num) / float(den))
+            elif any(s.get("codec_type") == "audio" for s in info.get("streams", [])):
+                kind, has_audio = "audio", True
+            d = info.get("format", {}).get("duration")
+            dur = "%.1f s" % float(d) if d else ""
+        except Exception:
+            pass
+        lines.append("  partial: %s — %s %s, %.1f MB" % (
+            f, kind, dur, f.stat().st_size / 1048576.0))
+    lines.append("  video and audio come down as two tracks — a complete video track means "
+                 "only the other one failed, and retrying usually finishes it")
+    if not has_audio:
+        lines.append("  audio track not on disk yet; the file above is kept for an hour "
+                     "(unclaimed cache) so it can be muxed by hand")
+    return "\n".join(lines)
+
+
 def tool_open(a):
     src = (a.get("source") or "").strip()
     if not src:
@@ -369,6 +416,11 @@ def tool_open(a):
         return "downloading URLs needs yt-dlp (pip install yt-dlp)", []
     out_dir = Path(cwd) / DEFAULT_CACHE / "downloads"
     out_dir.mkdir(parents=True, exist_ok=True)
+    # 记下开下之前就有的文件：失败时好分清「这次落下的」和「以前留下的」
+    try:
+        before = {p for p in out_dir.glob("*") if p.is_file()}
+    except OSError:
+        before = set()
     max_h = _QUALITY_MAP(a.get("quality"))
     # yt-dlp 的 format 表达式里没有 min()，竖屏也不能只看 height（那是长边）。
     # 所以不写死过滤条件，改成 bv*+ba 全拿，再用 format_sort 把分辨率往上限上靠。
@@ -404,7 +456,9 @@ def tool_open(a):
                     if cand.suffix in (".mp4", ".mkv", ".webm"):
                         fname = str(cand); break
     except Exception as e:
-        return ("download failed: %s" % str(e)[:300], [])
+        note = _partial_note(out_dir, before)
+        msg = "download failed: %s" % str(e)[:300]
+        return (msg + ("\n" + note if note else ""), [])
     asset = engine.open_local(cwd, fname, title=info.get("title"), url=src)
     return _opened(asset, fresh=fname), []
 
