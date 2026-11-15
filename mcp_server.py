@@ -447,17 +447,28 @@ def tool_open(a):
             pass
     # 规范化链接
     src = _normalize_source(src)
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(src, download=True)
-            fname = ydl.prepare_filename(info)
-            if not Path(fname).exists():
-                for cand in out_dir.glob("%s.*" % info.get("id")):
-                    if cand.suffix in (".mp4", ".mkv", ".webm"):
-                        fname = str(cand); break
-    except Exception as e:
+    # 两轨是**分开下**的（bv*+ba），所以一次失败通常只丢一轨：视频 80 MB 已经落盘，
+    # 音频那一条连接被拒（ECONNREFUSED，实测重试三次全撞在同一秒）。
+    # 第二遍会自动跳过已存在的格式文件（yt-dlp 认 .fXXXXX 那个名字），只重连缺的那轨。
+    info, fname, err = None, None, None
+    for attempt in range(2):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(src, download=True)
+                fname = ydl.prepare_filename(info)
+                if not Path(fname).exists():
+                    for cand in out_dir.glob("%s.*" % info.get("id")):
+                        if cand.suffix in (".mp4", ".mkv", ".webm"):
+                            fname = str(cand); break
+                err = None
+                break
+        except Exception as e:
+            err = e
+            if attempt == 0:
+                time.sleep(1.5)     # 给连接池一点时间换掉那条被拒的 socket
+    if err is not None:
         note = _partial_note(out_dir, before)
-        msg = "download failed: %s" % str(e)[:300]
+        msg = "download failed (2 attempts): %s" % str(err)[:300]
         return (msg + ("\n" + note if note else ""), [])
     asset = engine.open_local(cwd, fname, title=info.get("title"), url=src)
     return _opened(asset, fresh=fname), []
