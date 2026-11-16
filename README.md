@@ -44,8 +44,8 @@
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `MVV_FFMPEG_THREADS` | 3 | 视频 / 音频工具的解码线程 |
-| `MVV_OCR_FFMPEG_THREADS` | 2 | 字幕取帧的解码线程（2 进程 × 2 条） |
+| `MVV_FFMPEG_THREADS` | auto | 视频 / 音频工具的解码线程；auto = 不写 `-threads` |
+| `MVV_OCR_FFMPEG_THREADS` | auto | 字幕取帧的解码线程；2 进程并行时给 2 能压低峰值 |
 | `MVV_OCR_WORKERS` | 2 | 字幕 OCR 进程数；起不来就回退串行 |
 | `MVV_ORT_THREADS` | 2 | 推理线程 |
 | `MVV_KEEP_WORKSPACES` | 5 | 留几个工作区，多的整目录删掉 |
@@ -238,9 +238,10 @@ OCR 只看像素，画面里没有「情感」和「有没有 BGM」这两样信
 **线程**：这机器 **2 线程最优**。det 推理 1 线程 0.182s → 2 线程 **0.117s** → 4 线程 0.125s →
 8 线程 0.149s（小核争用）。`MVV_ORT_THREADS` 默认 2。
 
-ffmpeg 解码分开管：视频 / 音频工具 `MVV_FFMPEG_THREADS=3`（单跑比 2 条快 12%，
-8 条只再多 9%），字幕取帧 `MVV_OCR_FFMPEG_THREADS=2` × 2 进程。为什么不是一个数，
-见「踩坑记录」1。
+**ffmpeg 解码**：默认 auto，不写 `-threads`，交给 ffmpeg 按核数开。同一支片
+`scene_scores` 0-200s：auto 7.38 / 7.42s，锁 3 条 8.26 / 8.29s，锁 8 条 7.45 / 7.55s
+——锁 3 反而慢 11%。字幕取帧打平（auto 14.36 / 14.48s，每进程 2 条 13.62 / 14.15s）。
+要压住峰值 CPU 再显式给数字，见「踩坑记录」1。
 
 **加速器**：`CPU` 实测最快，`XNNPACK` 反而更慢，`NNAPI` 初始化贵。默认 `cpu`，可用 `MVV_ORT_PROVIDERS` 改。
 
@@ -305,7 +306,7 @@ ffmpeg 解码分开管：视频 / 音频工具 `MVV_FFMPEG_THREADS=3`（单跑�
 
 | 片子 | 时长 | 画面 | 拿来验什么 |
 |---|---|---|---|
-| [BV1NEW16wEGN](https://www.bilibili.com/video/BV1NEW16wEGN) | 654s | 1280×720，字幕带 y0 0.79–0.83 | 两档 ffmpeg 线程、1:2×2 配置、桶取帧去重、整页豁免、缓存清理 |
+| [BV1NEW16wEGN](https://www.bilibili.com/video/BV1NEW16wEGN) | 654s | 1280×720，字幕带 y0 0.79–0.83 | ffmpeg 线程（3 条 / 2 条 / auto 都测过）、1:2×2 配置、桶取帧去重、整页豁免、缓存清理 |
 | [BV1Rx54znE7k](https://www.bilibili.com/video/BV1Rx54znE7k) | 328s | 1280×720，字幕逐句烧录，尾短语有独立短 cue | 跳帧阈值、短 cue 是不是噪声、ASR 预处理 |
 | [BV1tx4b6AE6H](https://www.bilibili.com/video/BV1tx4b6AE6H) | 320s | 1280×720，字幕两档高度 | 字幕带切掉第二行、片头标题丢失 |
 | [BV1FRao6yESc](https://www.bilibili.com/video/BV1FRao6yESc) | 276s | 1280×720，字幕贴画面顶部 | 声学字段、BGM 段掉字 |
@@ -321,18 +322,17 @@ ffmpeg 解码分开管：视频 / 音频工具 `MVV_FFMPEG_THREADS=3`（单跑�
 
 每条都记下当时的**错误判断**和把它推翻的那次实测。数字都能用 `scripts/` 里的基准脚本复现。
 
-**1. ffmpeg 的 `threads=auto` 在小核上抢光 CPU**
+**1. ffmpeg 线程：先锁 3，测完还是交回 auto**
 
-一条开关管所有 ffmpeg 是不对的：视频 / 音频工具同一时间只跑一路，字幕却默认 2 进程并行。
-现在分开：工具 `MVV_FFMPEG_THREADS=3`，字幕 `MVV_OCR_FFMPEG_THREADS=2`。
+一开始怕 auto 按核数开满、跟同时跑的 ONNX 抢核，把工具那路写死 3。后来按单跑重测，
+`scene_scores` 0-200s：**auto 7.38 / 7.42s，锁 3 条 8.26 / 8.29s，锁 8 条 7.45 / 7.55s**
+——auto 本来就是按核数开，锁 3 反而慢 11%。字幕取帧同样打平：auto 14.36 / 14.48s，
+每进程 2 条 13.62 / 14.15s。
 
-| 用途 | 默认 | 为什么 |
-|---|---|---|
-| 视频 / 音频工具 | **3** | 只跑一路，多给一条不挤别人 |
-| 字幕取帧 | **2** | 2 进程并行，每进程 2 条 = 4 条在跑 |
+所以默认回到 auto（不写 `-threads`），`MVV_FFMPEG_THREADS` / `MVV_OCR_FFMPEG_THREADS`
+留作显式压低峰值用。两条开关仍然分开：命令形状不同，将来要压也是分开压。
 
-`scene_scores` 0-200s（每种各跑两遍）：2 条 10.80s → **3 条 9.48s** → 8 条 8.69s。
-3 条拿走九成收益，剩下 5 个核留给同时跑的 OCR。字幕那边是「1:2 一份、复制两份」：
+字幕那边真正有效的不是解码线程，是「1:2 一份、复制两份」：
 `MVV_OCR_WORKERS=2` 个进程，每进程 1 条 ORT 线程 + 2 条解码线程。
 
 | 配置（90 秒窗口） | 单独跑 | 与 `scene_scores` 600s 并发 |
@@ -459,7 +459,7 @@ CI（`.github/workflows/ci.yml`）跑在 **ubuntu-latest / Python 3.10 + 3.13**�
 | `tests/test_page_like.py` | 121 | OCR 框聚类、`page_like` 整页判定（单行字幕 / 整页文字 / 多簇集中 / 台标簇不算整页）、窄框剔除、"带本身就是字幕"豁免的四个反例 |
 | `tests/test_stereo.py` | 58 | 合成 L440 / R3000 立体声：频谱峰值左右不串、单声道标得出来、基频按声道各测且不受窗口长度影响、七张图尺寸 768×768 |
 | `tests/test_keep_wide.py` | 53 | 字幕行筛选 `_keep_wide`：窄句不被 `top*0.5` 当噪音丢掉；超宽离群框不抬高宽度标尺；行高基准是 `max` |
-| `tests/test_ff_threads.py` | 116 | `engine.py` 7 条 ffmpeg 命令（含 36 张批量那条）都带 `-threads`，**每个 `-i` 前各有一条**；工具默认 3 条、字幕默认 2 条，两条开关不同名；`ocr._stream_frames`、`_collect_sample_frames` 的兜底都没写死 2 |
+| `tests/test_ff_threads.py` | 144 | 默认时不写 `-threads`（7 条命令一条都没有）；给了数字时**每个 `-i` 前各有一条**；`auto/0/空/垃圾` 都解析成 auto；两条开关不同名、都没写死数字 |
 | `tests/test_pick_frames.py` | 135 | 选帧三道筛子：分桶按时间归位 / 桶内按分数降序 / 噪声不算变化点 / 空桶取中点 / 候选数封顶；黑帧、纯色、近似帧换桶内次优；界限外不误杀；桶内全灭退回首选 |
 
 **覆盖缺口（明确列出，不假装有）**：

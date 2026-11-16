@@ -1,10 +1,15 @@
-"""engine.py 每条 ffmpeg 命令都要带 -threads N，且必须落在 -i 之前。
+"""ffmpeg 的 -threads：默认 auto（不写这个开关），显式给了数字才锁。
 
-为什么较真：ffmpeg 默认 auto 按核数开解码线程，手机上 8 个小核全被抢走，
-同时跑的 ONNX/ASR 被挤慢，实测整体更慢。这个开关是靠「每条命令都记得写」
-维持的，漏一条就等于没锁（不同工具走不同命令）。
+以前默认写死 3，怕 auto 按核数开满、跟同时跑的 ONNX 抢核。实测单跑时 auto 不慢
+（scene 0-200s：3 条 9.48s、8 条 8.69s），锁死的收益只在并发里出现。所以现在是
+「默认不写，要压就显式给」，这里两头都要盯：
+
+- 默认时**一条命令都不该出现 -threads**（写死在代码里等于 auto 是假的）
+- 给了数字时**每个 -i 前都得有**（-threads 只管下一个输入，批量那条最容易漏）
+
 不碰 ffmpeg 也不碰素材：把 subprocess.run 换成一个记账的假函数。
 """
+import inspect
 import os, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import engine
@@ -45,13 +50,9 @@ def check(name, ok, detail=""):
         print("  FAIL %s %s" % (name, detail))
 
 
-with tempfile.TemporaryDirectory() as td:
-    media = os.path.join(td, "x.mp4")
-    open(media, "wb").write(b"\0" * 16)
-    # analyze_spectrum 会去读自己刚「生成」的 pcm，先把假数据放好：16000 字节 = 0.5 秒 16k 交错立体声
-    pcm = os.path.join(td, "s-0-1000.pcm")
-    open(pcm, "wb").write(b"\0" * 16000)
-
+def collect(td, media):
+    """跑一遍所有会解码的命令，返回这次记到的 ffmpeg 命令行。"""
+    del calls[:]
     engine.scene_scores(media, 0, 10)
     engine._extract_jpeg(media, 1.0, 640, os.path.join(td, "f.jpg"))
     engine._load_raw_rgb(media, 1.0, 8, 8)
@@ -63,54 +64,81 @@ with tempfile.TemporaryDirectory() as td:
         engine.pcm16k(media, 0, 1.0)
     except Exception as e:
         check("pcm16k 拿得到音频", False, repr(e))
+    # 逐帧特征与批量缩略图（hstack）也是解码
+    engine.frame_features(os.path.join(td, "a.jpg"))
+    engine.frame_features_many([os.path.join(td, "a.jpg"), os.path.join(td, "b.jpg")])
+    return [c for c in calls if c and c[0] == "ffmpeg"]
 
-    # 逐帧特征（_gray_thumb）与批量缩略图（hstack）也是解码，同样要锁
-    jpgs = [os.path.join(td, "a.jpg"), os.path.join(td, "b.jpg")]
-    for j in jpgs:
+
+# --- 默认 auto：一条都不该写 ---
+check("默认不锁（None）", engine.FF_THREADS is None, "实际 %r" % (engine.FF_THREADS,))
+check("默认不产生参数", engine._thread_args() == [], engine._thread_args())
+
+with tempfile.TemporaryDirectory() as td:
+    media = os.path.join(td, "x.mp4")
+    open(media, "wb").write(b"\0" * 16)
+    open(os.path.join(td, "s-0-1000.pcm"), "wb").write(b"\0" * 16000)
+    for j in (os.path.join(td, "a.jpg"), os.path.join(td, "b.jpg")):
         open(j, "wb").write(b"\0" * 16)
-    engine.frame_features(jpgs[0])
-    engine.frame_features_many(jpgs)
 
-ff = [c for c in calls if c and c[0] == "ffmpeg"]
-check("七条 ffmpeg 命令都记到了", len(ff) == 7, "实际 %d 条" % len(ff))
+    ff = collect(td, media)
+    check("七条 ffmpeg 命令都记到了", len(ff) == 7, "实际 %d 条" % len(ff))
+    with_flag = [c for c in ff if "-threads" in c]
+    check("auto 时没有任何 -threads", with_flag == [], with_flag)
+    if ff:
+        check("命令本身没被改坏", ff[0][0], "ffmpeg")
 
-want = engine.FF_THREADS
+    # --- 显式给数字：每个 -i 前各一条 ---
+    engine.FF_THREADS = 3
+    ff = collect(td, media)
+    check("强制后仍是七条", len(ff) == 7, "实际 %d 条" % len(ff))
 
+    def per_input_ok(c):
+        """每个 -i 前面都得有自己的 -threads：批量那条有 36 个输入，
+        只在开头写一个是只管第一个输入的。"""
+        idx = [i for i, x in enumerate(c) if x == "-i"]
+        ok = True
+        for k, i in enumerate(idx):
+            seg = c[(idx[k - 1] if k else 0):i]
+            if "-threads" not in seg or seg[seg.index("-threads") + 1] != "3":
+                ok = False
+        return ok
 
-def per_input_ok(c):
-    """每个 -i 前面都得有自己的 -threads：批量那条有 36 个输入，
-    只在开头写一个是只管第一个输入的。"""
-    idx = [i for i, x in enumerate(c) if x == "-i"]
-    ok = True
-    for k, i in enumerate(idx):
-        seg = c[(idx[k - 1] if k else 0):i]
-        if "-threads" not in seg or seg[seg.index("-threads") + 1] != str(want):
-            ok = False
-    return ok
+    for c in ff:
+        tag = " ".join(x for x in c[1:] if not x.startswith("-"))[:60]
+        has = "-threads" in c and c[c.index("-threads") + 1] == "3"
+        check("-threads 3: %s" % tag, has, "命令 %r" % (c[:8],))
+        check("每个 -i 前都有 -threads: %s" % tag, per_input_ok(c),
+              "%d 个输入" % c.count("-i"))
+    engine.FF_THREADS = None
 
+# --- 解析：空 / auto / 0 / 垃圾都算 auto ---
+for raw, want in ((None, None), ("", None), ("auto", None), ("AUTO", None), ("0", None),
+                  ("3", 3), (" 8 ", 8), ("abc", None), ("-2", None)):
+    got = engine._parse_threads(raw)
+    check("_parse_threads(%r) -> %r" % (raw, want), got == want, "实际 %r" % (got,))
 
-for c in ff:
-    tag = " ".join(x for x in c[1:] if not x.startswith("-"))[:60]
-    has = "-threads" in c and c[c.index("-threads") + 1] == str(want)
-    check("-threads %d: %s" % (want, tag), has, "命令 %r" % (c[:8],))
-    check("每个 -i 前都有 -threads: %s" % tag, per_input_ok(c),
-          "%d 个输入" % c.count("-i"))
+# --- 两条开关还是分开的，且都接进了命令 ---
+check("工具读 MVV_FFMPEG_THREADS", "MVV_FFMPEG_THREADS" in inspect.getsource(engine)[:3000], True)
+_src = inspect.getsource(engine)
+check("工具那条没写死 3", '"-threads", "3"' not in _src, True)
+check("七条命令都走 _thread_args", _src.count("*_thread_args()") == 7,
+      "实际 %d 处" % _src.count("*_thread_args()"))
 
-check("工具那条默认 3 条", want == 3, "实际 %r" % (want,))
-ocr = __import__("ocr")
-# 两条现在分开了：工具同一时间只跑一路给 3；字幕默认 2 进程 × 2 条
-check("字幕那条默认 2 条", ocr.FFMPEG_THREADS == 2, "实际 %r" % (ocr.FFMPEG_THREADS,))
-import inspect as _i2
-check("工具读 MVV_FFMPEG_THREADS", "MVV_FFMPEG_THREADS" in _i2.getsource(engine)[:2000])
-check("字幕读 MVV_OCR_FFMPEG_THREADS", "MVV_OCR_FFMPEG_THREADS" in _i2.getsource(ocr)[:2000])
-# ocr.py 自己那条命令不能写死 2：定义了 FFMPEG_THREADS 却不用，等于环境变量是假的
-import inspect as _insp
-src = _insp.getsource(ocr._stream_frames)
-check("_stream_frames 用常量", "str(FFMPEG_THREADS)" in src)
-check("_stream_frames 没写死 2", '"-threads", "2"' not in src)
-# 兜底那条（逐点 seek 取采样帧）以前漏了锁，批量缩略图也是
-src2 = _insp.getsource(ocr._collect_sample_frames)
-check("取采样帧的兜底也锁了", '"-threads", str(FFMPEG_THREADS)' in src2)
+import ocr
+check("字幕读 MVV_OCR_FFMPEG_THREADS", "MVV_OCR_FFMPEG_THREADS" in inspect.getsource(ocr)[:3000], True)
+check("字幕默认也是 auto", ocr.FFMPEG_THREADS is None, "实际 %r" % (ocr.FFMPEG_THREADS,))
+check("字幕默认不产生参数", ocr._thread_args() == [], ocr._thread_args())
+ocr.FFMPEG_THREADS = 2
+check("字幕给 2 时带上", ocr._thread_args(), ["-threads", "2"])
+ocr.FFMPEG_THREADS = None
+
+# 两条命令不能写死 2 / 不能绕过 helper：定义了常量却不用，等于环境变量是假的
+src1 = inspect.getsource(ocr._stream_frames)
+check("_stream_frames 走 _thread_args", "*_thread_args()" in src1, True)
+check("_stream_frames 没写死 2", '"-threads", "2"' not in src1, True)
+src2 = inspect.getsource(ocr._collect_sample_frames)
+check("取采样帧的兜底也走 _thread_args", "*_thread_args()" in src2, True)
 
 print("ff_threads: %d 项检查，%d 项失败" % (ncheck, len(fails)))
 sys.exit(1 if fails else 0)

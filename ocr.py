@@ -19,9 +19,25 @@ REC_H = int(os.environ.get("MVV_REC_H", "48"))
 DET_TH = float(os.environ.get("DET_TH", "0.2"))
 # 窗口短于这个秒数就不开进程池：启动 4 个进程（各自加载模型）比省下的时间还贵
 PARALLEL_MIN_SPAN = float(os.environ.get("MVV_OCR_PARALLEL_MIN", "30"))
-# 字幕取帧单独一条开关：默认 2 进程并行（MVV_OCR_WORKERS），每进程 2 条解码线程
-# = 4 条在跑，再往上就是跟 ORT 抢核。engine.py 的工具那条默认 3。
-FFMPEG_THREADS = int(os.environ.get("MVV_OCR_FFMPEG_THREADS", "2"))
+def _parse_threads(raw):
+    """与 engine 同义：空 / auto / 0 → None（不写 -threads，让 ffmpeg 自己决定）。"""
+    txt = ("" if raw is None else str(raw)).strip().lower()
+    if txt in ("", "auto", "0", "none"):
+        return None
+    try:
+        n = int(txt)
+    except ValueError:
+        return None
+    return n if n > 0 else None
+
+
+# 字幕取帧单独一条开关（MVV_OCR_FFMPEG_THREADS）：默认 auto。默认 2 进程并行，
+# 想压住跟 ORT 抢核就给 2（2 进程 × 2 条）。
+FFMPEG_THREADS = _parse_threads(os.environ.get("MVV_OCR_FFMPEG_THREADS"))
+
+
+def _thread_args():
+    return ["-threads", str(FFMPEG_THREADS)] if FFMPEG_THREADS else []
 
 
 def _providers():
@@ -359,7 +375,7 @@ def _stream_frames(media, start=0.0, end=None, step=1.0, width=None, crop=None):
     # 解码线程固定 2：默认是 auto（按核数开满），手机上 8 路抢 8 个小核，
     # 实测反而比 2 路慢（120 帧 6.01s → 5.67s），也更容易把 OCR 挤慢。
     cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-           "-threads", str(FFMPEG_THREADS),
+           *_thread_args(),
            "-ss", str(start), "-i", str(media)]
     if end is not None:
         cmd += ["-t", str(max(0.0, float(end) - float(start)))]
@@ -421,7 +437,7 @@ def _collect_sample_frames(media, start, end, samples, W, H):
         for i in range(samples):
             t = start + span * (i + 1) / (samples + 1)
             cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-                   "-threads", str(FFMPEG_THREADS),
+                   *_thread_args(),
                    "-ss", "%.3f" % t, "-i", str(media), "-frames:v", "1",
                    "-vf", "scale=%d:%d" % (W, H), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
             proc = subprocess.run(cmd, capture_output=True, timeout=15)

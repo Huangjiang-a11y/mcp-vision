@@ -7,11 +7,29 @@ WORKSPACE_DIRNAME = "workspace"
 CACHE_DIRNAME = WORKSPACE_DIRNAME  # 兼容别名
 DEFAULT_FRAME_WIDTH = 1280
 MAX_FRAMES = 12
-# ffmpeg 解码线程数：默认 auto 会按核数开满，手机上把 8 个核全抢走，反而拖慢
-# 同时跑的 ONNX。这里只管视频 / 音频工具那一路（同一时间就一路，给 3 条够用）。
-# 字幕取帧那条在 ocr.py，用 MVV_OCR_FFMPEG_THREADS（默认 2，因为它默认 2 进程并行）。
-# 实测 scene_scores 0-200s：2 条 10.80s → 3 条 9.48s → 8 条 8.69s。
-FF_THREADS = int(os.environ.get("MVV_FFMPEG_THREADS", "3"))
+def _parse_threads(raw):
+    """MVV_FFMPEG_THREADS 的解析：空 / auto / 0 → None，表示不写 -threads，交给 ffmpeg。
+
+    以前默认写死 3，是怕 auto 按核数开满、跟同时跑的 ONNX 抢核。实测下来单跑时
+    auto 并不慢（scene 0-200s：3 条 9.48s、按核数 8 条 8.69s），锁死的收益只在
+    并发时才出现，所以默认还回去，需要压的时候显式给个数字。
+    """
+    txt = ("" if raw is None else str(raw)).strip().lower()
+    if txt in ("", "auto", "0", "none"):
+        return None
+    try:
+        n = int(txt)
+    except ValueError:
+        return None
+    return n if n > 0 else None
+
+
+# ffmpeg 解码线程：默认 auto。字幕取帧那条在 ocr.py，用 MVV_OCR_FFMPEG_THREADS。
+FF_THREADS = _parse_threads(os.environ.get("MVV_FFMPEG_THREADS"))
+
+
+def _thread_args():
+    return ["-threads", str(FF_THREADS)] if FF_THREADS else []
 
 
 def _run(args, timeout=300, cwd=None):
@@ -44,7 +62,7 @@ def scene_scores(path, start, end, timeout=None):
     if dur <= 0:
         return []
     cmd = ["ffmpeg", "-nostdin", "-hide_banner",
-           "-threads", str(FF_THREADS),
+           *_thread_args(),
            "-ss", "%.3f" % start, "-t", "%.3f" % dur, "-i", str(path),
            "-vf", "select='gte(scene,0)',metadata=print", "-f", "null", "-"]
     proc = subprocess.run(cmd, capture_output=True, text=True,
@@ -139,7 +157,7 @@ def _extract_jpeg(media, t, width, out_path, timeout=120, size=None, crop=None):
     if crop:
         vf = "%s,%s" % (crop, vf)
     _run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-          "-threads", str(FF_THREADS),
+          *_thread_args(),
           "-ss", str(t), "-i", str(media), "-frames:v", "1", "-an",
           "-vf", vf, "-pix_fmt", "yuvj420p", "-q:v", "2", str(out_path)], timeout=timeout)
 
@@ -214,7 +232,7 @@ def _write_png(path, rgb, w, h):
 def _load_raw_rgb(media, t, w, h, timeout=120):
     # decode one frame to raw rgb24 at target size；t=None 时直接把 media 当图片读，不 seek
     head = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-            "-threads", str(FF_THREADS)]
+            *_thread_args()]
     if t is not None:
         head += ["-ss", str(t)]
     out = subprocess.run(
@@ -241,7 +259,7 @@ def _gray_thumb(path, w=36, h=32, timeout=30):
     所以比例照撑（scale 不给 force_original_aspect_ratio），反正每帧都被同样地撑过。
     """
     out = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-                          "-threads", str(FF_THREADS), "-i", str(path),
+                          *_thread_args(), "-i", str(path),
                           "-vf", "scale=%d:%d" % (w, h), "-pix_fmt", "gray",
                           "-f", "rawvideo", "-"], capture_output=True, timeout=timeout)
     if out.returncode != 0 or len(out.stdout) < w * h:
@@ -286,7 +304,7 @@ def frame_features_many(paths, timeout=None):
     cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error"]
     for p in paths:
         # -threads 是「管下一个输入」的选项，写一个在开头只对第一张生效，得每张都写
-        cmd += ["-threads", str(FF_THREADS), "-i", p]
+        cmd += [*_thread_args(), "-i", p]
     chain = "".join("[%d:v]scale=36:32,format=gray[v%d];" % (i, i) for i in range(n))
     chain += "".join("[v%d]" % i for i in range(n)) + "hstack=inputs=%d" % n
     try:
@@ -735,7 +753,7 @@ def analyze_spectrum(media, start, end, fft_size=None, out_dir=None, track=False
     out_dir.mkdir(parents=True, exist_ok=True)
     pcm_path = out_dir / ("s-%d-%d.pcm" % (round(start * 1000), round(end * 1000)))
     _run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-          "-threads", str(FF_THREADS),
+          *_thread_args(),
           "-ss", "%.3f" % float(start), "-i", str(media),
           "-t", "%.3f" % max(0.0, float(end) - float(start)),
           "-vn", "-ac", "2", "-ar", str(sr), "-f", "s16le", str(pcm_path)], timeout=300)
@@ -943,7 +961,7 @@ def _asr_recognizer(threads=2, language="zh"):
 def pcm16k(media, start=0.0, end=None, timeout=1800):
     """ffmpeg 直出 16k 单声道 float32，不落盘。"""
     cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-           "-threads", str(FF_THREADS),
+           *_thread_args(),
            "-ss", "%.3f" % max(0.0, float(start))]
     if end is not None:
         cmd += ["-t", "%.3f" % (float(end) - float(start))]
